@@ -1,0 +1,16 @@
+[Unit]
+Description=MCTIVITY Web HMI
+After=network-online.target mctivity-motiond.service
+Wants=network-online.target
+Requires=mctivity-motiond.service
+
+[Service]
+Type=simple
+User=iiru
+WorkingDirectory=/opt/mctivity/mctivity_hmi
+ExecStart=/usr/bin/env python3 /opt/mctivity/mctivity_hmi/mctivity_hmi.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

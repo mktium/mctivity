@@ -1,0 +1,1 @@
+KERNEL=="EtherCAT0", SUBSYSTEM=="EtherCAT", MODE="0660", GROUP="iiru"
