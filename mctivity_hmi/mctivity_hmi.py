@@ -36,6 +36,11 @@ WEB_HOST = os.environ.get("MCTIVITY_WEB_HOST", "0.0.0.0")
 WEB_PORT = _env_int("MCTIVITY_WEB_PORT", 2015)
 FV3_SLAVE_POSITION = _env_int("MCTIVITY_FV3_SLAVE_POSITION", 1)
 FV3_STATUS_TTL_SEC = _env_float("MCTIVITY_FV3_STATUS_TTL_SEC", 0.5)
+UI_STATE_PATH = os.environ.get(
+    "MCTIVITY_UI_STATE_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "mctivity_hmi_state.json"),
+)
+_ui_state_lock = threading.RLock()
 
 HTML = r"""
 <!doctype html>
@@ -50,6 +55,7 @@ HTML = r"""
 <title>多轴控制</title>
 <style>
 :root {
+  --abs-thumb-size:36px;
   --theme-blue:#2A83B7; --theme-deep:#1A69A5; --ink:#111; --dark:#404040;
   --mid:#A6A6A6; --light:#D9D9D9; --paper:#fff; --soft:#F7FAFC;
   --ok:#16864A; --warn:#C77600; --bad:#BA1A1A; --line:rgba(42,131,183,.25);
@@ -120,6 +126,14 @@ select, input[type=number] { width:100%; min-height:36px; border:1px solid rgba(
 .mode-row { display:grid; grid-template-columns:minmax(88px,1fr) minmax(130px,1.25fr); align-items:center; gap:12px; min-height:70px; padding:10px 12px; margin-bottom:10px; border:1px solid rgba(166,166,166,.30); border-radius:12px; background:#fff; }
 .mode-row .label { margin:0; color:var(--ink); font-size:20px; line-height:1; font-weight:900; letter-spacing:0; }
 .mode-row select { min-height:42px; font-size:14px; }
+.label-stack { display:grid; gap:4px; }
+.label-subtext { color:#667; font-size:12px; line-height:1; font-weight:900; }
+.transmission-trigger { width:100%; min-height:56px; border:1px solid rgba(42,131,183,.18); border-radius:12px; background:linear-gradient(180deg,#ffffff 0%,#f4f8fb 100%); padding:9px 12px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; color:var(--ink); box-shadow:none; }
+.transmission-trigger:hover { transform:none; box-shadow:none; }
+.transmission-copy { min-width:0; display:grid; gap:2px; text-align:left; }
+.transmission-primary { color:var(--theme-deep); font-size:13px; line-height:1.1; font-weight:900; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.transmission-secondary { color:#677582; font-size:11px; line-height:1.05; font-weight:900; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.transmission-chevron { color:var(--theme-blue); font-size:20px; line-height:1; font-weight:900; }
 .control-stack { display:grid; gap:8px; }
 .control-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .control-row.three { grid-template-columns:1fr 1fr 1fr; }
@@ -185,6 +199,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .axis-control { min-height:346px; display:grid; grid-template-rows:auto auto minmax(150px,1fr) auto; gap:10px; align-content:stretch; }
 .axis-control > button.blue { position:relative; top:12px; }
 .position-axis { position:relative; width:calc(100% + var(--side-width) + var(--position-gap)); padding:0 0 10px; }
+.current-position-marker { position:absolute; left:calc((var(--abs-thumb-size) / 2) + (var(--marker-pct, 0) * (100% - var(--abs-thumb-size)))); top:18px; width:0; height:0; border-left:10px solid transparent; border-right:10px solid transparent; border-top:14px solid var(--ok); transform:translateX(-50%); filter:drop-shadow(0 2px 4px rgba(22,134,74,.28)); pointer-events:none; opacity:0; transition:left .16s linear, opacity .16s linear; }
+.position-axis.linear-mode .current-position-marker { opacity:1; }
 .axis-scale { display:none; }
 .axis-line { display:none; }
 .axis-zero { display:none; }
@@ -192,6 +208,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .axis-labels span:nth-child(2) { color:var(--bad); padding:0 8px; }
 .axis-labels span:last-child { text-align:right; }
 .target-readout { min-height:150px; border:1px solid rgba(42,131,183,.22); border-radius:12px; background:var(--soft); display:grid; grid-template-columns:minmax(0,1fr) minmax(86px,.62fr); align-items:center; gap:12px; padding:12px; text-align:center; }
+.target-readout.linear-mode { grid-template-columns:1fr; }
+.target-readout.linear-mode .target-cell.secondary { display:none; }
 .target-cell { display:grid; gap:5px; min-width:0; }
 .target-cell:first-child { transform:translateY(.5em); }
 .target-cell:last-child { transform:translateY(.5em); }
@@ -237,6 +255,18 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .point-row strong { font-size:17px; }
 .point-actions { display:flex; gap:8px; justify-content:flex-end; }
 .point-actions button { min-height:34px; padding:7px 12px; font-size:12px; }
+.hidden { display:none !important; }
+.modal-shell { position:fixed; inset:0; display:none; place-items:center; padding:18px; background:rgba(17,24,39,.36); z-index:50; }
+.modal-shell.open { display:grid; }
+.modal-card { width:min(520px,100%); border:1px solid var(--line); border-radius:12px; background:#fff; box-shadow:0 18px 46px rgba(17,24,39,.22); padding:14px; display:grid; gap:12px; }
+.modal-title { margin:0; color:var(--theme-deep); font-size:18px; line-height:1.1; font-weight:900; }
+.modal-grid { display:grid; gap:10px; }
+.modal-mode-row { margin:0; min-height:58px; }
+.modal-ratio-row { display:grid; grid-template-columns:auto minmax(88px,1fr) minmax(78px,.9fr); gap:8px; align-items:center; }
+.modal-ratio-row.motor { grid-template-columns:auto minmax(88px,1fr) auto; }
+.modal-inline-label { color:var(--ink); font-size:14px; font-weight:900; white-space:nowrap; }
+.modal-inline-unit { color:#4c5966; font-size:14px; line-height:1; font-weight:900; white-space:nowrap; }
+.modal-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 @media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .brand-wordmark { font-size:22px; } .protocol-chip { font-size:24px; } .logo { width:40px; height:40px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .position-param { --side-width:108px; } .axis-control { min-height:324px; } .vertical-sliders { min-height:188px; } .vertical-slider input[type=range] { height:122px; } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
 @media (max-width:1180px) { .feedback-card.encoder { grid-template-columns:1fr; } .encoder-title { grid-column:1; grid-row:auto; justify-self:center; align-self:auto; margin-bottom:0; } .encoder-dial { grid-column:1; grid-row:auto; } .feedback-card.encoder .feedback-metrics { grid-column:1; grid-row:auto; } }
 @media (max-width:720px) { .monitor-grid { grid-template-columns:1fr; overflow:hidden; } .right-stack { display:none; } .middle-stack { grid-template-columns:1fr 1fr; } .axis-card { grid-template-columns:140px 1fr; } .status { grid-template-columns:repeat(3,1fr); } .subbar { flex-wrap:wrap; } .tabs { flex:1 0 100%; order:2; } .brand-wordmark { font-size:20px; } .protocol-chip { font-size:20px; } .logo { width:36px; height:36px; } h1 { font-size:22px; } }
@@ -320,6 +350,16 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <option value="gear_cam">电子齿轮</option>
           </select>
         </div>
+        <div class="mode-row">
+          <span class="label-stack"><span id="transmissionLabel" class="label">传动</span><span id="transmissionTypeLabel" class="label-subtext">旋转</span></span>
+          <button class="transmission-trigger" onclick="openTransmissionDialog()">
+            <span class="transmission-copy">
+              <span id="transmissionLoadSummary" class="transmission-primary">负载 360.0 deg</span>
+              <span id="transmissionMotorSummary" class="transmission-secondary">电机 1 Rev</span>
+            </span>
+            <span class="transmission-chevron">›</span>
+          </button>
+        </div>
         <div class="controls">
           <button id="enableToggle" class="enable-toggle power-toggle" onclick="toggleEnable()"><span class="enable-copy"><span class="toggle-title">使能</span><span id="enableToggleText" class="toggle-subtitle">OFF</span></span><span class="toggle-track"><span class="toggle-knob"></span></span></button>
           <button id="motionIndicator" class="enable-toggle motion-toggle" onclick="startSinglePointMotion()"><span class="enable-copy"><span class="toggle-title">启停</span><span id="motionIndicatorText" class="toggle-subtitle">STANDSTILL</span></span><span class="toggle-track"><span class="toggle-knob"></span></span></button>
@@ -338,11 +378,12 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
               <div class="slider-head"><span class="slider-title">目标绝对位置</span></div>
               <div class="position-axis">
                 <div class="axis-labels"><span id="axisMinRev">-200 rev</span><span></span><span id="axisMaxRev">+200 rev</span></div>
+                <div id="currentPositionMarker" class="current-position-marker"></div>
                 <input id="absPos" type="range" min="-1677721600" max="1677721600" step="1024" value="0" oninput="updateSliders()">
               </div>
               <div class="target-readout">
                 <div class="target-cell"><div><span id="targetRevBig" class="target-number">0</span><span class="target-unit">rev</span></div></div>
-                <div class="target-cell"><span id="targetAngleBig" class="target-angle">0.0 deg</span></div>
+                <div class="target-cell secondary"><span id="targetAngleBig" class="target-angle">0.0 deg</span></div>
               </div>
               <button class="blue" onclick="moveAbs()">绝对移动</button>
             </div>
@@ -495,6 +536,56 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
   </div>
 </section>
 </main>
+<div id="transmissionModal" class="modal-shell" onclick="maybeCloseTransmissionDialog(event)">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <h3 id="transmissionModalTitle" class="modal-title">传动设定</h3>
+    <div class="modal-grid">
+      <div class="mode-row modal-mode-row">
+        <span id="transmissionTypeFieldLabel" class="label">运动类型</span>
+        <select id="transmissionType" onchange="onTransmissionTypeChange()">
+          <option value="rotary">旋转</option>
+          <option value="linear">直线</option>
+        </select>
+      </div>
+      <div class="mode-row modal-mode-row">
+        <span id="transmissionTravelModeLabel" class="label">运动方式</span>
+        <select id="transmissionTravelMode" onchange="onTransmissionTravelModeChange()">
+          <option value="periodic">周期</option>
+          <option value="reciprocating">往返</option>
+        </select>
+      </div>
+      <div class="modal-ratio-row">
+        <span id="transmissionAmountLabel" class="modal-inline-label">负载运动</span>
+        <input id="transmissionAmount" type="number" min="0.001" step="0.001" value="360" oninput="updateTransmissionDraft()">
+        <select id="transmissionUnit" onchange="updateTransmissionDraft()"></select>
+      </div>
+      <div class="modal-ratio-row motor">
+        <span id="transmissionRevsLabel" class="modal-inline-label">电机旋转</span>
+        <input id="transmissionRevs" type="number" min="0.001" step="0.001" value="1" oninput="updateTransmissionDraft()">
+        <span class="modal-inline-unit">Rev</span>
+      </div>
+      <div id="transmissionPeriodRow" class="modal-ratio-row">
+        <span id="transmissionPeriodLabel" class="modal-inline-label">周期</span>
+        <input id="transmissionPeriod" type="number" min="0.001" step="0.001" value="360" oninput="updateTransmissionDraft()">
+        <span id="transmissionPeriodUnit" class="modal-inline-unit">deg</span>
+      </div>
+      <div id="transmissionForwardRow" class="modal-ratio-row hidden">
+        <span id="transmissionForwardLabel" class="modal-inline-label">正向极限</span>
+        <input id="transmissionForwardLimit" type="number" step="0.001" value="360" oninput="updateTransmissionDraft()">
+        <span id="transmissionForwardUnit" class="modal-inline-unit">deg</span>
+      </div>
+      <div id="transmissionReverseRow" class="modal-ratio-row hidden">
+        <span id="transmissionReverseLabel" class="modal-inline-label">反向极限</span>
+        <input id="transmissionReverseLimit" type="number" step="0.001" value="-360" oninput="updateTransmissionDraft()">
+        <span id="transmissionReverseUnit" class="modal-inline-unit">deg</span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="transmissionCancelBtn" class="neutral" onclick="closeTransmissionDialog()">取消</button>
+      <button id="transmissionSaveBtn" class="blue" onclick="saveTransmissionDialog()">保存</button>
+    </div>
+  </div>
+</div>
 <script>
 const REV = 8388608;
 const AXIS_DIR = -1;
@@ -576,7 +667,25 @@ const UI_TEXT = {
     faultCode:'错误码',
     gearLockedPrefix:'无法选择电子齿轮模式，因为',
     gearLockedSuffix:'已经将此轴设为主轴',
-    gearUnavailable:'电子齿轮（不可用）'
+    gearUnavailable:'电子齿轮（不可用）',
+    transmissionLabel:'传动',
+    transmissionModalTitle:'传动设定',
+    transmissionTypeFieldLabel:'运动类型',
+    transmissionTravelModeLabel:'运动方式',
+    transmissionAmountLabel:'负载运动',
+    transmissionRevsLabel:'电机旋转',
+    transmissionPeriodLabel:'周期',
+    transmissionForwardLabel:'正向极限',
+    transmissionReverseLabel:'反向极限',
+    transmissionCancelBtn:'取消',
+    transmissionSaveBtn:'保存',
+    rotaryType:'旋转',
+    linearType:'直线',
+    periodicTravel:'周期',
+    reciprocatingTravel:'往返',
+    loadPrefix:'负载 ',
+    motorPrefix:'电机 ',
+    revUnit:'rev'
   },
   en: {
     pageTitle:'Multi-axis Control',
@@ -650,8 +759,37 @@ const UI_TEXT = {
     faultCode:'Error Code',
     gearLockedPrefix:'Electronic gearing is unavailable because ',
     gearLockedSuffix:' is already using this axis as its master',
-    gearUnavailable:'Electronic Gearing (Locked)'
+    gearUnavailable:'Electronic Gearing (Locked)',
+    transmissionLabel:'Transmission',
+    transmissionModalTitle:'Transmission Setup',
+    transmissionTypeFieldLabel:'Motion Type',
+    transmissionTravelModeLabel:'Travel Type',
+    transmissionAmountLabel:'Load Travel',
+    transmissionRevsLabel:'Motor Rotation',
+    transmissionPeriodLabel:'Period',
+    transmissionForwardLabel:'Forward Limit',
+    transmissionReverseLabel:'Reverse Limit',
+    transmissionCancelBtn:'Cancel',
+    transmissionSaveBtn:'Save',
+    rotaryType:'ROTARY',
+    linearType:'LINEAR',
+    periodicTravel:'Periodic',
+    reciprocatingTravel:'Reciprocating',
+    loadPrefix:'Load ',
+    motorPrefix:'Motor ',
+    revUnit:'rev'
   }
+};
+const transmissionUnitSets = {
+  rotary: [
+    {value:'deg', label:'deg'},
+    {value:'rad', label:'rad'}
+  ],
+  linear: [
+    {value:'mm', label:'mm'},
+    {value:'cm', label:'cm'},
+    {value:'m', label:'m'}
+  ]
 };
 let activeDevice = 'mctivity';
 let currentLang = localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'zh';
@@ -662,9 +800,12 @@ const motionStateByDevice = {
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
 };
 const deviceProfiles = {
-  mctivity: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, points:{1:0, 2:REV/2, 3:REV}},
-  fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, points:{1:0, 2:REV/2, 3:REV}}
+  mctivity: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
+  fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
+let uiStateSaveTimer = 0;
+const lastUiStateSnapshot = {mctivity:'', fv3:''};
+let transmissionDraft = null;
 const modeUiStateByDevice = {
   mctivity: {pending:null, interacting:false},
   fv3: {pending:null, interacting:false}
@@ -917,8 +1058,166 @@ function enforceGearConstraints() {
 function currentStatus(device = activeDevice) { return statusByDevice[device]; }
 function currentMotion(device = activeDevice) { return motionStateByDevice[device]; }
 function currentProfile(device = activeDevice) { return deviceProfiles[device]; }
+function normalizedTransmission(profile = currentProfile()) {
+  const source = profile && profile.transmission ? profile.transmission : profile;
+  const tx = Object.assign({type:'rotary', revs:1, amount:360, unit:'deg', travelMode:'periodic', period:null, forwardLimit:null, reverseLimit:null}, source || {});
+  tx.type = tx.type === 'linear' ? 'linear' : 'rotary';
+  tx.revs = Math.max(0.001, Number(tx.revs) || 1);
+  tx.amount = Math.max(0.001, Number(tx.amount) || (tx.type === 'linear' ? 1 : 360));
+  tx.travelMode = tx.travelMode === 'reciprocating' ? 'reciprocating' : 'periodic';
+  tx.period = Math.max(0.001, Number(tx.period) || tx.amount);
+  tx.forwardLimit = Number.isFinite(Number(tx.forwardLimit)) ? Number(tx.forwardLimit) : tx.amount;
+  tx.reverseLimit = Number.isFinite(Number(tx.reverseLimit)) ? Number(tx.reverseLimit) : -tx.amount;
+  const options = transmissionUnitSets[tx.type] || transmissionUnitSets.rotary;
+  if (!options.some(opt => opt.value === tx.unit)) {
+    tx.unit = options[0].value;
+  }
+  return tx;
+}
+function transmissionPerRev(profile = currentProfile()) {
+  const tx = normalizedTransmission(profile);
+  return tx.amount / tx.revs;
+}
+function transmissionValueFromCounts(counts, profile = currentProfile()) {
+  return rev(axisCounts(counts)) * transmissionPerRev(profile);
+}
+function countsFromTransmissionValue(value, profile = currentProfile()) {
+  const tx = normalizedTransmission(profile);
+  const motorRev = Number(value) / transmissionPerRev(tx);
+  return Math.round((motorRev * REV) / AXIS_DIR);
+}
+function transmissionBounds(profile = currentProfile()) {
+  const tx = normalizedTransmission(profile);
+  let minLoad = 0;
+  let maxLoad = tx.period;
+  if (tx.travelMode === 'reciprocating') {
+    minLoad = Math.min(tx.reverseLimit, tx.forwardLimit);
+    maxLoad = Math.max(tx.reverseLimit, tx.forwardLimit);
+  }
+  return {
+    minLoad,
+    maxLoad,
+    minCounts: countsFromTransmissionValue(minLoad, tx),
+    maxCounts: countsFromTransmissionValue(maxLoad, tx)
+  };
+}
+function formatTransmissionValue(value, digits = 1) {
+  const n = Math.abs(Number(value)) < 0.0005 ? 0 : Number(value);
+  return (n > 0 ? '+' : '') + n.toFixed(digits);
+}
+function formatTransmissionScalar(value, unit, digits = 1) {
+  return formatTransmissionValue(value, digits) + ' ' + unit;
+}
+function formatMotorRevScalar(counts, digits = 3) {
+  const motorRev = rev(axisCounts(counts));
+  return (motorRev > 0 ? '+' : '') + motorRev.toFixed(digits) + ' rev';
+}
+function syncTransmissionSummary(device = activeDevice) {
+  const tx = normalizedTransmission(currentProfile(device));
+  const text = UI_TEXT[currentLang];
+  setText('transmissionLabel', text.transmissionLabel);
+  setText('transmissionTypeLabel', tx.type === 'linear' ? text.linearType : text.rotaryType);
+  setText('transmissionLoadSummary', text.loadPrefix + transmissionPerRev(tx).toFixed(1) + ' ' + tx.unit);
+  setText('transmissionMotorSummary', text.motorPrefix + '1 rev');
+}
+function refillTransmissionUnitOptions(type, preferred) {
+  const options = transmissionUnitSets[type] || transmissionUnitSets.rotary;
+  transmissionUnit.innerHTML = options.map(opt => '<option value="' + opt.value + '">' + opt.label + '</option>').join('');
+  transmissionUnit.value = options.some(opt => opt.value === preferred) ? preferred : options[0].value;
+}
+function syncTransmissionTravelFields() {
+  const isPeriodic = transmissionTravelMode.value !== 'reciprocating';
+  transmissionPeriodRow.classList.toggle('hidden', !isPeriodic);
+  transmissionForwardRow.classList.toggle('hidden', isPeriodic);
+  transmissionReverseRow.classList.toggle('hidden', isPeriodic);
+  const unit = transmissionUnit.value || 'deg';
+  setText('transmissionPeriodUnit', unit);
+  setText('transmissionForwardUnit', unit);
+  setText('transmissionReverseUnit', unit);
+}
+function openTransmissionDialog() {
+  const tx = normalizedTransmission(currentProfile());
+  transmissionDraft = Object.assign({}, tx);
+  transmissionType.value = transmissionDraft.type;
+  refillTransmissionUnitOptions(transmissionDraft.type, transmissionDraft.unit);
+  transmissionTravelMode.value = transmissionDraft.travelMode;
+  transmissionRevs.value = transmissionDraft.revs;
+  transmissionAmount.value = transmissionDraft.amount;
+  transmissionPeriod.value = transmissionDraft.period;
+  transmissionForwardLimit.value = transmissionDraft.forwardLimit;
+  transmissionReverseLimit.value = transmissionDraft.reverseLimit;
+  updateTransmissionDraft();
+  transmissionModal.classList.add('open');
+}
+function maybeCloseTransmissionDialog(event) {
+  if (event.target === transmissionModal) closeTransmissionDialog();
+}
+function closeTransmissionDialog() {
+  transmissionModal.classList.remove('open');
+}
+function onTransmissionTypeChange() {
+  const nextType = transmissionType.value === 'linear' ? 'linear' : 'rotary';
+  refillTransmissionUnitOptions(nextType, null);
+  if (nextType === 'rotary' && Number(transmissionAmount.value || 0) === 1) {
+    transmissionAmount.value = 360;
+  }
+  if (Number(transmissionPeriod.value || 0) === 1 && nextType === 'rotary') {
+    transmissionPeriod.value = 360;
+  }
+  updateTransmissionDraft();
+}
+function onTransmissionTravelModeChange() {
+  syncTransmissionTravelFields();
+  updateTransmissionDraft();
+}
+function updateTransmissionDraft() {
+  const type = transmissionType.value === 'linear' ? 'linear' : 'rotary';
+  transmissionDraft = normalizedTransmission({
+    type,
+    revs: Math.max(0.001, Number(transmissionRevs.value) || 1),
+    amount: Math.max(0.001, Number(transmissionAmount.value) || (type === 'linear' ? 1 : 360)),
+    unit: transmissionUnit.value,
+    travelMode: transmissionTravelMode.value === 'reciprocating' ? 'reciprocating' : 'periodic',
+    period: Math.max(0.001, Number(transmissionPeriod.value) || (type === 'linear' ? 1 : 360)),
+    forwardLimit: Number(transmissionForwardLimit.value || 0),
+    reverseLimit: Number(transmissionReverseLimit.value || 0)
+  });
+  transmissionRevs.value = transmissionDraft.revs;
+  transmissionAmount.value = transmissionDraft.amount;
+  transmissionPeriod.value = transmissionDraft.period;
+  transmissionForwardLimit.value = transmissionDraft.forwardLimit;
+  transmissionReverseLimit.value = transmissionDraft.reverseLimit;
+  transmissionTravelMode.value = transmissionDraft.travelMode;
+  syncTransmissionTravelFields();
+}
+function saveTransmissionDialog() {
+  updateTransmissionDraft();
+  currentProfile().transmission = Object.assign({}, transmissionDraft);
+  closeTransmissionDialog();
+  updateSliders();
+}
+async function persistUiState(device = activeDevice) {
+  if (device === activeDevice) saveUiState(device, false);
+  try {
+    await fetch('/api/ui_state', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({device, state: currentProfile(device)})
+    });
+  } catch (err) {
+    console.error(err);
+  }
+}
+function scheduleUiStateSave(device = activeDevice) {
+  if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
+  uiStateSaveTimer = setTimeout(() => {
+    uiStateSaveTimer = 0;
+    persistUiState(device);
+  }, 180);
+}
 function saveUiState(device = activeDevice) {
   const profile = currentProfile(device);
+  profile.transmission = normalizedTransmission(profile);
   profile.absPos = Number(absPos.value);
   profile.absSpeedRpm = Number(absSpeedRpm.value);
   profile.absAccel = Number(absAccel.value);
@@ -930,9 +1229,16 @@ function saveUiState(device = activeDevice) {
   profile.gearMasterRatio = Number(gearMasterRatio.value);
   profile.gearSlaveRatio = Number(gearSlaveRatio.value);
   profile.mode = modeSelect.value || 'position';
+  const snapshot = JSON.stringify(profile);
+  const changed = lastUiStateSnapshot[device] !== snapshot;
+  lastUiStateSnapshot[device] = snapshot;
+  if (changed && (arguments.length < 2 || arguments[1] !== false)) {
+    scheduleUiStateSave(device);
+  }
 }
 function loadUiState(device = activeDevice) {
   const profile = currentProfile(device);
+  profile.transmission = normalizedTransmission(profile);
   absPos.value = profile.absPos;
   absSpeedRpm.value = profile.absSpeedRpm;
   absAccel.value = profile.absAccel;
@@ -951,6 +1257,20 @@ function loadUiState(device = activeDevice) {
   modeSelect.value = profile.mode || 'position';
   syncModeSelectDisabled(device);
   refreshGearPanel(device);
+}
+async function hydrateUiStateFromServer() {
+  try {
+    const res = await fetch('/api/ui_state');
+    const data = await res.json();
+    if (!data || !data.ok || !data.state || !data.state.devices) return;
+    for (const device of axisDevices()) {
+      if (!data.state.devices[device]) continue;
+      Object.assign(deviceProfiles[device], data.state.devices[device]);
+      deviceProfiles[device].transmission = normalizedTransmission(deviceProfiles[device]);
+    }
+  } catch (err) {
+    console.error(err);
+  }
 }
 function fmt(n) { return Math.round(Number(n)).toLocaleString('en-US'); }
 function rev(n) { return Number(n) / REV; }
@@ -983,12 +1303,21 @@ function absoluteMoveMs(target) {
   return Math.min(60000, Math.max(200, ms));
 }
 function motionPayload(target) {
-  return {
+  return Object.assign({
     cmd:'move_abs',
     pos:axisCounts(target),
     move_ms:absoluteMoveMs(target),
     speed_rpm:Number(absSpeedRpm.value || 0),
     acceleration_rpm_s:Number(absAccel.value || 0)
+  }, currentMotionBoundsPayload());
+}
+function currentMotionBoundsPayload(profile = currentProfile()) {
+  const bounds = transmissionBounds(profile);
+  const minNative = axisCounts(bounds.minCounts);
+  const maxNative = axisCounts(bounds.maxCounts);
+  return {
+    min_pos: Math.min(minNative, maxNative),
+    max_pos: Math.max(minNative, maxNative)
   };
 }
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
@@ -1068,6 +1397,23 @@ function refreshStaticText() {
   if (controlTitle) controlTitle.textContent = text.control;
   const modeLabelNode = document.querySelector('.mode-row .label');
   if (modeLabelNode) modeLabelNode.textContent = text.mode;
+  setText('transmissionLabel', text.transmissionLabel);
+  setText('transmissionModalTitle', text.transmissionModalTitle);
+  setText('transmissionTypeFieldLabel', text.transmissionTypeFieldLabel);
+  setText('transmissionTravelModeLabel', text.transmissionTravelModeLabel);
+  setText('transmissionAmountLabel', text.transmissionAmountLabel);
+  setText('transmissionRevsLabel', text.transmissionRevsLabel);
+  setText('transmissionPeriodLabel', text.transmissionPeriodLabel);
+  setText('transmissionForwardLabel', text.transmissionForwardLabel);
+  setText('transmissionReverseLabel', text.transmissionReverseLabel);
+  setText('transmissionCancelBtn', text.transmissionCancelBtn);
+  setText('transmissionSaveBtn', text.transmissionSaveBtn);
+  const transmissionTypeSelect = document.getElementById('transmissionType');
+  if (transmissionTypeSelect && transmissionTypeSelect.options[0]) transmissionTypeSelect.options[0].textContent = text.rotaryType;
+  if (transmissionTypeSelect && transmissionTypeSelect.options[1]) transmissionTypeSelect.options[1].textContent = text.linearType;
+  const transmissionTravelSelect = document.getElementById('transmissionTravelMode');
+  if (transmissionTravelSelect && transmissionTravelSelect.options[0]) transmissionTravelSelect.options[0].textContent = text.periodicTravel;
+  if (transmissionTravelSelect && transmissionTravelSelect.options[1]) transmissionTravelSelect.options[1].textContent = text.reciprocatingTravel;
   const toggleTitles = document.querySelectorAll('.toggle-title');
   if (toggleTitles[0]) toggleTitles[0].textContent = text.enable;
   if (toggleTitles[1]) toggleTitles[1].textContent = text.startStop;
@@ -1083,7 +1429,7 @@ function refreshStaticText() {
   const positionButton = document.querySelector('#panel-position button.blue');
   if (positionButton) positionButton.textContent = text.move;
   const targetUnit = document.querySelector('.target-unit');
-  if (targetUnit) targetUnit.textContent = 'rev';
+  if (targetUnit) targetUnit.textContent = normalizedTransmission(currentProfile()).unit;
   const jogTitles = document.querySelectorAll('#panel-jog .slider-title');
   if (jogTitles[0]) jogTitles[0].textContent = text.relMove;
   if (jogTitles[1]) jogTitles[1].textContent = text.moveTime;
@@ -1362,26 +1708,60 @@ function render(s) {
 }
 function updateSliders() {
   saveUiState();
+  const profile = currentProfile();
+  profile.transmission = normalizedTransmission(profile);
+  const tx = profile.transmission;
+  const bounds = transmissionBounds(profile);
+  const rangeMin = Math.min(bounds.minCounts, bounds.maxCounts);
+  const rangeMax = Math.max(bounds.minCounts, bounds.maxCounts);
+  if (String(absPos.min) !== String(rangeMin)) absPos.min = String(rangeMin);
+  if (String(absPos.max) !== String(rangeMax)) absPos.max = String(rangeMax);
+  absPos.value = String(clamp(Number(absPos.value), rangeMin, rangeMax));
+  profile.absPos = Number(absPos.value);
   const rel = Number(relDelta.value), abs = Number(absPos.value), ms = Number(moveMs.value);
   const vel = Number(velCps.value), tq = Number(torqueCmd.value);
   const speed = Number(absSpeedRpm.value), accel = Number(absAccel.value);
-  const gearMasterVal = Math.max(1, Number(gearMasterRatio.value || 1));
-  const gearSlaveVal = Math.max(1, Number(gearSlaveRatio.value || 1));
   const gearSlaveName = axisDisplayName(activeDevice);
-  setText('relText', fmt(rel) + ' cnt'); setText('relRev', rev(axisCounts(rel)).toFixed(3) + ' rev'); setText('relDeg', (axisCounts(rel) / REV * 360).toFixed(1) + ' deg'); setText('relRpm', rpm(rel, ms).toFixed(1) + ' rpm');
   const status = currentStatus();
-  const current = status ? Number(status.pos) : 0;
-  const target = targetParts(abs);
-  setText('absText', revText(rev(abs))); setText('targetRevBig', String(target.turns)); setText('targetAngleBig', signedNumber(target.angle, 1) + ' deg');
-  setText('axisMinRev', revText(rev(Number(absPos.min)), 0)); setText('axisMaxRev', revText(rev(Number(absPos.max)), 0));
+  const current = status ? axisCounts(Number(status.pos)) : abs;
+  const isLinear = tx.type === 'linear';
+  const targetValue = transmissionValueFromCounts(abs, profile);
+  const relValue = transmissionValueFromCounts(rel, profile);
+  syncTransmissionSummary(activeDevice);
+  setText('relText', formatTransmissionScalar(relValue, tx.unit, 1));
+  setText('relRev', UI_TEXT[currentLang].motorPrefix + formatMotorRevScalar(rel, 3));
+  setText('relDeg', UI_TEXT[currentLang].loadPrefix + formatTransmissionScalar(relValue, tx.unit, 1));
+  setText('relRpm', rpm(rel, ms).toFixed(1) + ' rpm');
+  setText('absText', formatTransmissionScalar(targetValue, tx.unit, 1));
+  setText('targetRevBig', formatTransmissionValue(targetValue, 1));
+  setText('targetAngleBig', isLinear ? '' : UI_TEXT[currentLang].motorPrefix + formatMotorRevScalar(abs, 3));
+  const targetUnit = document.querySelector('.target-unit');
+  if (targetUnit) targetUnit.textContent = tx.unit;
+  setText('axisMinRev', formatTransmissionScalar(bounds.minLoad, tx.unit, 1));
+  setText('axisMaxRev', formatTransmissionScalar(bounds.maxLoad, tx.unit, 1));
+  const targetReadout = document.querySelector('.target-readout');
+  if (targetReadout) targetReadout.classList.toggle('linear-mode', isLinear);
+  const positionAxis = document.querySelector('.position-axis');
+  if (positionAxis) positionAxis.classList.toggle('linear-mode', isLinear);
+  const currentPositionMarker = document.getElementById('currentPositionMarker');
+  if (currentPositionMarker) {
+    const currentLoadPos = transmissionValueFromCounts(current, profile);
+    const loadSpan = Math.max(0.001, bounds.maxLoad - bounds.minLoad);
+    const markerPct = clamp((currentLoadPos - bounds.minLoad) / loadSpan, 0, 1);
+    currentPositionMarker.style.setProperty('--marker-pct', String(markerPct));
+  }
   setText('absSpeedText', fmt(speed) + ' rpm'); setText('absAccelText', fmt(accel) + ' rpm/s');
   renderGearWheel('master');
   renderGearWheel('slave');
   setText('gearSlaveName', gearSlaveName);
   setText('msText', fmt(ms) + ' ms');
   setText('velText', fmt(vel) + ' cnt/s'); setText('torqueText', tq + '%');
-  const points = currentProfile().points;
-  for (const k of [1,2,3]) { setText('p' + k, fmt(points[k]) + ' cnt'); setText('p' + k + 'Quick', fmt(points[k]) + ' cnt'); }
+  const points = profile.points;
+  for (const k of [1,2,3]) {
+    const pointText = formatTransmissionScalar(transmissionValueFromCounts(points[k], profile), tx.unit, 1);
+    setText('p' + k, pointText);
+    setText('p' + k + 'Quick', pointText);
+  }
 }
 function applyConfig() {
   relDelta.value = cfgRel.value; absPos.value = cfgAbs.value; moveMs.value = cfgMs.value; velCps.value = cfgVel.value;
@@ -1394,7 +1774,7 @@ function toggleEnable() {
   const status = currentStatus();
   const motionState = currentMotion();
   if (!(status && status.servo_request)) {
-    const currentPos = status ? Number(status.pos || 0) : 0;
+    const currentPos = status ? axisCounts(Number(status.pos || 0)) : 0;
     absPos.value = currentPos;
     currentProfile().absPos = currentPos;
     updateSliders();
@@ -1578,11 +1958,19 @@ async function startSinglePointMotion() {
 }
 function moveAbs() { return api(motionPayload(Number(absPos.value))); }
 function returnZero() { absPos.value = 0; updateSliders(); return api(motionPayload(0)); }
-function moveRel() { return api({cmd:'move_rel', delta:Number(relDelta.value), move_ms:Number(moveMs.value)}); }
+function moveRel() {
+  return api(Object.assign({
+    cmd:'move_rel',
+    delta:Number(relDelta.value),
+    move_ms:Number(moveMs.value),
+    speed_rpm:Number(absSpeedRpm.value || 0),
+    acceleration_rpm_s:Number(absAccel.value || 0)
+  }, currentMotionBoundsPayload()));
+}
 function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:v}); }
 function sendTorque() { return api({cmd:'torque_cmd', torque:Number(torqueCmd.value)}); }
 function savePoint(n) { if (currentStatus()) { currentProfile().points[n] = axisCounts(Number(currentStatus().pos)); updateSliders(); } }
-function gotoPoint(n) { absPos.value = currentProfile().points[n]; updateSliders(); return api(motionPayload(currentProfile().points[n])); }
+function gotoPoint(n) { absPos.value = currentProfile().points[n]; updateSliders(); return api(motionPayload(Number(absPos.value))); }
 function lockViewport() {
   document.addEventListener('gesturestart', e => e.preventDefault(), {passive:false});
   document.addEventListener('touchmove', e => {
@@ -1616,12 +2004,15 @@ if (modeSelect) {
     syncModePanels((currentModeUi().pending || (currentStatus() && currentStatus().control_mode) || currentProfile().mode || modeSelect.value || 'position'), true);
   });
 }
-loadUiState('mctivity');
-enforceGearConstraints();
-applyLanguage();
-updateSliders();
-setInterval(() => api({cmd:'status'}).catch(() => {}), 300);
-api({cmd:'status'}).catch(() => {});
+async function bootstrapUi() {
+  await hydrateUiStateFromServer();
+  loadUiState('mctivity');
+  enforceGearConstraints();
+  applyLanguage();
+  setInterval(() => api({cmd:'status'}).catch(() => {}), 300);
+  api({cmd:'status'}).catch(() => {});
+}
+bootstrapUi();
 </script>
 </body>
 </html>
@@ -1641,6 +2032,102 @@ def motiond_command(payload, port=MOTIOND_PORT):
     if not data:
         return {"ok": False, "error": "motion daemon returned no data"}
     return json.loads(data.decode("utf-8"))
+
+
+def _default_ui_state():
+    return {"devices": {}}
+
+
+def _normalize_ui_device_state(raw):
+    if not isinstance(raw, dict):
+        return None
+    normalized = {}
+    numeric_fields = (
+        "absPos",
+        "absSpeedRpm",
+        "absAccel",
+        "relDelta",
+        "moveMs",
+        "velCps",
+        "torqueCmd",
+        "gearMasterRatio",
+        "gearSlaveRatio",
+    )
+    for field in numeric_fields:
+        if field in raw:
+            try:
+                normalized[field] = float(raw[field])
+            except (TypeError, ValueError):
+                pass
+    if "mode" in raw and isinstance(raw["mode"], str):
+        normalized["mode"] = raw["mode"]
+    if "gearMaster" in raw and isinstance(raw["gearMaster"], str):
+        normalized["gearMaster"] = raw["gearMaster"]
+    points = raw.get("points")
+    if isinstance(points, dict):
+        normalized_points = {}
+        for key, value in points.items():
+            try:
+                normalized_points[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if normalized_points:
+            normalized["points"] = normalized_points
+    tx = raw.get("transmission")
+    if isinstance(tx, dict):
+        normalized_tx = {}
+        for key in ("type", "unit", "travelMode"):
+            if key in tx and isinstance(tx[key], str):
+                normalized_tx[key] = tx[key]
+        for key in ("revs", "amount", "period", "forwardLimit", "reverseLimit"):
+            if key in tx:
+                try:
+                    normalized_tx[key] = float(tx[key])
+                except (TypeError, ValueError):
+                    continue
+        if normalized_tx:
+            normalized["transmission"] = normalized_tx
+    return normalized
+
+
+def load_ui_state():
+    with _ui_state_lock:
+        if not os.path.exists(UI_STATE_PATH):
+            return _default_ui_state()
+        try:
+            with open(UI_STATE_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            return _default_ui_state()
+        if not isinstance(data, dict):
+            return _default_ui_state()
+        devices = data.get("devices")
+        if not isinstance(devices, dict):
+            return _default_ui_state()
+        normalized = {"devices": {}}
+        for device in ("mctivity", "fv3"):
+            if device not in devices:
+                continue
+            device_state = _normalize_ui_device_state(devices[device])
+            if device_state:
+                normalized["devices"][device] = device_state
+        return normalized
+
+
+def save_ui_state(device, state):
+    normalized_state = _normalize_ui_device_state(state)
+    if device not in ("mctivity", "fv3") or normalized_state is None:
+        raise ValueError("invalid ui state payload")
+    with _ui_state_lock:
+        merged = load_ui_state()
+        merged["devices"][device] = normalized_state
+        directory = os.path.dirname(UI_STATE_PATH)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp_path = UI_STATE_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, UI_STATE_PATH)
 
 
 _fv3_cache = None
@@ -1810,23 +2297,35 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(motiond_command({"cmd": "status"}))
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 503)
+        elif path == "/api/ui_state":
+            try:
+                self.send_json({"ok": True, "state": load_ui_state()})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 503)
         else:
             self.send_error(404)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/command":
+        path = urlparse(self.path).path
+        if path not in ("/api/command", "/api/ui_state"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(body.decode("utf-8"))
-            device = str(payload.pop("device", "mctivity")).lower()
-            if device == "fv3":
-                status = fv3_command(payload)
-                self.send_json(status, 400 if not status.get("ok") else 200)
+            if path == "/api/ui_state":
+                device = str(payload.get("device", "mctivity")).lower()
+                state = payload.get("state", {})
+                save_ui_state(device, state)
+                self.send_json({"ok": True, "state": load_ui_state()})
             else:
-                self.send_json(motiond_command(payload))
+                device = str(payload.pop("device", "mctivity")).lower()
+                if device == "fv3":
+                    status = fv3_command(payload)
+                    self.send_json(status, 400 if not status.get("ok") else 200)
+                else:
+                    self.send_json(motiond_command(payload))
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, 503)
 

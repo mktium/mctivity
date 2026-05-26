@@ -1,6 +1,15 @@
-# mctivity 1.0
+# mctivity
 
 `mctivity` 是一套面向 EtherCAT 伺服控制场景的双轴运动控制软件，包含运动守护进程、Web HMI 和命令行控制工具。
+
+当前版本：`v1.1.0`，增加 Absolute Positioning 相关能力。
+
+说明：本仓库目录名仍为 `1.0`，用于延续原始 1.0 代码和部署结构；版本状态以 Git 标签为准。
+
+## 版本记录
+
+- `v1.1.0`：增加 Absolute Positioning、传动设定、软限位、速度/加速度运动曲线、HMI 状态持久化。
+- `v1.0.0`：Initial open-source 1.0 release。
 
 ## 项目组成
 
@@ -37,7 +46,72 @@
 - `GET /`
 - `GET /api/status?device=mctivity`
 - `GET /api/status?device=fv3`
+- `GET /api/ui_state`
+- `POST /api/ui_state`
 - `POST /api/command`
+
+## v1.1.0 - Absolute Positioning（2026-05-22）
+
+本版本在保留 `mctivity_*` 命名和原有部署结构的基础上，最小化合入了传动设定、软限位和速度/加速度运动曲线相关能力。
+
+### 运动守护进程
+
+文件：
+
+```text
+mctivity_pdo_monitor/mctivity_motiond.c
+```
+
+本次新增和调整：
+
+- 增加 `clear_motion()`，统一清理运动状态，避免不同命令路径残留旧运动参数。
+- 增加 `profile_active` 运动状态，用于按 `speed_rpm` 和 `acceleration_rpm_s` 做速度/加速度约束移动。
+- `move_abs` 和 `move_rel` 支持以下附加字段：
+  - `speed_rpm`
+  - `acceleration_rpm_s`
+  - `min_pos`
+  - `max_pos`
+- `min_pos/max_pos` 是传给 motion daemon 的软件目标限位，守护进程会在执行前夹紧目标位置。
+- `home` 和 `set_zero` 行为已拆开：
+  - `home` 会切到 `homing` 模式，并记录 `last_command=home`
+  - `set_zero` 只将当前位置记录为软件零点，并记录 `last_command=set_zero`
+
+### HMI
+
+文件：
+
+```text
+mctivity_hmi/mctivity_hmi.py
+```
+
+本次新增和调整：
+
+- 新增传动设定弹窗。
+- 支持旋转/直线两类负载单位换算。
+- 支持周期/往返两类行程模式。
+- HMI 根据传动设定计算绝对位置滑条软限位，并在发送运动命令时同步带上 `min_pos/max_pos`。
+- 直线模式下会显示当前位置绿色箭头。
+- 新增界面状态持久化接口：
+  - `GET /api/ui_state`
+  - `POST /api/ui_state`
+
+默认界面状态文件为：
+
+```text
+mctivity_hmi/mctivity_hmi_state.json
+```
+
+可通过环境变量覆盖：
+
+```bash
+MCTIVITY_UI_STATE_PATH=/path/to/state.json
+```
+
+### 接手注意
+
+- 这次没有把任何 `mctivity_*` 文件、服务或设备名改成其他项目名。
+- HMI 里的显示坐标和 motion daemon 的电机坐标方向不同，软限位下发前已经做了方向换算；后续修改运动目标相关逻辑时要保留这一点。
+- 如果要回滚到 2026-05-22 更新前的现场版本，优先使用项目工作纪要中记录的远端备份目录。
 
 ## 依赖
 
@@ -63,6 +137,19 @@ make all
 ```
 
 `Makefile` 是这套 C 程序原本就在使用的编译文件，用来统一生成几个可执行程序，适合继续保留在公开仓库里。
+
+单独编译运动守护进程：
+
+```bash
+cd mctivity_pdo_monitor
+make mctivity_motiond
+```
+
+没有完整 `make` 环境时，也可以用：
+
+```bash
+cc -O2 -Wall -Wextra -o mctivity_motiond mctivity_motiond.c -lethercat
+```
 
 ## 手工运行
 
