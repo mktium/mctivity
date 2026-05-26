@@ -177,10 +177,16 @@ typedef struct {
 
 typedef struct {
     int moving;
+    int profile_active;
     uint32_t step;
     uint32_t steps;
     int32_t from;
     int32_t to;
+    int32_t current_velocity_cps;
+    int32_t max_velocity_cps;
+    uint32_t accel_cps2;
+    int32_t min_target_user;
+    int32_t max_target_user;
 } motion_t;
 
 typedef struct {
@@ -298,6 +304,17 @@ static int32_t smooth_move(int32_t from, int32_t to, uint32_t step, uint32_t ste
     double x = (double)step / (double)steps;
     double s = x * x * (3.0 - 2.0 * x);
     return from + (int32_t)((to - from) * s);
+}
+
+static int32_t clamp_i32(int32_t value, int32_t min_value, int32_t max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
 }
 
 static int find_i32(const char *line, const char *key, int32_t *out)
@@ -463,6 +480,22 @@ static int32_t decelerate_velocity(int32_t velocity_cps, uint32_t decel_cps2)
     return 0;
 }
 
+static uint32_t rpm_to_counts_s(uint32_t rpm)
+{
+    int64_t counts_s;
+    if (rpm == 0) {
+        return 0;
+    }
+    counts_s = ((int64_t)rpm * COUNTS_PER_REV) / 60LL;
+    if (counts_s < 1) {
+        return 1U;
+    }
+    if (counts_s > INT32_MAX) {
+        return INT32_MAX;
+    }
+    return (uint32_t)counts_s;
+}
+
 static uint32_t rpm_s_to_counts_s2(uint32_t rpm_s)
 {
     int64_t counts_s2;
@@ -490,21 +523,136 @@ static int ready_for_motion(const axis_runtime_t *ax)
     return ax->st.enabled && ax->st.enable_settle_cycles == 0 && !ax->st.fault;
 }
 
-static void start_motion_to(axis_runtime_t *ax, int32_t target_user, uint32_t move_ms)
+static void clear_motion(axis_runtime_t *ax)
 {
+    memset(&ax->motion, 0, sizeof(ax->motion));
+}
+
+static void start_motion_to(axis_runtime_t *ax, int32_t target_user, uint32_t move_ms, uint32_t speed_rpm,
+                            uint32_t accel_rpm_s, int have_limits, int32_t min_target_user, int32_t max_target_user)
+{
+    int32_t requested_target_user = target_user;
+    uint32_t max_velocity_cps = rpm_to_counts_s(speed_rpm);
+    uint32_t accel_cps2 = rpm_s_to_counts_s2(accel_rpm_s);
     if (move_ms == 0) {
         move_ms = DEFAULT_MOVE_MS;
     }
-    ax->motion.from = ax->st.target_raw;
+    if (have_limits) {
+        if (min_target_user > max_target_user) {
+            int32_t tmp = min_target_user;
+            min_target_user = max_target_user;
+            max_target_user = tmp;
+        }
+        target_user = clamp_i32(target_user, min_target_user, max_target_user);
+    } else {
+        min_target_user = INT32_MIN;
+        max_target_user = INT32_MAX;
+    }
+    clear_motion(ax);
+    ax->motion.from = ax->st.pos_raw;
     ax->motion.to = ax->st.soft_zero_raw + target_user;
     ax->motion.steps = move_ms;
     ax->motion.step = 0;
     ax->motion.moving = 1;
+    ax->motion.profile_active = max_velocity_cps > 0;
+    ax->motion.max_velocity_cps = (int32_t)max_velocity_cps;
+    ax->motion.accel_cps2 = accel_cps2;
+    ax->motion.min_target_user = min_target_user;
+    ax->motion.max_target_user = max_target_user;
     ax->stop_velocity_cps = 0;
     ax->st.jog_velocity_cps = 0;
     ax->velocity_remainder = 0;
+    ax->st.target_raw = ax->st.pos_raw;
     ax->st.target_user = target_user;
-    snprintf(ax->st.message, sizeof(ax->st.message), "moving to %d counts in %u ms", target_user, move_ms);
+    if (ax->motion.profile_active) {
+        snprintf(
+            ax->st.message,
+            sizeof(ax->st.message),
+            requested_target_user != target_user ? "profile move limited to %d counts @ %u rpm / %u rpm/s"
+                                                 : "profile move to %d counts @ %u rpm / %u rpm/s",
+            target_user,
+            speed_rpm,
+            accel_rpm_s ? accel_rpm_s : DEFAULT_STOP_DECEL_RPM_S);
+    } else {
+        snprintf(
+            ax->st.message,
+            sizeof(ax->st.message),
+            requested_target_user != target_user ? "moving to limited target %d counts in %u ms"
+                                                 : "moving to %d counts in %u ms",
+            target_user,
+            move_ms);
+    }
+}
+
+static void update_profile_motion(axis_runtime_t *ax)
+{
+    motion_t *motion = &ax->motion;
+    status_t *s = &ax->st;
+    int64_t remaining = (int64_t)motion->to - (int64_t)s->target_raw;
+    int32_t direction = remaining > 0 ? 1 : (remaining < 0 ? -1 : 0);
+    int32_t velocity = motion->current_velocity_cps;
+    int32_t velocity_sign = sign_i32(velocity);
+    uint32_t accel_cps2 = motion->accel_cps2 ? motion->accel_cps2 : rpm_s_to_counts_s2(DEFAULT_STOP_DECEL_RPM_S);
+    int32_t velocity_step = (int32_t)(accel_cps2 / 1000U);
+    int32_t desired_velocity = 0;
+    int64_t stop_distance = 0;
+    int32_t position_step;
+    int32_t next_target_raw;
+
+    if (velocity_step < 1) {
+        velocity_step = 1;
+    }
+    if (direction == 0 && velocity == 0) {
+        s->target_raw = motion->to;
+        s->target_user = s->target_raw - s->soft_zero_raw;
+        clear_motion(ax);
+        ax->velocity_remainder = 0;
+        snprintf(s->message, sizeof(s->message), "motion complete");
+        return;
+    }
+
+    if (velocity != 0) {
+        stop_distance = ((int64_t)velocity * (int64_t)velocity) / (2LL * (int64_t)accel_cps2);
+    }
+
+    if (direction == 0 || (velocity_sign != 0 && velocity_sign != direction) ||
+        stop_distance >= (remaining < 0 ? -remaining : remaining)) {
+        desired_velocity = 0;
+    } else {
+        desired_velocity = direction * motion->max_velocity_cps;
+    }
+
+    if (velocity < desired_velocity) {
+        velocity += velocity_step;
+        if (velocity > desired_velocity) {
+            velocity = desired_velocity;
+        }
+    } else if (velocity > desired_velocity) {
+        velocity -= velocity_step;
+        if (velocity < desired_velocity) {
+            velocity = desired_velocity;
+        }
+    }
+
+    motion->current_velocity_cps = velocity;
+    position_step = velocity_step_counts(ax, motion->current_velocity_cps);
+    if (position_step == 0 && direction != 0 && motion->current_velocity_cps == 0) {
+        motion->current_velocity_cps = direction * velocity_step;
+        position_step = velocity_step_counts(ax, motion->current_velocity_cps);
+    }
+    next_target_raw = clamp_i64_to_i32((int64_t)s->target_raw + (int64_t)position_step);
+    if ((direction > 0 && next_target_raw > motion->to) || (direction < 0 && next_target_raw < motion->to)) {
+        next_target_raw = motion->to;
+        motion->current_velocity_cps = 0;
+    }
+    s->target_raw = next_target_raw;
+    s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+    s->target_raw = s->soft_zero_raw + s->target_user;
+    if (s->target_raw == motion->to && motion->current_velocity_cps == 0) {
+        clear_motion(ax);
+        ax->velocity_remainder = 0;
+        snprintf(s->message, sizeof(s->message), "motion complete");
+    }
 }
 
 static void send_status_fd(int fd, int axis)
@@ -556,7 +704,7 @@ static void handle_command(int fd, const char *line)
     if (strstr(line, "\"cmd\":\"enable\"") || strstr(line, "cmd=enable")) {
         s->servo_request = 1;
         s->enable_settle_cycles = ENABLE_SETTLE_CYCLES;
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -575,7 +723,7 @@ static void handle_command(int fd, const char *line)
     if (strstr(line, "\"cmd\":\"disable\"") || strstr(line, "cmd=disable")) {
         s->servo_request = 0;
         s->enable_settle_cycles = 0;
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -608,7 +756,12 @@ static void handle_command(int fd, const char *line)
         } else if (find_u32(line, "deceleration", &decel_rpm_s)) {
             decel = rpm_s_to_counts_s2(decel_rpm_s);
         }
-        ax->motion.moving = 0;
+        if (ax->motion.profile_active && ax->motion.current_velocity_cps != 0) {
+            seed_velocity_cps = ax->motion.current_velocity_cps;
+        } else {
+            seed_velocity_cps = ax->target_velocity_cps;
+        }
+        clear_motion(ax);
         s->enable_settle_cycles = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -616,7 +769,6 @@ static void handle_command(int fd, const char *line)
         ax->fv3_halt_cycles = 0;
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
-        seed_velocity_cps = ax->target_velocity_cps;
         if (axis == AXIS_FV3 && ax->fv3_feedback_velocity_cps != 0) {
             seed_velocity_cps = ax->fv3_feedback_velocity_cps;
         }
@@ -670,7 +822,7 @@ static void handle_command(int fd, const char *line)
         strstr(line, "\"cmd\":\"reset_fault\"") || strstr(line, "cmd=reset_fault")) {
         s->servo_request = 0;
         s->enable_settle_cycles = 0;
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -689,12 +841,15 @@ static void handle_command(int fd, const char *line)
 
     if (strstr(line, "\"cmd\":\"set_zero\"") || strstr(line, "cmd=set_zero") ||
         strstr(line, "\"cmd\":\"home\"") || strstr(line, "cmd=home")) {
-        set_control_mode(ax, "homing");
-        ax->commanded_mode = mode_code_for_name("homing");
+        int is_home = strstr(line, "\"cmd\":\"home\"") || strstr(line, "cmd=home");
+        if (is_home) {
+            set_control_mode(ax, "homing");
+            ax->commanded_mode = mode_code_for_name("homing");
+        }
         s->soft_zero_raw = s->pos_raw;
         s->target_raw = s->pos_raw;
         s->target_user = 0;
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -704,8 +859,10 @@ static void handle_command(int fd, const char *line)
         ax->fv3_halt_cycles = 0;
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
-        strncpy(s->last_command, "set_zero", sizeof(s->last_command) - 1);
-        snprintf(s->message, sizeof(s->message), "%s current position set as zero", axis_label(axis));
+        strncpy(s->last_command, is_home ? "home" : "set_zero", sizeof(s->last_command) - 1);
+        snprintf(s->message, sizeof(s->message),
+                 is_home ? "%s homing zero updated at current position" : "%s current position set as zero",
+                 axis_label(axis));
         send_status_fd(fd, axis);
         return;
     }
@@ -716,7 +873,7 @@ static void handle_command(int fd, const char *line)
             send_error_fd(fd, "set_mode requires a supported mode");
             return;
         }
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -795,7 +952,7 @@ static void handle_command(int fd, const char *line)
         }
         set_control_mode(ax, "gear_cam");
         ax->commanded_mode = mode_code_for_name("position");
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -831,7 +988,12 @@ static void handle_command(int fd, const char *line)
 
     if (strstr(line, "\"cmd\":\"move_abs\"") || strstr(line, "cmd=move_abs")) {
         int32_t pos;
+        int32_t min_pos = 0;
+        int32_t max_pos = 0;
         uint32_t move_ms = DEFAULT_MOVE_MS;
+        uint32_t speed_rpm = 0;
+        uint32_t accel_rpm_s = 0;
+        int have_limits = 0;
         if (!ready_for_motion(ax)) {
             send_error_fd(fd, "servo is not ready for motion; enable and wait for settle first");
             return;
@@ -840,23 +1002,26 @@ static void handle_command(int fd, const char *line)
             send_error_fd(fd, "move_abs requires pos");
             return;
         }
+        have_limits = find_i32(line, "min_pos", &min_pos) && find_i32(line, "max_pos", &max_pos);
+        (void)find_u32(line, "move_ms", &move_ms);
+        (void)find_u32(line, "speed_rpm", &speed_rpm);
+        (void)find_u32(line, "acceleration_rpm_s", &accel_rpm_s);
         set_control_mode(ax, "position");
         ax->commanded_mode = mode_code_for_name("position");
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
         if (axis == AXIS_FV3) {
-            ax->motion.moving = 0;
+            clear_motion(ax);
             ax->stop_velocity_cps = 0;
             s->jog_velocity_cps = 0;
             ax->velocity_remainder = 0;
-            s->target_raw = s->soft_zero_raw + pos;
-            s->target_user = pos;
+            s->target_user = have_limits ? clamp_i32(pos, min_pos, max_pos) : pos;
+            s->target_raw = s->soft_zero_raw + s->target_user;
             ax->pp_pulse_cycles = 30;
             ax->fv3_halt_cycles = 0;
-            snprintf(s->message, sizeof(s->message), "PP move_abs to %d counts", pos);
+            snprintf(s->message, sizeof(s->message), "PP move_abs to %d counts", s->target_user);
         } else {
-            (void)find_u32(line, "move_ms", &move_ms);
-            start_motion_to(ax, pos, move_ms);
+            start_motion_to(ax, pos, move_ms, speed_rpm, accel_rpm_s, have_limits, min_pos, max_pos);
         }
         strncpy(s->last_command, "move_abs", sizeof(s->last_command) - 1);
         send_status_fd(fd, axis);
@@ -865,7 +1030,12 @@ static void handle_command(int fd, const char *line)
 
     if (strstr(line, "\"cmd\":\"move_rel\"") || strstr(line, "cmd=move_rel")) {
         int32_t delta;
+        int32_t min_pos = 0;
+        int32_t max_pos = 0;
         uint32_t move_ms = DEFAULT_MOVE_MS;
+        uint32_t speed_rpm = 0;
+        uint32_t accel_rpm_s = 0;
+        int have_limits = 0;
         if (!ready_for_motion(ax)) {
             send_error_fd(fd, "servo is not ready for motion; enable and wait for settle first");
             return;
@@ -874,23 +1044,29 @@ static void handle_command(int fd, const char *line)
             send_error_fd(fd, "move_rel requires delta");
             return;
         }
+        have_limits = find_i32(line, "min_pos", &min_pos) && find_i32(line, "max_pos", &max_pos);
+        (void)find_u32(line, "move_ms", &move_ms);
+        (void)find_u32(line, "speed_rpm", &speed_rpm);
+        (void)find_u32(line, "acceleration_rpm_s", &accel_rpm_s);
         set_control_mode(ax, axis == AXIS_FV3 ? "position" : "jog");
         ax->commanded_mode = mode_code_for_name(axis == AXIS_FV3 ? "position" : "jog");
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
         if (axis == AXIS_FV3) {
-            ax->motion.moving = 0;
+            clear_motion(ax);
             ax->stop_velocity_cps = 0;
             s->jog_velocity_cps = 0;
             ax->velocity_remainder = 0;
             s->target_user = s->target_user + delta;
+            if (have_limits) {
+                s->target_user = clamp_i32(s->target_user, min_pos, max_pos);
+            }
             s->target_raw = s->soft_zero_raw + s->target_user;
             ax->pp_pulse_cycles = 30;
             ax->fv3_halt_cycles = 0;
             snprintf(s->message, sizeof(s->message), "PP move_rel by %d counts", delta);
         } else {
-            (void)find_u32(line, "move_ms", &move_ms);
-            start_motion_to(ax, s->target_user + delta, move_ms);
+            start_motion_to(ax, s->target_user + delta, move_ms, speed_rpm, accel_rpm_s, have_limits, min_pos, max_pos);
         }
         strncpy(s->last_command, "move_rel", sizeof(s->last_command) - 1);
         send_status_fd(fd, axis);
@@ -910,7 +1086,7 @@ static void handle_command(int fd, const char *line)
         ax->commanded_mode = mode_code_for_name("velocity");
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = velocity;
         ax->velocity_remainder = 0;
@@ -930,7 +1106,7 @@ static void handle_command(int fd, const char *line)
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
         s->torque_cmd = torque;
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -1069,7 +1245,7 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
     }
 
     if (s->fault) {
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -1083,7 +1259,7 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
     }
 
     if (s->servo_request && (!s->enabled || s->enable_settle_cycles > 0)) {
-        ax->motion.moving = 0;
+        clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
@@ -1126,15 +1302,20 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         }
         gear_tracking_active = 1;
     } else if (ax->motion.moving && s->enabled) {
-        s->target_raw = smooth_move(ax->motion.from, ax->motion.to, ax->motion.step, ax->motion.steps);
-        s->target_user = s->target_raw - s->soft_zero_raw;
-        if (ax->motion.step >= ax->motion.steps) {
-            ax->motion.moving = 0;
-            s->target_raw = ax->motion.to;
-            s->target_user = s->target_raw - s->soft_zero_raw;
-            snprintf(s->message, sizeof(s->message), "motion complete");
+        if (ax->motion.profile_active) {
+            update_profile_motion(ax);
         } else {
-            ax->motion.step++;
+            s->target_raw = smooth_move(ax->motion.from, ax->motion.to, ax->motion.step, ax->motion.steps);
+            s->target_user = s->target_raw - s->soft_zero_raw;
+            if (ax->motion.step >= ax->motion.steps) {
+                int32_t legacy_motion_target = ax->motion.to;
+                clear_motion(ax);
+                s->target_raw = legacy_motion_target;
+                s->target_user = s->target_raw - s->soft_zero_raw;
+                snprintf(s->message, sizeof(s->message), "motion complete");
+            } else {
+                ax->motion.step++;
+            }
         }
     } else if (ax->stop_velocity_cps != 0 && s->enabled) {
         s->target_raw += velocity_step_counts(ax, ax->stop_velocity_cps);
