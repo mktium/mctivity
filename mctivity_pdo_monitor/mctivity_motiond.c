@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -32,6 +33,9 @@
 #define DEFAULT_JOG_VELOCITY 200000
 #define COUNTS_PER_REV 8388608LL
 #define DEFAULT_STOP_DECEL_RPM_S 300U
+#define CURVE_BLEND_LINEAR 0
+#define CURVE_BLEND_SMOOTH 1
+#define CURVE_BLEND_AGGRESSIVE 2
 
 static volatile sig_atomic_t running = 1;
 
@@ -178,6 +182,7 @@ typedef struct {
 typedef struct {
     int moving;
     int profile_active;
+    int curve_active;
     uint32_t step;
     uint32_t steps;
     int32_t from;
@@ -185,8 +190,22 @@ typedef struct {
     int32_t current_velocity_cps;
     int32_t max_velocity_cps;
     uint32_t accel_cps2;
+    uint32_t decel_cps2;
     int32_t min_target_user;
     int32_t max_target_user;
+    int curve_blend;
+    uint32_t curve_dwell_ms;
+    uint32_t curve_dwell_elapsed_ms;
+    double curve_elapsed_s;
+    double curve_t_acc_s;
+    double curve_t_cruise_s;
+    double curve_t_dec_s;
+    double curve_total_motion_s;
+    double curve_distance_counts;
+    double curve_position_counts;
+    double curve_vpeak_cps;
+    double curve_accel_cps2_f;
+    double curve_decel_cps2_f;
 } motion_t;
 
 typedef struct {
@@ -317,24 +336,57 @@ static int32_t clamp_i32(int32_t value, int32_t min_value, int32_t max_value)
     return value;
 }
 
-static int find_i32(const char *line, const char *key, int32_t *out)
+static const char *find_json_key(const char *line, const char *key)
 {
     char pattern[64];
     const char *p;
+    size_t key_len;
 
+    key_len = strlen(key);
+    if (key_len + 4 >= sizeof(pattern)) {
+        return NULL;
+    }
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    p = strstr(line, pattern);
-    if (!p) {
-        p = strstr(line, key);
+    p = line;
+    while ((p = strstr(p, pattern)) != NULL) {
+        const char *q = p + strlen(pattern);
+        while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') {
+            q++;
+        }
+        if (*q == ':') {
+            return q + 1;
+        }
+        p++;
     }
+    return NULL;
+}
+
+static int find_i32(const char *line, const char *key, int32_t *out)
+{
+    const char *p = find_json_key(line, key);
+    char *end = NULL;
+    long value;
     if (!p) {
         return 0;
     }
-    p = strchr(p, ':');
-    if (!p) {
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    errno = 0;
+    value = strtol(p, &end, 0);
+    if (p == end || errno == ERANGE) {
         return 0;
     }
-    *out = (int32_t)strtol(p + 1, NULL, 0);
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        end++;
+    }
+    if (*end != ',' && *end != '}' && *end != '\0') {
+        return 0;
+    }
+    if (value < INT32_MIN || value > INT32_MAX) {
+        return 0;
+    }
+    *out = (int32_t)value;
     return 1;
 }
 
@@ -350,7 +402,6 @@ static int find_u32(const char *line, const char *key, uint32_t *out)
 
 static int find_str(const char *line, const char *key, char *out, size_t out_size)
 {
-    char pattern[64];
     const char *p;
     const char *start;
     const char *end;
@@ -359,23 +410,17 @@ static int find_str(const char *line, const char *key, char *out, size_t out_siz
     if (out_size == 0) {
         return 0;
     }
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    p = strstr(line, pattern);
-    if (!p) {
-        p = strstr(line, key);
-    }
+    p = find_json_key(line, key);
     if (!p) {
         return 0;
     }
-    p = strchr(p, ':');
-    if (!p) {
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (*p != '"') {
         return 0;
     }
-    start = strchr(p, '"');
-    if (!start) {
-        return 0;
-    }
-    start++;
+    start = p + 1;
     end = strchr(start, '"');
     if (!end) {
         return 0;
@@ -398,12 +443,44 @@ static int axis_from_line(const char *line)
     if (strcmp(dev, "fv3") == 0 || strcmp(dev, "flexem") == 0) {
         return AXIS_FV3;
     }
-    return AXIS_MCTIVITY;
+    if (strcmp(dev, "mctivity") == 0) {
+        return AXIS_MCTIVITY;
+    }
+    return -1;
+}
+
+static int command_from_line(const char *line, char *out, size_t out_size)
+{
+    const char *start;
+    const char *end;
+    size_t len;
+    if (find_str(line, "cmd", out, out_size)) {
+        return 1;
+    }
+    if (strncmp(line, "cmd=", 4) != 0) {
+        return 0;
+    }
+    start = line + 4;
+    end = start;
+    while (*end && *end != '&' && *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n') {
+        end++;
+    }
+    len = (size_t)(end - start);
+    if (len == 0 || out_size == 0) {
+        return 0;
+    }
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return 1;
 }
 
 static int8_t mode_code_for_name(const char *mode)
 {
-    if (strcmp(mode, "position") == 0 || strcmp(mode, "point") == 0 || strcmp(mode, "jog") == 0) {
+    if (strcmp(mode, "position") == 0 || strcmp(mode, "incremental") == 0 || strcmp(mode, "point") == 0 ||
+        strcmp(mode, "jog") == 0) {
         return 8;
     }
     if (strcmp(mode, "homing") == 0) {
@@ -421,6 +498,7 @@ static int8_t mode_code_for_name(const char *mode)
 static int is_safe_mode_name(const char *mode)
 {
     return strcmp(mode, "position") == 0 ||
+           strcmp(mode, "incremental") == 0 ||
            strcmp(mode, "jog") == 0 ||
            strcmp(mode, "point") == 0 ||
            strcmp(mode, "homing") == 0 ||
@@ -463,6 +541,43 @@ static int32_t sign_i32(int32_t value)
         return -1;
     }
     return 0;
+}
+
+static double clamp_unit_interval(double value)
+{
+    if (value < 0.0) {
+        return 0.0;
+    }
+    if (value > 1.0) {
+        return 1.0;
+    }
+    return value;
+}
+
+static int curve_blend_from_name(const char *name)
+{
+    if (name && strcmp(name, "linear") == 0) {
+        return CURVE_BLEND_LINEAR;
+    }
+    if (name && strcmp(name, "aggressive") == 0) {
+        return CURVE_BLEND_AGGRESSIVE;
+    }
+    return CURVE_BLEND_SMOOTH;
+}
+
+static double easing_curve(int blend, double raw)
+{
+    double t = clamp_unit_interval(raw);
+    if (blend == CURVE_BLEND_LINEAR) {
+        return t;
+    }
+    if (blend == CURVE_BLEND_AGGRESSIVE) {
+        if (t < 0.5) {
+            return 2.0 * t * t;
+        }
+        return 1.0 - (((-2.0 * t + 2.0) * (-2.0 * t + 2.0)) / 2.0);
+    }
+    return t * t * (3.0 - 2.0 * t);
 }
 
 static int32_t decelerate_velocity(int32_t velocity_cps, uint32_t decel_cps2)
@@ -557,6 +672,7 @@ static void start_motion_to(axis_runtime_t *ax, int32_t target_user, uint32_t mo
     ax->motion.profile_active = max_velocity_cps > 0;
     ax->motion.max_velocity_cps = (int32_t)max_velocity_cps;
     ax->motion.accel_cps2 = accel_cps2;
+    ax->motion.decel_cps2 = accel_cps2;
     ax->motion.min_target_user = min_target_user;
     ax->motion.max_target_user = max_target_user;
     ax->stop_velocity_cps = 0;
@@ -655,6 +771,170 @@ static void update_profile_motion(axis_runtime_t *ax)
     }
 }
 
+static void start_curve_motion(axis_runtime_t *ax, int32_t target_delta_user, uint32_t vmax_counts_s,
+                               uint32_t accel_counts_s2, uint32_t decel_counts_s2, uint32_t dwell_ms,
+                               int have_limits, int32_t min_target_user, int32_t max_target_user, int curve_blend)
+{
+    status_t *s = &ax->st;
+    int32_t requested_target_user = s->target_user + target_delta_user;
+    int32_t final_target_user = requested_target_user;
+    int32_t final_target_raw;
+    int32_t delta_raw;
+    double distance_counts;
+    double vpeak;
+    double acc;
+    double dec;
+    double t_acc;
+    double t_dec;
+    double t_cruise = 0.0;
+    double accel_distance;
+    double decel_distance;
+
+    if (have_limits) {
+        if (min_target_user > max_target_user) {
+            int32_t tmp = min_target_user;
+            min_target_user = max_target_user;
+            max_target_user = tmp;
+        }
+        final_target_user = clamp_i32(final_target_user, min_target_user, max_target_user);
+    } else {
+        min_target_user = INT32_MIN;
+        max_target_user = INT32_MAX;
+    }
+
+    final_target_raw = s->soft_zero_raw + final_target_user;
+    delta_raw = final_target_raw - s->pos_raw;
+    distance_counts = fabs((double)delta_raw);
+    vpeak = (double)(vmax_counts_s > 0 ? vmax_counts_s : 0U);
+    acc = (double)(accel_counts_s2 > 0 ? accel_counts_s2 : 0U);
+    dec = (double)(decel_counts_s2 > 0 ? decel_counts_s2 : 0U);
+
+    clear_motion(ax);
+    ax->stop_velocity_cps = 0;
+    ax->st.jog_velocity_cps = 0;
+    ax->velocity_remainder = 0;
+    ax->motion.from = s->pos_raw;
+    ax->motion.to = final_target_raw;
+    ax->motion.moving = 1;
+    ax->motion.curve_active = 1;
+    ax->motion.min_target_user = min_target_user;
+    ax->motion.max_target_user = max_target_user;
+    ax->motion.curve_blend = curve_blend;
+    ax->motion.curve_dwell_ms = dwell_ms;
+    ax->motion.curve_dwell_elapsed_ms = 0;
+    ax->motion.curve_elapsed_s = 0.0;
+    ax->motion.curve_distance_counts = distance_counts;
+    ax->motion.curve_position_counts = 0.0;
+    ax->motion.curve_vpeak_cps = vpeak;
+    ax->motion.curve_accel_cps2_f = acc;
+    ax->motion.curve_decel_cps2_f = dec;
+    ax->motion.current_velocity_cps = 0;
+    s->target_raw = s->pos_raw;
+    s->target_user = s->pos_user;
+
+    if (distance_counts < 0.5 || vpeak <= 0.0 || acc <= 0.0 || dec <= 0.0) {
+        ax->motion.to = s->pos_raw;
+        ax->motion.moving = 0;
+        ax->motion.curve_active = 0;
+        s->target_raw = s->pos_raw;
+        s->target_user = s->pos_user;
+        snprintf(s->message, sizeof(s->message), "curve move ignored; invalid or zero-distance target");
+        return;
+    }
+
+    t_acc = vpeak / acc;
+    t_dec = vpeak / dec;
+    accel_distance = 0.5 * vpeak * t_acc;
+    decel_distance = 0.5 * vpeak * t_dec;
+    if (distance_counts > accel_distance + decel_distance + 1e-9) {
+        t_cruise = (distance_counts - accel_distance - decel_distance) / vpeak;
+    }
+    ax->motion.curve_t_acc_s = t_acc;
+    ax->motion.curve_t_cruise_s = t_cruise;
+    ax->motion.curve_t_dec_s = t_dec;
+    ax->motion.curve_total_motion_s = t_acc + t_cruise + t_dec;
+    snprintf(
+        s->message,
+        sizeof(s->message),
+        requested_target_user != final_target_user ? "curve move limited to %d counts" : "curve move by %d counts",
+        final_target_user - s->pos_user);
+}
+
+static double curve_velocity_at(const motion_t *motion, double elapsed_s)
+{
+    double t = elapsed_s;
+    if (t <= motion->curve_t_acc_s + 1e-12) {
+        return motion->curve_vpeak_cps * easing_curve(motion->curve_blend, motion->curve_t_acc_s > 0.0 ? t / motion->curve_t_acc_s : 1.0);
+    }
+    if (t <= motion->curve_t_acc_s + motion->curve_t_cruise_s + 1e-12) {
+        return motion->curve_vpeak_cps;
+    }
+    if (t <= motion->curve_total_motion_s + 1e-12) {
+        double dec_t = t - motion->curve_t_acc_s - motion->curve_t_cruise_s;
+        double ratio = motion->curve_t_dec_s > 0.0 ? dec_t / motion->curve_t_dec_s : 1.0;
+        return motion->curve_vpeak_cps * (1.0 - easing_curve(motion->curve_blend, ratio));
+    }
+    return 0.0;
+}
+
+static void update_curve_motion(axis_runtime_t *ax)
+{
+    motion_t *motion = &ax->motion;
+    status_t *s = &ax->st;
+    double next_elapsed_s;
+    double velocity;
+    int32_t direction;
+    int32_t next_target_raw;
+
+    direction = sign_i32(motion->to - motion->from);
+    if (direction == 0 || motion->curve_distance_counts < 0.5) {
+        s->target_raw = motion->to;
+        s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+        clear_motion(ax);
+        ax->velocity_remainder = 0;
+        snprintf(s->message, sizeof(s->message), "curve motion complete");
+        return;
+    }
+
+    if (motion->curve_elapsed_s + 1e-12 < motion->curve_total_motion_s) {
+        next_elapsed_s = motion->curve_elapsed_s + 0.001;
+        if (next_elapsed_s > motion->curve_total_motion_s) {
+            next_elapsed_s = motion->curve_total_motion_s;
+        }
+        velocity = curve_velocity_at(motion, next_elapsed_s);
+        motion->curve_position_counts += velocity / 1000.0;
+        if (motion->curve_position_counts > motion->curve_distance_counts) {
+            motion->curve_position_counts = motion->curve_distance_counts;
+        }
+        next_target_raw = motion->from + direction * (int32_t)llround(motion->curve_position_counts);
+        if ((direction > 0 && next_target_raw > motion->to) || (direction < 0 && next_target_raw < motion->to)) {
+            next_target_raw = motion->to;
+        }
+        s->target_raw = next_target_raw;
+        s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+        s->target_raw = s->soft_zero_raw + s->target_user;
+        motion->current_velocity_cps = direction * (int32_t)llround(velocity);
+        motion->curve_elapsed_s = next_elapsed_s;
+        if (motion->curve_elapsed_s + 1e-12 >= motion->curve_total_motion_s) {
+            s->target_raw = motion->to;
+            s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+            motion->current_velocity_cps = 0;
+        }
+        return;
+    }
+
+    s->target_raw = motion->to;
+    s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+    motion->current_velocity_cps = 0;
+    if (motion->curve_dwell_elapsed_ms < motion->curve_dwell_ms) {
+        motion->curve_dwell_elapsed_ms++;
+        return;
+    }
+    clear_motion(ax);
+    ax->velocity_remainder = 0;
+    snprintf(s->message, sizeof(s->message), "curve motion complete");
+}
+
 static void send_status_fd(int fd, int axis)
 {
     axis_runtime_t *ax = &axes[axis];
@@ -692,16 +972,25 @@ static void send_error_fd(int fd, const char *msg)
 static void handle_command(int fd, const char *line)
 {
     int axis = axis_from_line(line);
+    if (axis < 0 || axis >= AXIS_COUNT) {
+        send_error_fd(fd, "unsupported_device");
+        return;
+    }
     axis_runtime_t *ax = &axes[axis];
     status_t *s = &ax->st;
+    char cmd[64];
+    if (!command_from_line(line, cmd, sizeof(cmd))) {
+        send_error_fd(fd, "missing command");
+        return;
+    }
 
-    if (strstr(line, "\"cmd\":\"status\"") || strstr(line, "cmd=status")) {
+    if (strcmp(cmd, "status") == 0) {
         strncpy(s->last_command, "status", sizeof(s->last_command) - 1);
         send_status_fd(fd, axis);
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"enable\"") || strstr(line, "cmd=enable")) {
+    if (strcmp(cmd, "enable") == 0) {
         s->servo_request = 1;
         s->enable_settle_cycles = ENABLE_SETTLE_CYCLES;
         clear_motion(ax);
@@ -720,7 +1009,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"disable\"") || strstr(line, "cmd=disable")) {
+    if (strcmp(cmd, "disable") == 0) {
         s->servo_request = 0;
         s->enable_settle_cycles = 0;
         clear_motion(ax);
@@ -739,7 +1028,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"stop\"") || strstr(line, "cmd=stop")) {
+    if (strcmp(cmd, "stop") == 0) {
         uint32_t decel_rpm_s = DEFAULT_STOP_DECEL_RPM_S;
         uint32_t decel = rpm_s_to_counts_s2(DEFAULT_STOP_DECEL_RPM_S);
         int32_t seed_velocity_cps;
@@ -818,8 +1107,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"fault_reset\"") || strstr(line, "cmd=fault_reset") ||
-        strstr(line, "\"cmd\":\"reset_fault\"") || strstr(line, "cmd=reset_fault")) {
+    if (strcmp(cmd, "fault_reset") == 0 || strcmp(cmd, "reset_fault") == 0) {
         s->servo_request = 0;
         s->enable_settle_cycles = 0;
         clear_motion(ax);
@@ -839,9 +1127,8 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"set_zero\"") || strstr(line, "cmd=set_zero") ||
-        strstr(line, "\"cmd\":\"home\"") || strstr(line, "cmd=home")) {
-        int is_home = strstr(line, "\"cmd\":\"home\"") || strstr(line, "cmd=home");
+    if (strcmp(cmd, "set_zero") == 0 || strcmp(cmd, "home") == 0) {
+        int is_home = strcmp(cmd, "home") == 0;
         if (is_home) {
             set_control_mode(ax, "homing");
             ax->commanded_mode = mode_code_for_name("homing");
@@ -867,7 +1154,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"set_mode\"") || strstr(line, "cmd=set_mode")) {
+    if (strcmp(cmd, "set_mode") == 0) {
         char mode[24];
         if (!find_str(line, "mode", mode, sizeof(mode)) || !is_safe_mode_name(mode)) {
             send_error_fd(fd, "set_mode requires a supported mode");
@@ -898,7 +1185,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"gear_config\"") || strstr(line, "cmd=gear_config")) {
+    if (strcmp(cmd, "gear_config") == 0) {
         uint32_t master_ratio = 1;
         uint32_t slave_ratio = 1;
         char master_name[24] = {0};
@@ -941,7 +1228,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"gear_start\"") || strstr(line, "cmd=gear_start")) {
+    if (strcmp(cmd, "gear_start") == 0) {
         if (!ready_for_motion(ax)) {
             send_error_fd(fd, "servo is not ready for gear start; enable and wait for settle first");
             return;
@@ -973,7 +1260,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"gear_stop\"") || strstr(line, "cmd=gear_stop")) {
+    if (strcmp(cmd, "gear_stop") == 0) {
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
         ax->pp_pulse_cycles = 0;
@@ -986,7 +1273,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"move_abs\"") || strstr(line, "cmd=move_abs")) {
+    if (strcmp(cmd, "move_abs") == 0) {
         int32_t pos;
         int32_t min_pos = 0;
         int32_t max_pos = 0;
@@ -1028,7 +1315,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"move_rel\"") || strstr(line, "cmd=move_rel")) {
+    if (strcmp(cmd, "move_rel") == 0) {
         int32_t delta;
         int32_t min_pos = 0;
         int32_t max_pos = 0;
@@ -1073,7 +1360,65 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"jog_velocity\"") || strstr(line, "cmd=jog_velocity")) {
+    if (strcmp(cmd, "move_curve_rel") == 0) {
+        int32_t delta = 0;
+        int32_t min_pos = 0;
+        int32_t max_pos = 0;
+        uint32_t vmax_counts_s = 0;
+        uint32_t accel_counts_s2 = 0;
+        uint32_t decel_counts_s2 = 0;
+        uint32_t dwell_ms = 0;
+        int have_limits = 0;
+        char blend_name[24];
+        int curve_blend = CURVE_BLEND_SMOOTH;
+        if (!ready_for_motion(ax)) {
+            send_error_fd(fd, "servo is not ready for curve motion; enable and wait for settle first");
+            return;
+        }
+        if (!find_i32(line, "target_delta_counts", &delta)) {
+            send_error_fd(fd, "move_curve_rel requires target_delta_counts");
+            return;
+        }
+        if (!find_u32(line, "vmax_counts_s", &vmax_counts_s) || vmax_counts_s == 0) {
+            send_error_fd(fd, "move_curve_rel requires vmax_counts_s > 0");
+            return;
+        }
+        if (!find_u32(line, "accel_counts_s2", &accel_counts_s2) || accel_counts_s2 == 0) {
+            send_error_fd(fd, "move_curve_rel requires accel_counts_s2 > 0");
+            return;
+        }
+        if (!find_u32(line, "decel_counts_s2", &decel_counts_s2) || decel_counts_s2 == 0) {
+            send_error_fd(fd, "move_curve_rel requires decel_counts_s2 > 0");
+            return;
+        }
+        have_limits = find_i32(line, "min_pos", &min_pos) && find_i32(line, "max_pos", &max_pos);
+        (void)find_u32(line, "dwell_ms", &dwell_ms);
+        if (find_str(line, "blend", blend_name, sizeof(blend_name))) {
+            curve_blend = curve_blend_from_name(blend_name);
+        }
+        set_control_mode(ax, "incremental");
+        ax->commanded_mode = mode_code_for_name("incremental");
+        ax->gear_running = 0;
+        ax->gear_has_last_master_pos = 0;
+        ax->pp_pulse_cycles = 0;
+        ax->fv3_halt_cycles = 0;
+        start_curve_motion(
+            ax,
+            delta,
+            vmax_counts_s,
+            accel_counts_s2,
+            decel_counts_s2,
+            dwell_ms,
+            have_limits,
+            min_pos,
+            max_pos,
+            curve_blend);
+        strncpy(s->last_command, "move_curve_rel", sizeof(s->last_command) - 1);
+        send_status_fd(fd, axis);
+        return;
+    }
+
+    if (strcmp(cmd, "jog_velocity") == 0) {
         int32_t velocity = 0;
         if (!ready_for_motion(ax)) {
             send_error_fd(fd, "servo is not ready for velocity jog; enable and wait for settle first");
@@ -1098,7 +1443,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strstr(line, "\"cmd\":\"torque_cmd\"") || strstr(line, "cmd=torque_cmd")) {
+    if (strcmp(cmd, "torque_cmd") == 0) {
         int32_t torque = 0;
         (void)find_i32(line, "torque", &torque);
         set_control_mode(ax, "torque");
@@ -1302,7 +1647,9 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         }
         gear_tracking_active = 1;
     } else if (ax->motion.moving && s->enabled) {
-        if (ax->motion.profile_active) {
+        if (ax->motion.curve_active) {
+            update_curve_motion(ax);
+        } else if (ax->motion.profile_active) {
             update_profile_motion(ax);
         } else {
             s->target_raw = smooth_move(ax->motion.from, ax->motion.to, ax->motion.step, ax->motion.steps);

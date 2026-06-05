@@ -17,7 +17,7 @@ mctivity_csp_roundtrip: mctivity_csp_roundtrip.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 
 mctivity_motiond: mctivity_motiond.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS) -lm
 
 clean:
 	rm -f mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond

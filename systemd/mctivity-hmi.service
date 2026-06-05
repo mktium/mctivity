@@ -6,11 +6,19 @@ Requires=mctivity-motiond.service
 
 [Service]
 Type=simple
-User=iiru
+User=mctivity
+Group=mctivity
 WorkingDirectory=/opt/mctivity/mctivity_hmi
+Environment=MCTIVITY_WEB_HOST=127.0.0.1
+Environment=MCTIVITY_UI_STATE_PATH=/var/lib/mctivity/mctivity_hmi_state.json
 ExecStart=/usr/bin/env python3 /opt/mctivity/mctivity_hmi/mctivity_hmi.py
 Restart=always
 RestartSec=2
+StateDirectory=mctivity
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target

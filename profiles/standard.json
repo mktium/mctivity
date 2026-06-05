@@ -1,0 +1,23 @@
+{
+  "profile": "standard",
+  "domains": [
+    "axis_control_domain"
+  ],
+  "modules": [
+    "axis-feedback-panel",
+    "axis-control-panel",
+    "feature-logic-single-point",
+    "feature-hmi-single-point",
+    "feature-logic-incremental",
+    "feature-hmi-incremental",
+    "feature-logic-jog",
+    "feature-hmi-jog",
+    "feature-logic-point",
+    "feature-hmi-point",
+    "feature-logic-homing",
+    "feature-hmi-homing",
+    "feature-logic-velocity",
+    "feature-hmi-velocity",
+    "ui-state-persist"
+  ]
+}

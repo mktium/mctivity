@@ -1,10 +1,17 @@
 .DS_Store
+__MACOSX/
+._*
 __pycache__/
 *.py[cod]
 *.swp
 *.swo
 *.log
 *.out
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
 
 # 本地构建产物
 mctivity_pdo_monitor/mctivity_pdo_monitor
@@ -15,4 +22,16 @@ mctivity_pdo_monitor/mctivity_motiond
 mctivity_pdo_monitor/fv3_motiond
 
 # 本地运行和调参产物
-*.txt
+mctivity_hmi/mctivity_hmi_state.json
+mctivity_hmi/mctivity_hmi_state.json.tmp
+*.pid
+*.o
+*.d
+*.so
+*.a
+core
+compile_commands.json
+.env
+.env.*
+.vscode/
+.idea/

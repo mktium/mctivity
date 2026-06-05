@@ -1,0 +1,13 @@
+{
+  "id": "feature-hmi-single-point",
+  "type": "hmi_feature",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [
+    "feature-logic-single-point"
+  ],
+  "conflicts": [],
+  "capabilities": [],
+  "apiVersion": "v1"
+}
+

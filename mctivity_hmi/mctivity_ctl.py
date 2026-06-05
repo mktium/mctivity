@@ -47,7 +47,10 @@ def main(argv=None):
     sub.add_parser("zero")
 
     p_mode = sub.add_parser("mode")
-    p_mode.add_argument("mode", choices=["position", "jog", "point", "homing", "velocity", "torque", "gear_cam"])
+    p_mode.add_argument(
+        "mode",
+        choices=["position", "incremental", "jog", "point", "homing", "velocity", "torque", "gear_cam"],
+    )
 
     p_vel = sub.add_parser("jog-vel")
     p_vel.add_argument("velocity", type=int, help="velocity jog command in counts/s; use 0 to stop")

@@ -1,0 +1,15 @@
+{
+  "id": "feature-logic-point",
+  "type": "logic_feature",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [
+    "axis-control-panel"
+  ],
+  "conflicts": [],
+  "capabilities": [
+    "axis.mode.point.execute"
+  ],
+  "apiVersion": "v1"
+}
+

@@ -1,0 +1,17 @@
+{
+  "id": "axis-control-panel",
+  "type": "control_panel",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [],
+  "conflicts": [],
+  "capabilities": [
+    "axis.control.mode.select",
+    "axis.control.enable",
+    "axis.control.stop",
+    "axis.control.fault.reset",
+    "axis.control.zero"
+  ],
+  "apiVersion": "v1"
+}
+

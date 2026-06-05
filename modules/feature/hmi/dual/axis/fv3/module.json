@@ -1,0 +1,13 @@
+{
+  "id": "feature-hmi-dual-axis-fv3",
+  "type": "hmi_feature",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [
+    "feature-logic-dual-axis-fv3"
+  ],
+  "conflicts": [],
+  "capabilities": [],
+  "apiVersion": "v1"
+}
+

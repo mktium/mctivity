@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
+import hmac
 import json
+import math
 import os
 import re
 import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from feature_dispatch import dispatch_axis_command as feature_dispatch_axis_command
+from feature_contract import ProtocolAdapter
+from feature_registry import (
+    describe_feature_assembly,
+    get_feature_registry_source,
+    get_feature_registry_warnings,
+    resolve_enabled_feature_keys,
+)
 
 
 def _env_int(name, default):
@@ -30,17 +41,488 @@ def _env_float(name, default):
         return default
 
 
+def _default_ui_state_path():
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        return os.path.join(xdg_state, "mctivity", "mctivity_hmi_state.json")
+    return os.path.join(Path.home(), ".local", "state", "mctivity", "mctivity_hmi_state.json")
+
+
+def _split_host_header(host):
+    host = str(host or "").strip()
+    if not host:
+        return ""
+    if host.startswith("["):
+        end = host.find("]")
+        if end >= 0:
+            return host[1:end].lower()
+    if host.count(":") == 1:
+        return host.rsplit(":", 1)[0].lower()
+    return host.strip("[]").lower()
+
+
+def _port_from_host_header(host):
+    host = str(host or "").strip()
+    if host.startswith("["):
+        end = host.find("]")
+        if end >= 0 and len(host) > end + 1 and host[end + 1] == ":":
+            return host[end + 2 :]
+        return str(WEB_PORT)
+    if host.count(":") == 1:
+        return host.rsplit(":", 1)[1]
+    return str(WEB_PORT)
+
+
+def _allowed_host_names():
+    allowed = {"127.0.0.1", "localhost", "::1"}
+    for item in os.environ.get("MCTIVITY_ALLOWED_HOSTS", "").split(","):
+        name = item.strip().strip("[]").lower()
+        if name:
+            allowed.add(name)
+    return allowed
+
+
 MOTIOND_HOST = os.environ.get("MCTIVITY_HOST", "127.0.0.1")
 MOTIOND_PORT = _env_int("MCTIVITY_PORT", 10001)
-WEB_HOST = os.environ.get("MCTIVITY_WEB_HOST", "0.0.0.0")
+WEB_HOST = os.environ.get("MCTIVITY_WEB_HOST", "127.0.0.1")
 WEB_PORT = _env_int("MCTIVITY_WEB_PORT", 2015)
 FV3_SLAVE_POSITION = _env_int("MCTIVITY_FV3_SLAVE_POSITION", 1)
 FV3_STATUS_TTL_SEC = _env_float("MCTIVITY_FV3_STATUS_TTL_SEC", 0.5)
+MAX_REQUEST_BYTES = max(1024, _env_int("MCTIVITY_MAX_REQUEST_BYTES", 32768))
+MAX_JOG_VELOCITY_CPS = max(1, _env_int("MCTIVITY_MAX_JOG_VELOCITY_CPS", 1200000))
+MAX_CURVE_VELOCITY_CPS = max(1, _env_int("MCTIVITY_MAX_CURVE_VELOCITY_CPS", 1200000))
+MAX_CURVE_ACCEL_COUNTS_S2 = max(1, _env_int("MCTIVITY_MAX_CURVE_ACCEL_COUNTS_S2", 1200000))
+MAX_SPEED_RPM = max(1, _env_int("MCTIVITY_MAX_SPEED_RPM", 3000))
+MAX_ACCEL_RPM_S = max(1, _env_int("MCTIVITY_MAX_ACCEL_RPM_S", 3000))
+MAX_MOVE_MS = max(1, _env_int("MCTIVITY_MAX_MOVE_MS", 60000))
+MAX_GEAR_RATIO = max(1, _env_int("MCTIVITY_MAX_GEAR_RATIO", 200))
+MAX_TORQUE_PERCENT = max(0, _env_int("MCTIVITY_MAX_TORQUE_PERCENT", 100))
+API_TOKEN = os.environ.get("MCTIVITY_API_TOKEN", "").strip()
 UI_STATE_PATH = os.environ.get(
     "MCTIVITY_UI_STATE_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "mctivity_hmi_state.json"),
+    _default_ui_state_path(),
 )
 _ui_state_lock = threading.RLock()
+MODULES_ROOT = os.environ.get(
+    "MCTIVITY_MODULES_ROOT",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules"),
+)
+PROFILE_NAME = os.environ.get("MCTIVITY_PROFILE", "standard")
+PROFILE_PATH = os.environ.get(
+    "MCTIVITY_PROFILE_PATH",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "profiles", f"{PROFILE_NAME}.json"),
+)
+ASSETS_ROOT = Path(__file__).with_name("assets")
+MOTION_CURVE_EDITOR_ASSET_PATH = Path(__file__).with_name("motion_curve_editor_block.js")
+
+_COMMAND_CAPABILITY = {
+    "set_mode": "axis.control.mode.select",
+    "enable": "axis.control.enable",
+    "disable": "axis.control.enable",
+    "stop": "axis.control.stop",
+    "fault_reset": "axis.control.fault.reset",
+    "reset_fault": "axis.control.fault.reset",
+    "set_zero": "axis.control.zero",
+    "home": "axis.control.zero",
+    "move_abs": "axis.mode.position.execute",
+    "move_rel": "axis.mode.position.execute",
+    "move_curve_rel": "axis.mode.incremental.execute",
+    "jog_velocity": "axis.mode.velocity.execute",
+    "torque_cmd": "axis.mode.torque.execute",
+    "gear_config": "axis.mode.gear_cam.execute",
+    "gear_start": "axis.mode.gear_cam.execute",
+    "gear_stop": "axis.mode.gear_cam.execute",
+}
+_VALID_COMMANDS = set(_COMMAND_CAPABILITY) | {"status"}
+_MODE_CAPABILITY = {
+    "position": "axis.mode.position.execute",
+    "incremental": "axis.mode.incremental.execute",
+    "jog": "axis.mode.jog.execute",
+    "point": "axis.mode.point.execute",
+    "homing": "axis.mode.homing.execute",
+    "velocity": "axis.mode.velocity.execute",
+    "torque": "axis.mode.torque.execute",
+    "gear_cam": "axis.mode.gear_cam.execute",
+}
+_VALID_MODES = set(_MODE_CAPABILITY)
+_COMMAND_FIELD_ORDER = {
+    "status": ["cmd", "device"],
+    "enable": ["cmd", "device"],
+    "disable": ["cmd", "device"],
+    "stop": [
+        "cmd",
+        "device",
+        "deceleration_rpm_s",
+        "acceleration_rpm_s",
+        "deceleration_counts_s2",
+        "deceleration",
+    ],
+    "fault_reset": ["cmd", "device"],
+    "reset_fault": ["cmd", "device"],
+    "set_zero": ["cmd", "device"],
+    "home": ["cmd", "device"],
+    "set_mode": ["cmd", "device", "mode"],
+    "move_abs": [
+        "cmd",
+        "device",
+        "pos",
+        "move_ms",
+        "speed_rpm",
+        "acceleration_rpm_s",
+        "min_pos",
+        "max_pos",
+    ],
+    "move_rel": [
+        "cmd",
+        "device",
+        "delta",
+        "move_ms",
+        "speed_rpm",
+        "acceleration_rpm_s",
+        "min_pos",
+        "max_pos",
+    ],
+    "move_curve_rel": [
+        "cmd",
+        "device",
+        "target_delta_counts",
+        "vmax_counts_s",
+        "accel_counts_s2",
+        "decel_counts_s2",
+        "dwell_ms",
+        "blend",
+        "min_pos",
+        "max_pos",
+    ],
+    "jog_velocity": ["cmd", "device", "velocity"],
+    "torque_cmd": ["cmd", "device", "torque"],
+    "gear_config": [
+        "cmd",
+        "device",
+        "master",
+        "master_axis",
+        "master_ratio",
+        "slave_ratio",
+        "gear_master_ratio",
+        "gear_slave_ratio",
+    ],
+    "gear_start": [
+        "cmd",
+        "device",
+        "master",
+        "master_axis",
+        "master_ratio",
+        "slave_ratio",
+        "gear_master_ratio",
+        "gear_slave_ratio",
+    ],
+    "gear_stop": ["cmd", "device"],
+}
+_INT32_MIN = -(2**31)
+_INT32_MAX = 2**31 - 1
+_REQUIRED_INT_FIELDS = {
+    "move_abs": ["pos"],
+    "move_rel": ["delta"],
+    "move_curve_rel": ["target_delta_counts", "vmax_counts_s", "accel_counts_s2", "decel_counts_s2"],
+    "jog_velocity": ["velocity"],
+    "torque_cmd": ["torque"],
+}
+_OPTIONAL_INT_FIELDS = {
+    "stop": ["deceleration_rpm_s", "acceleration_rpm_s", "deceleration_counts_s2", "deceleration"],
+    "move_abs": ["move_ms", "speed_rpm", "acceleration_rpm_s", "min_pos", "max_pos"],
+    "move_rel": ["move_ms", "speed_rpm", "acceleration_rpm_s", "min_pos", "max_pos"],
+    "move_curve_rel": ["dwell_ms", "min_pos", "max_pos"],
+    "gear_config": ["master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"],
+    "gear_start": ["master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"],
+}
+_NONNEGATIVE_INT_FIELDS = {
+    "deceleration_rpm_s",
+    "acceleration_rpm_s",
+    "deceleration_counts_s2",
+    "deceleration",
+    "move_ms",
+    "speed_rpm",
+    "acceleration_rpm_s",
+    "dwell_ms",
+}
+_POSITIVE_INT_FIELDS = {
+    "vmax_counts_s",
+    "accel_counts_s2",
+    "decel_counts_s2",
+    "master_ratio",
+    "slave_ratio",
+    "gear_master_ratio",
+    "gear_slave_ratio",
+}
+_MODE_HMI_MODULE = {
+    "position": "feature-hmi-single-point",
+    "incremental": "feature-hmi-incremental",
+    "jog": "feature-hmi-jog",
+    "point": "feature-hmi-point",
+    "homing": "feature-hmi-homing",
+    "velocity": "feature-hmi-velocity",
+    "torque": "feature-hmi-torque",
+    "gear_cam": "feature-hmi-electronic-gear",
+}
+_DEVICE_CAPABILITY = {
+    "fv3": "axis.device.fv3.access",
+}
+_DEFAULT_CAPABILITIES = [
+    "axis.feedback.view",
+    "axis.control.mode.select",
+    "axis.control.enable",
+    "axis.control.stop",
+    "axis.control.fault.reset",
+    "axis.control.zero",
+    "axis.mode.position.execute",
+    "axis.mode.incremental.execute",
+    "axis.mode.jog.execute",
+    "axis.mode.point.execute",
+    "axis.mode.homing.execute",
+    "axis.mode.velocity.execute",
+    "axis.mode.torque.execute",
+    "axis.mode.gear_cam.execute",
+    "axis.state.persist",
+]
+
+
+def _load_profile(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    modules = data.get("modules")
+    if not isinstance(modules, list):
+        return None
+    data["modules"] = [str(m) for m in modules if isinstance(m, str) and m.strip()]
+    data["domains"] = [str(d) for d in data.get("domains", []) if isinstance(d, str)]
+    return data
+
+
+def _module_manifest_path(module_id):
+    return Path(MODULES_ROOT) / module_id.replace("-", "/") / "module.json"
+
+
+def _load_manifest(module_id):
+    path = _module_manifest_path(module_id)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    data.setdefault("id", module_id)
+    data.setdefault("requires", [])
+    data.setdefault("conflicts", [])
+    data.setdefault("capabilities", [])
+    return data
+
+
+def _build_module_runtime():
+    profile = _load_profile(PROFILE_PATH)
+    if not profile:
+        return {
+            "profile": "fallback-safe",
+            "domains": [],
+            "modules": [],
+            "active_features": [],
+            "capabilities": [],
+            "warnings": [f"profile_load_failed:{PROFILE_PATH}"],
+        }
+    capabilities = set()
+    active_features = []
+    warnings = []
+    manifests = {}
+    for module_id in profile["modules"]:
+        manifest = _load_manifest(module_id)
+        if not manifest:
+            warnings.append(f"module_manifest_missing:{module_id}")
+            continue
+        manifests[module_id] = manifest
+        active_features.append(module_id)
+        for cap in manifest.get("capabilities", []):
+            if isinstance(cap, str):
+                capabilities.add(cap)
+    # Dependency/conflict validation as warnings for v1 phase.
+    loaded = set(active_features)
+    for module_id, manifest in manifests.items():
+        for req in manifest.get("requires", []):
+            if isinstance(req, str) and req not in loaded:
+                warnings.append(f"module_missing_requirement:{module_id}:{req}")
+        for conf in manifest.get("conflicts", []):
+            if isinstance(conf, str) and conf in loaded:
+                warnings.append(f"module_conflict:{module_id}:{conf}")
+    if "axis.state.persist" not in capabilities:
+        warnings.append("ui_state_persist_disabled")
+    return {
+        "profile": str(profile.get("profile", PROFILE_NAME)),
+        "domains": profile.get("domains", []),
+        "modules": profile["modules"],
+        "active_features": active_features,
+        "capabilities": sorted(capabilities),
+        "warnings": warnings,
+    }
+
+
+_MODULE_RUNTIME = _build_module_runtime()
+_MODULE_RUNTIME["warnings"] = list(_MODULE_RUNTIME.get("warnings", [])) + get_feature_registry_warnings()
+_CAPABILITY_SET = set(_MODULE_RUNTIME.get("capabilities", []))
+_ENABLED_FEATURE_KEYS = resolve_enabled_feature_keys(_MODULE_RUNTIME.get("active_features", []))
+_FEATURE_ASSEMBLY = describe_feature_assembly(_MODULE_RUNTIME.get("active_features", []))
+
+
+def capability_manifest():
+    return {
+        "ok": True,
+        "profile": _MODULE_RUNTIME.get("profile"),
+        "domains": _MODULE_RUNTIME.get("domains", []),
+        "active_features": _MODULE_RUNTIME.get("active_features", []),
+        "capabilities": _MODULE_RUNTIME.get("capabilities", []),
+        "warnings": _MODULE_RUNTIME.get("warnings", []),
+        "enabled_feature_keys": sorted(_ENABLED_FEATURE_KEYS),
+        "feature_assembly": _FEATURE_ASSEMBLY,
+        "feature_registry_source": get_feature_registry_source(),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode_capability_map": _MODE_CAPABILITY,
+        "mode_hmi_module_map": _MODE_HMI_MODULE,
+        "device_capability_map": _DEVICE_CAPABILITY,
+    }
+
+
+def _command_required_capability(payload):
+    cmd = str(payload.get("cmd", "")).strip().lower()
+    if not cmd or cmd == "status":
+        return None
+    if cmd == "set_mode":
+        mode_name = str(payload.get("mode", "")).strip().lower()
+        return _MODE_CAPABILITY.get(mode_name) or _COMMAND_CAPABILITY.get(cmd)
+    return _COMMAND_CAPABILITY.get(cmd)
+
+
+def _command_is_enabled(payload):
+    required = _command_required_capability(payload)
+    if not required:
+        return True, None
+    if required in _CAPABILITY_SET:
+        return True, required
+    return False, required
+
+
+def _normalize_command_name(payload):
+    cmd = str(payload.get("cmd", "")).strip().lower()
+    if cmd in _VALID_COMMANDS:
+        return cmd
+    return None
+
+
+def _strict_int(value, min_value=_INT32_MIN, max_value=_INT32_MAX):
+    if isinstance(value, bool):
+        raise ValueError("boolean is not an integer")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value.is_integer():
+        number = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        number = int(value.strip())
+    else:
+        raise ValueError("invalid integer")
+    if number < min_value or number > max_value:
+        raise ValueError("integer out of range")
+    return number
+
+
+def _validate_command_numbers(cmd, clean):
+    try:
+        for key in _REQUIRED_INT_FIELDS.get(cmd, []):
+            if key not in clean:
+                return False
+            clean[key] = _strict_int(clean[key])
+        for key in _OPTIONAL_INT_FIELDS.get(cmd, []):
+            if key in clean:
+                clean[key] = _strict_int(clean[key])
+    except ValueError:
+        return False
+    for key in _NONNEGATIVE_INT_FIELDS:
+        if key in clean and clean[key] < 0:
+            return False
+    for key in _POSITIVE_INT_FIELDS:
+        if key in clean and clean[key] <= 0:
+            return False
+    if "min_pos" in clean and "max_pos" in clean and clean["min_pos"] > clean["max_pos"]:
+        return False
+    if "velocity" in clean and abs(clean["velocity"]) > MAX_JOG_VELOCITY_CPS:
+        return False
+    if "vmax_counts_s" in clean and clean["vmax_counts_s"] > MAX_CURVE_VELOCITY_CPS:
+        return False
+    for key in ("accel_counts_s2", "decel_counts_s2", "deceleration_counts_s2"):
+        if key in clean and clean[key] > MAX_CURVE_ACCEL_COUNTS_S2:
+            return False
+    if "speed_rpm" in clean and clean["speed_rpm"] > MAX_SPEED_RPM:
+        return False
+    for key in ("acceleration_rpm_s", "deceleration_rpm_s", "deceleration"):
+        if key in clean and clean[key] > MAX_ACCEL_RPM_S:
+            return False
+    if "move_ms" in clean and clean["move_ms"] > MAX_MOVE_MS:
+        return False
+    if "torque" in clean and abs(clean["torque"]) > MAX_TORQUE_PERCENT:
+        return False
+    for key in ("master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"):
+        if key in clean and clean[key] > MAX_GEAR_RATIO:
+            return False
+    return True
+
+
+def _sanitize_command_payload(payload, device):
+    cmd = _normalize_command_name(payload)
+    if cmd is None:
+        return None
+    order = _COMMAND_FIELD_ORDER.get(cmd)
+    if not order:
+        return None
+    clean = {"cmd": cmd, "device": device}
+    for key in order:
+        if key in ("cmd", "device"):
+            continue
+        if key in payload:
+            clean[key] = payload[key]
+    if cmd == "set_mode":
+        mode_name = str(clean.get("mode", "")).strip().lower()
+        if mode_name not in _VALID_MODES:
+            return None
+        clean["mode"] = mode_name
+    if cmd == "move_curve_rel":
+        blend = str(clean.get("blend", "smooth")).strip().lower()
+        if blend not in ("linear", "smooth", "aggressive"):
+            return None
+        clean["blend"] = blend
+    if cmd in ("gear_config", "gear_start"):
+        master = str(clean.get("master", "")).strip().lower()
+        if master and master not in ("mctivity", "fv3", "virtual"):
+            return None
+        if master:
+            clean["master"] = master
+        master_axis = str(clean.get("master_axis", "")).strip().lower()
+        if master_axis and master_axis not in ("mctivity", "fv3", "virtual"):
+            return None
+        if master_axis:
+            clean["master_axis"] = master_axis
+    if not _validate_command_numbers(cmd, clean):
+        return None
+    return clean
+
+
+def _normalize_device(raw):
+    device = str(raw or "mctivity").strip().lower()
+    if device not in ("mctivity", "fv3"):
+        return None
+    required = _DEVICE_CAPABILITY.get(device)
+    if required and required not in _CAPABILITY_SET:
+        return None
+    return device
 
 HTML = r"""
 <!doctype html>
@@ -65,20 +547,28 @@ HTML = r"""
 html, body { width:100%; height:100%; overflow:hidden; overscroll-behavior:none; position:fixed; inset:0; touch-action:none; }
 body { margin:0; color:var(--ink); font-family:MiSans,"MiSans VF","PingFang SC","Helvetica Neue",Helvetica,Arial,sans-serif; background:linear-gradient(180deg,#fff 0%,#f5f9fc 100%); -webkit-user-select:none; user-select:none; }
 main { width:100%; height:100dvh; max-width:1360px; margin:0 auto; padding:8px 14px 12px; display:grid; grid-template-rows:auto auto minmax(0,1fr); gap:7px; }
-.topbar { display:grid; grid-template-columns:1fr auto; gap:14px; align-items:end; border-bottom:3px solid var(--theme-blue); padding-bottom:9px; min-height:64px; }
-.topbar-left { display:grid; gap:4px; }
-h1 { margin:0; font-size:clamp(24px,3vw,38px); line-height:1; font-weight:900; }
-.topbar-right { display:flex; align-items:flex-end; justify-content:flex-end; gap:10px; position:relative; }
-.brand-wordmark { color:var(--theme-deep); font-size:24px; line-height:1; font-weight:900; letter-spacing:.08em; white-space:nowrap; text-transform:none; }
-.logo { width:44px; height:44px; object-fit:contain; object-position:right center; flex:0 0 auto; }
+.topbar { display:grid; grid-template-columns:1fr auto; gap:14px; align-items:end; border-bottom:3px solid var(--theme-blue); padding-bottom:9px; min-height:64px; margin-bottom:14px; }
+.topbar-left { display:flex; align-items:center; gap:10px; min-width:0; }
+h1 { margin:0; color:var(--theme-deep); font-size:clamp(20px,2.4vw,30px); line-height:1; font-weight:800; letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.topbar-right { display:flex; align-items:center; justify-content:flex-end; gap:10px; position:relative; }
+.brand-wordmark { color:var(--theme-deep); font-size:19px; line-height:1; font-weight:900; letter-spacing:.08em; white-space:nowrap; text-transform:none; transform:translate(.33em,.33em); }
+.logo { width:34px; height:34px; object-fit:contain; object-position:center; flex:0 0 auto; }
 .subbar { display:flex; align-items:center; gap:10px; min-height:38px; }
 .protocol-chip { display:inline-flex; align-items:center; justify-content:center; min-height:36px; padding:0; border:0; border-radius:0; background:transparent; color:var(--theme-deep); font-size:28px; font-weight:900; letter-spacing:.02em; text-transform:none; white-space:nowrap; }
-.tabs { display:flex; flex:1 1 auto; gap:10px; margin:0; min-height:36px; }
-.tab-btn { min-height:36px; padding:7px 18px; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--theme-deep); box-shadow:none; }
+.tabs { display:flex; flex:0 0 auto; gap:10px; margin:0 0 0 auto; min-height:36px; position:relative; z-index:12; pointer-events:auto; }
+.assembly-status { display:flex; align-items:center; gap:8px; margin-left:8px; min-height:30px; min-width:0; flex:1 1 auto; overflow:auto hidden; scrollbar-width:none; }
+.assembly-status::-webkit-scrollbar { display:none; }
+.assembly-chip { display:inline-flex; align-items:center; min-height:28px; padding:3px 9px; border:1px solid var(--line); border-radius:999px; background:#fff; color:#5c6672; font-size:11px; line-height:1; font-weight:900; white-space:nowrap; }
+.assembly-chip strong { color:var(--theme-deep); margin-left:4px; font-weight:900; }
+.api-token-input { width:120px; min-height:28px; padding:4px 9px; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--theme-deep); font-size:11px; font-weight:900; outline:none; }
+.api-token-input:focus { border-color:var(--theme-blue); box-shadow:0 0 0 3px rgba(42,131,183,.12); }
+.tab-btn { position:relative; z-index:13; min-height:36px; padding:7px 18px; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--theme-deep); box-shadow:none; pointer-events:auto; }
 .tab-btn.active { color:#fff; background:var(--theme-blue); border-color:var(--theme-blue); }
-.lang-menu { position:relative; margin-left:auto; }
-.lang-btn { min-width:28px; min-height:28px; padding:0; border:0; border-radius:0; background:transparent; color:var(--theme-deep); font-size:20px; line-height:1; font-weight:400; box-shadow:none; display:inline-flex; align-items:center; justify-content:center; }
+.lang-menu { position:relative; flex:0 0 auto; }
+.lang-btn { width:28px; height:28px; min-width:28px; min-height:28px; padding:0; border:0; border-radius:0; background:transparent; color:var(--theme-deep); line-height:1; font-weight:400; box-shadow:none; display:grid; place-items:center; cursor:pointer; }
 .lang-btn:hover, .lang-btn[aria-expanded="true"] { transform:none; box-shadow:none; color:var(--theme-blue); background:transparent; }
+.menu-lines { display:grid; gap:6px; width:22px; }
+.menu-lines span { display:block; height:2px; border-radius:999px; background:currentColor; }
 .lang-dropdown { position:absolute; right:0; top:calc(100% + 8px); min-width:132px; padding:6px; display:none; background:rgba(255,255,255,.98); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); z-index:20; }
 .lang-dropdown.open { display:grid; gap:4px; }
 .lang-option { min-height:36px; padding:8px 12px; border:0; border-radius:9px; background:transparent; color:var(--theme-deep); font:inherit; font-size:13px; font-weight:800; text-align:left; }
@@ -88,6 +578,7 @@ h1 { margin:0; font-size:clamp(24px,3vw,38px); line-height:1; font-weight:900; }
 .tab-panel.active { display:block; }
 .monitor-grid { height:100%; display:grid; grid-template-columns:minmax(320px,1.02fr) minmax(250px,.72fr) minmax(330px,1fr); gap:10px; align-items:start; min-height:0; overflow:hidden; }
 .left-stack, .middle-stack, .right-stack { min-height:0; display:grid; gap:9px; align-content:start; }
+.right-stack { align-self:stretch; height:100%; }
 .card { background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:12px; padding:10px; box-shadow:var(--shadow); overflow:hidden; }
 h2 { margin:0 0 8px; font-size:17px; line-height:1.1; font-weight:900; }
 .status { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
@@ -97,7 +588,7 @@ h2 { margin:0 0 8px; font-size:17px; line-height:1.1; font-weight:900; }
 .good { color:var(--ok); } .bad { color:var(--bad); } .info { color:var(--theme-deep); }
 .feedback-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .feedback-card { border:1px solid rgba(166,166,166,.30); border-radius:12px; background:#fff; padding:10px; min-height:172px; display:grid; align-content:start; gap:8px; }
-.feedback-card.encoder { grid-column:1 / -1; grid-template-columns:152px minmax(0,1fr); align-items:center; }
+.feedback-card.encoder { grid-column:1 / -1; grid-template-columns:152px minmax(0,1fr); align-items:center; min-width:0; overflow:hidden; }
 .feedback-title { color:#555; font-size:13px; line-height:1.1; font-weight:900; text-align:center; }
 .encoder-title { grid-column:1; grid-row:1; align-self:end; margin-bottom:-2px; }
 .encoder-dial { grid-column:1; grid-row:2; }
@@ -113,11 +604,11 @@ h2 { margin:0 0 8px; font-size:17px; line-height:1.1; font-weight:900; }
 .tick-0 { left:24%; top:66%; } .tick-20 { left:22%; top:39%; } .tick-40 { left:40%; top:22%; } .tick-60 { left:60%; top:22%; } .tick-80 { left:78%; top:39%; } .tick-100 { left:76%; top:66%; }
 .tick-1000 { left:27%; top:36%; } .tick-2000 { left:73%; top:36%; } .tick-3000 { left:76%; top:66%; }
 .tick-k1 { left:25%; top:34%; } .tick-k2 { left:75%; top:34%; } .tick-k3 { left:78%; top:68%; }
-.feedback-metrics { display:grid; grid-template-columns:1fr; gap:7px; align-self:stretch; }
-.feedback-metric { border:1px solid rgba(166,166,166,.28); border-radius:9px; background:var(--soft); padding:7px 10px; min-height:39px; display:grid; grid-template-columns:minmax(7.5em,1fr) minmax(11ch,13.5ch); align-items:center; gap:8px; }
+.feedback-metrics { display:grid; grid-template-columns:1fr; gap:7px; align-self:stretch; min-width:0; }
+.feedback-metric { border:1px solid rgba(166,166,166,.28); border-radius:9px; background:var(--soft); padding:7px 10px; min-height:39px; display:grid; grid-template-columns:minmax(7.5em,1fr) minmax(11ch,13.5ch); align-items:center; gap:8px; min-width:0; max-width:100%; }
 .feedback-card.encoder .feedback-metrics { grid-column:2; grid-row:1 / span 2; }
-.feedback-metric .label { font-size:11px; min-width:0; line-height:1.25; word-break:keep-all; }
-.feedback-metric .value { color:var(--theme-deep); font-size:18px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow-wrap:normal; text-align:right; justify-self:end; min-width:13.5ch; }
+.feedback-metric .label { font-size:11px; min-width:0; line-height:1.25; word-break:keep-all; text-align:left; }
+.feedback-metric .value { color:var(--theme-deep); font-size:18px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow-wrap:normal; text-align:right; justify-self:end; min-width:13.5ch; max-width:100%; }
 .feedback-metric.vertical { grid-template-columns:1fr; align-items:start; align-content:center; gap:4px; min-height:62px; }
 .feedback-metric.vertical .label { margin:0; }
 .feedback-metric.vertical .value { justify-self:stretch; width:100%; min-width:0; text-align:right; }
@@ -126,6 +617,8 @@ select, input[type=number] { width:100%; min-height:36px; border:1px solid rgba(
 .mode-row { display:grid; grid-template-columns:minmax(88px,1fr) minmax(130px,1.25fr); align-items:center; gap:12px; min-height:70px; padding:10px 12px; margin-bottom:10px; border:1px solid rgba(166,166,166,.30); border-radius:12px; background:#fff; }
 .mode-row .label { margin:0; color:var(--ink); font-size:20px; line-height:1; font-weight:900; letter-spacing:0; }
 .mode-row select { min-height:42px; font-size:14px; }
+body.lang-en .mode-row .label { font-size:16px; }
+body.lang-en .label-subtext { font-size:10px; }
 .label-stack { display:grid; gap:4px; }
 .label-subtext { color:#667; font-size:12px; line-height:1; font-weight:900; }
 .transmission-trigger { width:100%; min-height:56px; border:1px solid rgba(42,131,183,.18); border-radius:12px; background:linear-gradient(180deg,#ffffff 0%,#f4f8fb 100%); padding:9px 12px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; color:var(--ink); box-shadow:none; }
@@ -141,6 +634,10 @@ select, input[type=number] { width:100%; min-height:36px; border:1px solid rgba(
 .mode-panel { display:none; }
 .mode-panel.active { display:grid; gap:8px; }
 .active-mode-card { min-height:0; }
+.active-mode-card.incremental-scroll { height:100%; display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; }
+.active-mode-card.incremental-scroll #incrementalProfileHost { width:100%; }
+.active-mode-card.incremental-scroll .slider-card { overflow:visible; }
+.active-mode-card.incremental-scroll .mode-panel.active { min-height:0; align-content:start; overflow:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; padding-right:6px; }
 .config-grid { height:100%; display:grid; grid-template-columns:minmax(0,1.2fr) minmax(300px,.8fr); gap:10px; align-items:start; overflow:hidden; }
 .param-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
 .param-card { border:1px solid rgba(166,166,166,.30); border-radius:10px; padding:10px; background:#fff; display:grid; gap:7px; }
@@ -195,10 +692,10 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 #absPos::-webkit-slider-thumb { -webkit-appearance:none; width:36px; height:36px; margin-top:-14px; border-radius:50%; background:var(--warn); border:4px solid #fff; box-shadow:0 5px 14px rgba(0,0,0,.30); }
 #absPos::-moz-range-track { height:9px; border-radius:999px; border:1px solid rgba(120,130,140,.45); background:linear-gradient(90deg,#b8bec5 0 50%,#fff 50% 100%); box-shadow:inset 0 1px 2px rgba(0,0,0,.12); }
 #absPos::-moz-range-thumb { width:30px; height:30px; border-radius:50%; background:var(--warn); border:4px solid #fff; box-shadow:0 5px 14px rgba(0,0,0,.30); }
-.position-param { --side-width:130px; --position-gap:12px; display:grid; grid-template-columns:minmax(0,1fr) var(--side-width); gap:var(--position-gap); align-items:start; }
-.axis-control { min-height:346px; display:grid; grid-template-rows:auto auto minmax(150px,1fr) auto; gap:10px; align-content:stretch; }
+.position-param { --side-width:130px; --position-gap:12px; --slider-top-offset:122px; --slider-track-height:150px; display:grid; grid-template-columns:minmax(0,1fr) var(--side-width); gap:var(--position-gap); align-items:stretch; }
+.axis-control { position:relative; min-height:346px; height:100%; display:grid; grid-template-rows:auto auto minmax(150px,1fr); gap:10px; align-content:stretch; }
 .axis-control > button.blue { position:relative; top:12px; }
-.position-axis { position:relative; width:calc(100% + var(--side-width) + var(--position-gap)); padding:0 0 10px; }
+.position-axis { position:relative; z-index:3; width:calc(100% + var(--side-width) + var(--position-gap)); padding:0 0 10px; }
 .current-position-marker { position:absolute; left:calc((var(--abs-thumb-size) / 2) + (var(--marker-pct, 0) * (100% - var(--abs-thumb-size)))); top:18px; width:0; height:0; border-left:10px solid transparent; border-right:10px solid transparent; border-top:14px solid var(--ok); transform:translateX(-50%); filter:drop-shadow(0 2px 4px rgba(22,134,74,.28)); pointer-events:none; opacity:0; transition:left .16s linear, opacity .16s linear; }
 .position-axis.linear-mode .current-position-marker { opacity:1; }
 .axis-scale { display:none; }
@@ -218,10 +715,10 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .target-number { display:block; width:100%; color:var(--theme-deep); font-size:clamp(41px,5.1vw,68px); line-height:.92; font-weight:900; font-variant-numeric:tabular-nums; text-align:right; }
 .target-unit { display:inline-block; color:#667; font-size:15px; font-weight:900; margin-left:6px; white-space:nowrap; }
 .target-angle { display:inline-block; transform:translateY(-2em); color:var(--theme-deep); font-size:clamp(15px,1.5vw,21px); line-height:.95; font-weight:900; font-variant-numeric:tabular-nums; }
-.vertical-sliders { display:grid; grid-template-columns:1fr 1fr; gap:8px; min-height:210px; align-self:start; margin-top:136px; }
+.vertical-sliders { position:relative; z-index:1; display:grid; grid-template-columns:1fr 1fr; gap:8px; min-height:210px; height:calc(100% - var(--slider-top-offset)); align-self:start; margin-top:var(--slider-top-offset); }
 .vertical-slider { display:grid; grid-template-rows:auto 1fr auto; gap:6px; justify-items:center; min-width:0; padding:8px 5px; border:1px solid rgba(166,166,166,.30); border-radius:10px; background:#fff; }
 .vertical-slider label { color:#666; font-size:11px; line-height:1.1; font-weight:900; text-align:center; }
-.vertical-slider input[type=range] { appearance:none; -webkit-appearance:none; width:48px; height:146px; writing-mode:vertical-lr; direction:rtl; accent-color:var(--theme-blue); background:transparent; cursor:pointer; touch-action:pan-y; }
+.vertical-slider input[type=range] { appearance:none; -webkit-appearance:none; width:48px; height:var(--slider-track-height); writing-mode:vertical-lr; direction:rtl; accent-color:var(--theme-blue); background:transparent; cursor:pointer; touch-action:pan-y; }
 .vertical-slider input[type=range]::-webkit-slider-runnable-track { width:11px; margin:0 auto; border-radius:999px; border:1px solid rgba(42,131,183,.28); background:#e7f0f6; box-shadow:inset 0 1px 2px rgba(0,0,0,.10); }
 .vertical-slider input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:34px; height:34px; margin-left:-11.5px; border-radius:50%; background:var(--theme-blue); border:4px solid #fff; box-shadow:0 5px 14px rgba(0,0,0,.28); }
 .vertical-slider input[type=range]::-moz-range-track { width:11px; border-radius:999px; border:1px solid rgba(42,131,183,.28); background:#e7f0f6; box-shadow:inset 0 1px 2px rgba(0,0,0,.10); }
@@ -264,38 +761,55 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .modal-mode-row { margin:0; min-height:58px; }
 .modal-ratio-row { display:grid; grid-template-columns:auto minmax(88px,1fr) minmax(78px,.9fr); gap:8px; align-items:center; }
 .modal-ratio-row.motor { grid-template-columns:auto minmax(88px,1fr) auto; }
+.direction-control { min-height:42px; display:flex; align-items:center; justify-content:center; gap:14px; }
+.direction-label { color:#667; font-size:17px; line-height:1; font-weight:900; min-width:3.2em; text-align:center; }
+.direction-toggle { box-sizing:border-box; width:58px; height:34px; border:0; border-radius:999px; padding:3px; background:var(--ok); box-shadow:inset 0 0 0 1px rgba(17,17,17,.06); display:flex; align-items:center; cursor:pointer; transition:background .18s ease; }
+.direction-toggle.reverse { background:var(--bad); }
+.direction-toggle .knob { width:28px; height:28px; border-radius:50%; background:#fff; box-shadow:0 2px 7px rgba(17,17,17,.24); transform:translateX(24px); transition:transform .18s cubic-bezier(.2,.8,.2,1); }
+.direction-toggle.reverse .knob { transform:translateX(0); }
 .modal-inline-label { color:var(--ink); font-size:14px; font-weight:900; white-space:nowrap; }
 .modal-inline-unit { color:#4c5966; font-size:14px; line-height:1; font-weight:900; white-space:nowrap; }
 .modal-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-@media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .brand-wordmark { font-size:22px; } .protocol-chip { font-size:24px; } .logo { width:40px; height:40px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .position-param { --side-width:108px; } .axis-control { min-height:324px; } .vertical-sliders { min-height:188px; } .vertical-slider input[type=range] { height:122px; } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
-@media (max-width:1180px) { .feedback-card.encoder { grid-template-columns:1fr; } .encoder-title { grid-column:1; grid-row:auto; justify-self:center; align-self:auto; margin-bottom:0; } .encoder-dial { grid-column:1; grid-row:auto; } .feedback-card.encoder .feedback-metrics { grid-column:1; grid-row:auto; } }
-@media (max-width:720px) { .monitor-grid { grid-template-columns:1fr; overflow:hidden; } .right-stack { display:none; } .middle-stack { grid-template-columns:1fr 1fr; } .axis-card { grid-template-columns:140px 1fr; } .status { grid-template-columns:repeat(3,1fr); } .subbar { flex-wrap:wrap; } .tabs { flex:1 0 100%; order:2; } .brand-wordmark { font-size:20px; } .protocol-chip { font-size:20px; } .logo { width:36px; height:36px; } h1 { font-size:22px; } }
+.diag-body { max-height:min(56dvh,460px); overflow:auto; border:1px solid rgba(166,166,166,.28); border-radius:10px; background:#f8fafc; padding:10px; color:#304050; font-size:12px; line-height:1.5; font-weight:700; white-space:pre-wrap; }
+@media (max-width:1180px) { .feedback-card.encoder { grid-template-columns:128px minmax(0,1fr); column-gap:8px; } .feedback-card.encoder .feedback-metrics { min-width:0; max-width:100%; } .feedback-metric { grid-template-columns:minmax(0,1fr) minmax(0,9.5ch); gap:6px; padding:7px 8px; min-height:48px; } .feedback-metric .label { font-size:10px; min-width:0; overflow-wrap:anywhere; word-break:break-word; } .feedback-metric .value { min-width:0; max-width:100%; font-size:15px; white-space:normal; overflow-wrap:anywhere; word-break:break-word; align-self:start; } .feedback-metric.vertical { min-height:70px; } }
+@media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .protocol-chip { font-size:24px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .position-param { --side-width:108px; --slider-top-offset:114px; --slider-track-height:150px; } .axis-control { min-height:324px; } .vertical-sliders { min-height:188px; } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
+@media (max-width:820px) { .feedback-card.encoder { grid-template-columns:1fr; } .encoder-title { grid-column:1; grid-row:auto; justify-self:center; align-self:auto; margin-bottom:0; } .encoder-dial { grid-column:1; grid-row:auto; } .feedback-card.encoder .feedback-metrics { grid-column:1; grid-row:auto; } }
+@media (max-width:720px) { .monitor-grid { grid-template-columns:1fr; overflow:hidden; } .right-stack { display:none; } .middle-stack { grid-template-columns:1fr 1fr; } .axis-card { grid-template-columns:140px 1fr; } .status { grid-template-columns:repeat(3,1fr); } .subbar { flex-wrap:wrap; } .tabs { flex:1 0 100%; order:3; } .assembly-status { order:2; width:100%; margin-left:0; flex-wrap:wrap; } .protocol-chip { font-size:20px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } h1 { font-size:18px; } }
 </style>
 </head>
 <body>
 <main>
 <header class="topbar">
   <div class="topbar-left">
-    <h1 id="pageTitle">多轴控制</h1>
+    <div class="lang-menu">
+      <button id="langToggleBtn" class="lang-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Language">
+        <span class="menu-lines" aria-hidden="true"><span></span><span></span><span></span></span>
+      </button>
+      <div id="langDropdown" class="lang-dropdown" role="menu" aria-label="Language">
+        <button id="langZhBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('zh')">中文</button>
+        <button id="langEnBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('en')">English</button>
+      </div>
+    </div>
+    <h1 id="pageTitle">轴控</h1>
   </div>
   <div class="topbar-right">
     <span class="brand-wordmark">mctivity</span>
-    <img class="logo" src="https://iiru.cn/wp-content/uploads/2023/09/thinking-blue-transparent.png" alt="mctivity logo" referrerpolicy="no-referrer" />
+    <img class="logo" src="/assets/logo.png" alt="mctivity logo" />
   </div>
 </header>
 <div class="subbar">
   <span id="protocolChip" class="protocol-chip">EtherCAT</span>
-  <nav class="tabs">
-    <button id="tabMonitorBtn" class="tab-btn active" onclick="showTab('monitor')">轴 A</button>
-    <button id="tabConfigBtn" class="tab-btn" onclick="showTab('config')">轴 B</button>
-  </nav>
-  <div class="lang-menu">
-    <button id="langToggleBtn" class="lang-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Language">🌐</button>
-    <div id="langDropdown" class="lang-dropdown" role="menu" aria-label="Language">
-      <button id="langZhBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('zh')">中文</button>
-      <button id="langEnBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('en')">English</button>
-    </div>
+  <div class="assembly-status" aria-live="polite">
+    <span class="assembly-chip"><span id="profileLabel">Profile</span><strong id="profileValue">--</strong></span>
+    <span id="featureChip" class="assembly-chip" role="button" tabindex="0" title="features"><span id="featureCountLabel">Features</span><strong id="featureCountValue">--</strong></span>
+    <span class="assembly-chip"><span id="capabilityCountLabel">Caps</span><strong id="capabilityCountValue">--</strong></span>
+    <span id="warningChip" class="assembly-chip" role="button" tabindex="0" title="warnings"><span id="warningCountLabel">Warn</span><strong id="warningCountValue">--</strong></span>
+    <input id="apiTokenInput" class="api-token-input" type="password" autocomplete="off" spellcheck="false" placeholder="API Token" aria-label="API Token">
   </div>
+  <nav class="tabs" aria-label="Axis selector">
+    <button id="tabMonitorBtn" class="tab-btn active" type="button" data-device="mctivity">轴 A</button>
+    <button id="tabConfigBtn" class="tab-btn" type="button" data-device="fv3">轴 B</button>
+  </nav>
 </div>
 <section id="tabMonitor" class="tab-panel active">
   <div class="monitor-grid">
@@ -342,6 +856,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
           <span class="label">模式</span>
           <select id="modeSelect" onchange="setMode()">
             <option value="position">单点定位</option>
+            <option value="incremental">增量位移</option>
             <option value="jog">点动</option>
             <option value="point">点位表</option>
             <option value="homing">回零/置零</option>
@@ -385,7 +900,6 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
                 <div class="target-cell"><div><span id="targetRevBig" class="target-number">0</span><span class="target-unit">rev</span></div></div>
                 <div class="target-cell secondary"><span id="targetAngleBig" class="target-angle">0.0 deg</span></div>
               </div>
-              <button class="blue" onclick="moveAbs()">绝对移动</button>
             </div>
             <div class="vertical-sliders">
               <div class="vertical-slider">
@@ -399,6 +913,11 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
                 <span id="absAccelText">300 rpm/s</span>
               </div>
             </div>
+          </div>
+        </div>
+        <div id="panel-incremental" class="mode-panel">
+          <div class="slider-card">
+            <div id="incrementalProfileHost"></div>
           </div>
         </div>
         <div id="panel-jog" class="mode-panel">
@@ -554,6 +1073,14 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
           <option value="reciprocating">往返</option>
         </select>
       </div>
+      <div class="mode-row modal-mode-row">
+        <span id="transmissionDirectionLabel" class="label">运动方向</span>
+        <div class="direction-control">
+          <span id="transmissionReverseText" class="direction-label">反向</span>
+          <button id="transmissionDirectionToggle" class="direction-toggle" type="button" onclick="toggleTransmissionDirection()"><span class="knob"></span></button>
+          <span id="transmissionForwardText" class="direction-label">正向</span>
+        </div>
+      </div>
       <div class="modal-ratio-row">
         <span id="transmissionAmountLabel" class="modal-inline-label">负载运动</span>
         <input id="transmissionAmount" type="number" min="0.001" step="0.001" value="360" oninput="updateTransmissionDraft()">
@@ -586,19 +1113,42 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
     </div>
   </div>
 </div>
+<div id="diagModal" class="modal-shell" onclick="maybeCloseDiagModal(event)">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <h3 id="diagModalTitle" class="modal-title">运行诊断</h3>
+    <pre id="diagModalBody" class="diag-body"></pre>
+    <div class="modal-actions">
+      <button id="diagCopyBtn" class="neutral" onclick="copyDiagText()">复制</button>
+      <button id="diagCloseBtn" class="blue" onclick="closeDiagModal()">关闭</button>
+    </div>
+  </div>
+</div>
+<script>
+__MOTION_CURVE_EDITOR_BLOCK__
+</script>
 <script>
 const REV = 8388608;
 const AXIS_DIR = -1;
 const LANG_KEY = 'mctivity_lang';
+const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
 const MODE_LABELS = {
-  zh: {position:'单点定位', jog:'点动', point:'点位表', homing:'回零/置零', velocity:'速度控制', torque:'转矩控制', gear_cam:'电子齿轮'},
-  en: {position:'Point Positioning', jog:'Jog', point:'Point Table', homing:'Zeroing', velocity:'Velocity Control', torque:'Torque Control', gear_cam:'Electronic Gearing'}
+  zh: {position:'单点定位', incremental:'增量位移', jog:'点动', point:'点位表', homing:'回零/置零', velocity:'速度控制', torque:'转矩控制', gear_cam:'电子齿轮'},
+  en: {position:'Point Positioning', incremental:'Incremental Displacement', jog:'Jog', point:'Point Table', homing:'Zeroing', velocity:'Velocity Control', torque:'Torque Control', gear_cam:'Electronic Gearing'}
 };
 const UI_TEXT = {
   zh: {
-    pageTitle:'多轴控制',
+    pageTitle:'轴控',
     axisA:'轴 A',
     axisB:'轴 B',
+    profile:'装配',
+    features:'模块',
+    capabilities:'能力',
+    warnings:'告警',
+    unsupportedCommand:'命令不可用',
+    requiredCapability:'缺少能力',
+    unauthorizedTitle:'未授权',
+    unauthorizedBody:'API Token 缺失或无效。',
+    apiToken:'API Token',
     virtualAxis:'虚拟主轴',
     motorFeedback:'电机反馈',
     position:'位置',
@@ -632,6 +1182,7 @@ const UI_TEXT = {
     pointPositioning:'单点定位',
     pointConfig:'点表配置',
     posJog:'位置/点动',
+    incrementalParams:'增量位移参数',
     speedTorque:'速度/转矩',
     gear:'电子齿轮',
     cam:'电子凸轮',
@@ -672,6 +1223,7 @@ const UI_TEXT = {
     transmissionModalTitle:'传动设定',
     transmissionTypeFieldLabel:'运动类型',
     transmissionTravelModeLabel:'运动方式',
+    transmissionDirectionLabel:'运动方向',
     transmissionAmountLabel:'负载运动',
     transmissionRevsLabel:'电机旋转',
     transmissionPeriodLabel:'周期',
@@ -679,18 +1231,31 @@ const UI_TEXT = {
     transmissionReverseLabel:'反向极限',
     transmissionCancelBtn:'取消',
     transmissionSaveBtn:'保存',
+    copy:'复制',
+    close:'关闭',
     rotaryType:'旋转',
     linearType:'直线',
     periodicTravel:'周期',
     reciprocatingTravel:'往返',
+    forwardDirection:'正方向',
+    reverseDirection:'反方向',
     loadPrefix:'负载 ',
     motorPrefix:'电机 ',
     revUnit:'rev'
   },
   en: {
-    pageTitle:'Multi-axis Control',
+    pageTitle:'Axis Control',
     axisA:'Axis A',
     axisB:'Axis B',
+    profile:'Profile',
+    features:'Features',
+    capabilities:'Caps',
+    warnings:'Warn',
+    unsupportedCommand:'Unsupported Command',
+    requiredCapability:'Required Capability',
+    unauthorizedTitle:'Unauthorized',
+    unauthorizedBody:'API token is missing or invalid.',
+    apiToken:'API Token',
     virtualAxis:'Virtual Master',
     motorFeedback:'Motor Feedback',
     position:'Position',
@@ -724,6 +1289,7 @@ const UI_TEXT = {
     pointPositioning:'Point Positioning',
     pointConfig:'Point Table',
     posJog:'Position / Jog',
+    incrementalParams:'Incremental Displacement Parameters',
     speedTorque:'Speed / Torque',
     gear:'Electronic Gearing',
     cam:'Electronic Cam',
@@ -764,6 +1330,7 @@ const UI_TEXT = {
     transmissionModalTitle:'Transmission Setup',
     transmissionTypeFieldLabel:'Motion Type',
     transmissionTravelModeLabel:'Travel Type',
+    transmissionDirectionLabel:'Direction',
     transmissionAmountLabel:'Load Travel',
     transmissionRevsLabel:'Motor Rotation',
     transmissionPeriodLabel:'Period',
@@ -771,10 +1338,14 @@ const UI_TEXT = {
     transmissionReverseLabel:'Reverse Limit',
     transmissionCancelBtn:'Cancel',
     transmissionSaveBtn:'Save',
+    copy:'Copy',
+    close:'Close',
     rotaryType:'ROTARY',
     linearType:'LINEAR',
     periodicTravel:'Periodic',
     reciprocatingTravel:'Reciprocating',
+    forwardDirection:'Forward',
+    reverseDirection:'Reverse',
     loadPrefix:'Load ',
     motorPrefix:'Motor ',
     revUnit:'rev'
@@ -795,13 +1366,14 @@ let activeDevice = 'mctivity';
 let currentLang = localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'zh';
 const statusByDevice = {mctivity:null, fv3:null};
 const feedbackByDevice = {mctivity:null, fv3:null};
+const incrementalCurveSnapshots = {mctivity:'', fv3:''};
 const motionStateByDevice = {
   mctivity: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0},
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
 };
 const deviceProfiles = {
-  mctivity: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
-  fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
+  mctivity: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
+  fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
 let uiStateSaveTimer = 0;
 const lastUiStateSnapshot = {mctivity:'', fv3:''};
@@ -814,6 +1386,20 @@ const modePanelStateByDevice = {
   mctivity: null,
   fv3: null
 };
+const capabilityState = {
+  loaded:false,
+  profile:'unknown',
+  capabilities:new Set(),
+  modeMap:{},
+  modeHmiModuleMap:{},
+  activeFeatures:[],
+  enabledFeatureKeys:[],
+  featureAssembly:{loaded:{}, skipped:{}},
+  featureRegistrySource:'',
+  warnings:[],
+  generatedAt:''
+};
+let diagModalText = '';
 function currentModeUi(device = activeDevice) {
   return modeUiStateByDevice[device];
 }
@@ -827,11 +1413,19 @@ function axisDisplayName(device) {
   if (device === 'mctivity') return text.axisA;
   return text.virtualAxis;
 }
+function supportsDevice(device) {
+  if (device === 'mctivity') return true;
+  if (device === 'fv3') {
+    return capabilityState.loaded && capabilityState.capabilities.has('axis.device.fv3.access');
+  }
+  return false;
+}
 function axisDevices() {
-  return Object.keys(deviceProfiles);
+  return Object.keys(deviceProfiles).filter(supportsDevice);
 }
 function preferredGearMaster(device) {
-  return device === 'fv3' ? 'mctivity' : 'fv3';
+  if (device === 'fv3') return 'mctivity';
+  return supportsDevice('fv3') ? 'fv3' : 'virtual';
 }
 function refreshGearPanel(device = activeDevice) {
   const profile = currentProfile(device);
@@ -993,11 +1587,197 @@ function endGearDrag() {
 }
 async function apiForDevice(device, payload) {
   const requestPayload = Object.assign({}, payload, {device});
-  const res = await fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(requestPayload)});
+  const res = await fetch('/api/command', {method:'POST', headers:apiHeaders({'Content-Type':'application/json'}), body: JSON.stringify(requestPayload)});
   return res.json();
 }
 function modeOption(value) {
   return Array.from(modeSelect.options || []).find(opt => opt.value === value) || null;
+}
+function supportsCapability(capability) {
+  if (!capability) return true;
+  if (!capabilityState.loaded) return true;
+  return capabilityState.capabilities.has(capability);
+}
+function modeRequiredCapability(mode) {
+  if (capabilityState.modeMap && capabilityState.modeMap[mode]) {
+    return capabilityState.modeMap[mode];
+  }
+  const localMap = {
+    position:'axis.mode.position.execute',
+    incremental:'axis.mode.incremental.execute',
+    jog:'axis.mode.jog.execute',
+    point:'axis.mode.point.execute',
+    homing:'axis.mode.homing.execute',
+    velocity:'axis.mode.velocity.execute',
+    torque:'axis.mode.torque.execute',
+    gear_cam:'axis.mode.gear_cam.execute'
+  };
+  return localMap[mode] || null;
+}
+function modeRequiredHmiModule(mode) {
+  if (capabilityState.modeHmiModuleMap && capabilityState.modeHmiModuleMap[mode]) {
+    return capabilityState.modeHmiModuleMap[mode];
+  }
+  const localMap = {
+    position:'feature-hmi-single-point',
+    incremental:'feature-hmi-incremental',
+    jog:'feature-hmi-jog',
+    point:'feature-hmi-point',
+    homing:'feature-hmi-homing',
+    velocity:'feature-hmi-velocity',
+    torque:'feature-hmi-torque',
+    gear_cam:'feature-hmi-electronic-gear'
+  };
+  return localMap[mode] || null;
+}
+function supportsHmiModule(moduleId) {
+  if (!moduleId) return true;
+  if (!capabilityState.loaded) return true;
+  return Array.isArray(capabilityState.activeFeatures) && capabilityState.activeFeatures.includes(moduleId);
+}
+function modeIsAssembled(mode) {
+  return supportsCapability(modeRequiredCapability(mode)) && supportsHmiModule(modeRequiredHmiModule(mode));
+}
+function applyCapabilityModeAvailability(device = activeDevice) {
+  let changed = false;
+  for (const opt of Array.from(modeSelect.options || [])) {
+    const assembled = modeIsAssembled(opt.value);
+    const disabled = !assembled;
+    opt.hidden = !assembled;
+    if (opt.disabled !== disabled) {
+      opt.disabled = disabled;
+      changed = true;
+    }
+    const panel = document.getElementById('panel-' + opt.value);
+    if (panel) {
+      panel.hidden = !assembled;
+    }
+  }
+  const requested = modeSelect.value || 'position';
+  if (!modeIsAssembled(requested)) {
+    modeSelect.value = 'position';
+    currentProfile(device).mode = 'position';
+    syncModePanels('position', true);
+    changed = true;
+  }
+  return changed;
+}
+function renderCapabilitySummary() {
+  const warningList = Array.isArray(capabilityState.warnings) ? capabilityState.warnings : [];
+  const warningText = warningList.length ? warningList.join('\n') : 'none';
+  const featureList = Array.isArray(capabilityState.activeFeatures) ? capabilityState.activeFeatures : [];
+  const featureText = featureList.length ? featureList.join('\n') : 'none';
+  setText('profileValue', capabilityState.profile || 'unknown');
+  setText('featureCountValue', String(featureList.length));
+  setText('capabilityCountValue', String(capabilityState.capabilities ? capabilityState.capabilities.size : 0));
+  setText('warningCountValue', String(warningList.length));
+  const profileValueEl = document.getElementById('profileValue');
+  if (profileValueEl) {
+    profileValueEl.title = capabilityState.generatedAt ? ('generated_at: ' + capabilityState.generatedAt) : '';
+  }
+  const warnValueEl = document.getElementById('warningCountValue');
+  if (warnValueEl) {
+    warnValueEl.title = warningText;
+  }
+  const warnChipEl = document.getElementById('warningChip');
+  if (warnChipEl) {
+    warnChipEl.title = warningText;
+  }
+  const featureValueEl = document.getElementById('featureCountValue');
+  if (featureValueEl) {
+    featureValueEl.title = featureText;
+  }
+  const featureChipEl = document.getElementById('featureChip');
+  if (featureChipEl) {
+    featureChipEl.title = featureText;
+  }
+}
+function showFeatureDetails() {
+  const featureList = Array.isArray(capabilityState.activeFeatures) ? capabilityState.activeFeatures : [];
+  const enabledList = Array.isArray(capabilityState.enabledFeatureKeys) ? capabilityState.enabledFeatureKeys : [];
+  const assembly = capabilityState.featureAssembly && typeof capabilityState.featureAssembly === 'object' ? capabilityState.featureAssembly : {loaded:{}, skipped:{}};
+  const loaded = assembly.loaded && typeof assembly.loaded === 'object' ? assembly.loaded : {};
+  const skipped = assembly.skipped && typeof assembly.skipped === 'object' ? assembly.skipped : {};
+  const lines = [];
+  lines.push('profile: ' + (capabilityState.profile || 'unknown'));
+  if (capabilityState.featureRegistrySource) {
+    lines.push('registry: ' + capabilityState.featureRegistrySource);
+  }
+  if (capabilityState.generatedAt) {
+    lines.push('generated_at: ' + capabilityState.generatedAt);
+  }
+  lines.push('features(active modules): ' + featureList.length);
+  lines.push('features(enabled logic): ' + enabledList.length);
+  lines.push('features(skipped logic): ' + Object.keys(skipped).length);
+  if (enabledList.length) {
+    lines.push('---');
+    lines.push('enabled_feature_keys:');
+    for (const k of enabledList) lines.push('- ' + String(k));
+  }
+  const loadedKeys = Object.keys(loaded);
+  if (loadedKeys.length) {
+    lines.push('---');
+    lines.push('loaded_details:');
+    for (const key of loadedKeys.sort()) {
+      const item = loaded[key] || {};
+      const matched = Array.isArray(item.matched_logic_modules) ? item.matched_logic_modules.join(', ') : '';
+      lines.push('- ' + key + ' <= ' + matched);
+    }
+  }
+  const skippedKeys = Object.keys(skipped);
+  if (skippedKeys.length) {
+    lines.push('---');
+    lines.push('skipped_details:');
+    for (const key of skippedKeys.sort()) {
+      const item = skipped[key] || {};
+      const reason = item.reason || 'unknown';
+      lines.push('- ' + key + ' : ' + reason);
+    }
+  }
+  if (featureList.length) {
+    lines.push('---');
+    lines.push('active_modules:');
+    for (const f of featureList) lines.push('- ' + String(f));
+  }
+  openDiagModal('Feature Details', lines.join('\n'));
+  return false;
+}
+function showWarningDetails() {
+  const warningList = Array.isArray(capabilityState.warnings) ? capabilityState.warnings : [];
+  const lines = [];
+  lines.push('profile: ' + (capabilityState.profile || 'unknown'));
+  if (capabilityState.generatedAt) {
+    lines.push('generated_at: ' + capabilityState.generatedAt);
+  }
+  lines.push('warnings: ' + warningList.length);
+  if (warningList.length) {
+    lines.push('---');
+    for (const w of warningList) {
+      lines.push('- ' + String(w));
+    }
+  }
+  openDiagModal('Warning Details', lines.join('\n'));
+  return false;
+}
+function openDiagModal(title, body) {
+  diagModalText = String(body || '');
+  setText('diagModalTitle', String(title || 'Runtime Diagnostics'));
+  setText('diagModalBody', diagModalText);
+  diagModal.classList.add('open');
+}
+function maybeCloseDiagModal(event) {
+  if (event.target === diagModal) closeDiagModal();
+}
+function closeDiagModal() {
+  diagModal.classList.remove('open');
+}
+function copyDiagText() {
+  const text = String(diagModalText || '');
+  if (!text) return false;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  return false;
 }
 function gearMasterHolders(device) {
   return axisDevices().filter(other => other !== device &&
@@ -1023,7 +1803,9 @@ function applyGearModeAvailability(device = activeDevice) {
   const locked = isReferencedAsGearMaster(device);
   if (gearOpt) {
     const modeUi = currentModeUi(device);
-    const nextDisabled = Boolean(locked);
+    const required = modeRequiredCapability('gear_cam');
+    const capBlocked = Boolean(required && !supportsCapability(required));
+    const nextDisabled = Boolean(locked || capBlocked);
     const nextText = locked ? UI_TEXT[currentLang].gearUnavailable : modeLabel('gear_cam');
     if (!(device === activeDevice && modeUi && modeUi.interacting)) {
       if (gearOpt.disabled !== nextDisabled) gearOpt.disabled = nextDisabled;
@@ -1058,13 +1840,37 @@ function enforceGearConstraints() {
 function currentStatus(device = activeDevice) { return statusByDevice[device]; }
 function currentMotion(device = activeDevice) { return motionStateByDevice[device]; }
 function currentProfile(device = activeDevice) { return deviceProfiles[device]; }
+function defaultIncrementalCurveState() {
+  return {mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'};
+}
+function normalizeIncrementalCurveState(raw) {
+  const source = Object.assign({}, defaultIncrementalCurveState(), raw || {});
+  return {
+    mode: source.mode === 'manual' ? 'manual' : 'position',
+    targetPosition: Number(source.targetPosition) || 0,
+    targetSpeed: Math.max(0, Number(source.targetSpeed) || 0),
+    accel: Math.max(0, Number(source.accel) || 0),
+    decel: Math.max(0, Number(source.decel) || 0),
+    dwell: Math.max(0, Number(source.dwell) || 0),
+    blend: source.blend === 'linear' || source.blend === 'aggressive' ? source.blend : 'smooth'
+  };
+}
+function currentIncrementalCurve(device = activeDevice) {
+  const profile = currentProfile(device);
+  profile.incrementalCurve = normalizeIncrementalCurveState(profile.incrementalCurve);
+  return profile.incrementalCurve;
+}
+let incrementalEditor = null;
+let incrementalEditorDevice = '';
+let incrementalEditorLanguage = '';
 function normalizedTransmission(profile = currentProfile()) {
   const source = profile && profile.transmission ? profile.transmission : profile;
-  const tx = Object.assign({type:'rotary', revs:1, amount:360, unit:'deg', travelMode:'periodic', period:null, forwardLimit:null, reverseLimit:null}, source || {});
+  const tx = Object.assign({type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:null, forwardLimit:null, reverseLimit:null}, source || {});
   tx.type = tx.type === 'linear' ? 'linear' : 'rotary';
   tx.revs = Math.max(0.001, Number(tx.revs) || 1);
   tx.amount = Math.max(0.001, Number(tx.amount) || (tx.type === 'linear' ? 1 : 360));
-  tx.travelMode = tx.travelMode === 'reciprocating' ? 'reciprocating' : 'periodic';
+  tx.direction = tx.direction === 'reverse' ? 'reverse' : 'forward';
+  tx.travelMode = tx.type === 'linear' ? 'reciprocating' : (tx.travelMode === 'reciprocating' ? 'reciprocating' : 'periodic');
   tx.period = Math.max(0.001, Number(tx.period) || tx.amount);
   tx.forwardLimit = Number.isFinite(Number(tx.forwardLimit)) ? Number(tx.forwardLimit) : tx.amount;
   tx.reverseLimit = Number.isFinite(Number(tx.reverseLimit)) ? Number(tx.reverseLimit) : -tx.amount;
@@ -1078,12 +1884,17 @@ function transmissionPerRev(profile = currentProfile()) {
   const tx = normalizedTransmission(profile);
   return tx.amount / tx.revs;
 }
+function transmissionDirectionSign(profile = currentProfile()) {
+  const tx = normalizedTransmission(profile);
+  return tx.direction === 'reverse' ? -1 : 1;
+}
 function transmissionValueFromCounts(counts, profile = currentProfile()) {
-  return rev(axisCounts(counts)) * transmissionPerRev(profile);
+  return rev(axisCounts(counts)) * transmissionPerRev(profile) * transmissionDirectionSign(profile);
 }
 function countsFromTransmissionValue(value, profile = currentProfile()) {
   const tx = normalizedTransmission(profile);
-  const motorRev = Number(value) / transmissionPerRev(tx);
+  const direction = tx.direction === 'reverse' ? -1 : 1;
+  const motorRev = Number(value) / (transmissionPerRev(tx) * direction);
   return Math.round((motorRev * REV) / AXIS_DIR);
 }
 function transmissionBounds(profile = currentProfile()) {
@@ -1100,6 +1911,14 @@ function transmissionBounds(profile = currentProfile()) {
     minCounts: countsFromTransmissionValue(minLoad, tx),
     maxCounts: countsFromTransmissionValue(maxLoad, tx)
   };
+}
+function transmissionHasMotionBounds(profile = currentProfile()) {
+  const tx = normalizedTransmission(profile);
+  return tx.type === 'linear' || tx.travelMode === 'reciprocating';
+}
+function transmissionMotionBounds(profile = currentProfile()) {
+  if (!transmissionHasMotionBounds(profile)) return null;
+  return transmissionBounds(profile);
 }
 function formatTransmissionValue(value, digits = 1) {
   const n = Math.abs(Number(value)) < 0.0005 ? 0 : Number(value);
@@ -1126,7 +1945,10 @@ function refillTransmissionUnitOptions(type, preferred) {
   transmissionUnit.value = options.some(opt => opt.value === preferred) ? preferred : options[0].value;
 }
 function syncTransmissionTravelFields() {
-  const isPeriodic = transmissionTravelMode.value !== 'reciprocating';
+  const isLinear = transmissionType.value === 'linear';
+  if (isLinear) transmissionTravelMode.value = 'reciprocating';
+  transmissionTravelMode.disabled = isLinear;
+  const isPeriodic = !isLinear && transmissionTravelMode.value !== 'reciprocating';
   transmissionPeriodRow.classList.toggle('hidden', !isPeriodic);
   transmissionForwardRow.classList.toggle('hidden', isPeriodic);
   transmissionReverseRow.classList.toggle('hidden', isPeriodic);
@@ -1141,6 +1963,7 @@ function openTransmissionDialog() {
   transmissionType.value = transmissionDraft.type;
   refillTransmissionUnitOptions(transmissionDraft.type, transmissionDraft.unit);
   transmissionTravelMode.value = transmissionDraft.travelMode;
+  setTransmissionDirectionValue(transmissionDraft.direction);
   transmissionRevs.value = transmissionDraft.revs;
   transmissionAmount.value = transmissionDraft.amount;
   transmissionPeriod.value = transmissionDraft.period;
@@ -1158,6 +1981,9 @@ function closeTransmissionDialog() {
 function onTransmissionTypeChange() {
   const nextType = transmissionType.value === 'linear' ? 'linear' : 'rotary';
   refillTransmissionUnitOptions(nextType, null);
+  if (nextType === 'linear') {
+    transmissionTravelMode.value = 'reciprocating';
+  }
   if (nextType === 'rotary' && Number(transmissionAmount.value || 0) === 1) {
     transmissionAmount.value = 360;
   }
@@ -1170,24 +1996,49 @@ function onTransmissionTravelModeChange() {
   syncTransmissionTravelFields();
   updateTransmissionDraft();
 }
+function transmissionDirectionValue() {
+  const btn = document.getElementById('transmissionDirectionToggle');
+  if (!btn) return 'forward';
+  return btn.classList.contains('reverse') ? 'reverse' : 'forward';
+}
+function setTransmissionDirectionValue(direction) {
+  const btn = document.getElementById('transmissionDirectionToggle');
+  if (!btn) return;
+  const reverse = direction === 'reverse';
+  btn.classList.toggle('reverse', reverse);
+}
+function toggleTransmissionDirection() {
+  setTransmissionDirectionValue(transmissionDirectionValue() === 'reverse' ? 'forward' : 'reverse');
+  updateTransmissionDraft();
+  return false;
+}
+function parseTransmissionNumber(raw, fallback) {
+  const text = String(raw == null ? '' : raw).trim();
+  if (!text || text === '-' || text === '+') return Number(fallback);
+  const n = Number(text);
+  return Number.isFinite(n) ? n : Number(fallback);
+}
 function updateTransmissionDraft() {
   const type = transmissionType.value === 'linear' ? 'linear' : 'rotary';
+  const prev = normalizedTransmission(transmissionDraft || currentProfile());
   transmissionDraft = normalizedTransmission({
     type,
-    revs: Math.max(0.001, Number(transmissionRevs.value) || 1),
-    amount: Math.max(0.001, Number(transmissionAmount.value) || (type === 'linear' ? 1 : 360)),
+    revs: Math.max(0.001, parseTransmissionNumber(transmissionRevs.value, prev.revs || 1)),
+    amount: Math.max(0.001, parseTransmissionNumber(transmissionAmount.value, prev.amount || (type === 'linear' ? 1 : 360))),
     unit: transmissionUnit.value,
-    travelMode: transmissionTravelMode.value === 'reciprocating' ? 'reciprocating' : 'periodic',
-    period: Math.max(0.001, Number(transmissionPeriod.value) || (type === 'linear' ? 1 : 360)),
-    forwardLimit: Number(transmissionForwardLimit.value || 0),
-    reverseLimit: Number(transmissionReverseLimit.value || 0)
+    direction: transmissionDirectionValue(),
+    travelMode: type === 'linear' ? 'reciprocating' : (transmissionTravelMode.value === 'reciprocating' ? 'reciprocating' : 'periodic'),
+    period: Math.max(0.001, parseTransmissionNumber(transmissionPeriod.value, prev.period || (type === 'linear' ? 1 : 360))),
+    forwardLimit: parseTransmissionNumber(transmissionForwardLimit.value, prev.forwardLimit),
+    reverseLimit: parseTransmissionNumber(transmissionReverseLimit.value, prev.reverseLimit)
   });
-  transmissionRevs.value = transmissionDraft.revs;
-  transmissionAmount.value = transmissionDraft.amount;
-  transmissionPeriod.value = transmissionDraft.period;
-  transmissionForwardLimit.value = transmissionDraft.forwardLimit;
-  transmissionReverseLimit.value = transmissionDraft.reverseLimit;
+  if (document.activeElement !== transmissionRevs) transmissionRevs.value = transmissionDraft.revs;
+  if (document.activeElement !== transmissionAmount) transmissionAmount.value = transmissionDraft.amount;
+  if (document.activeElement !== transmissionPeriod) transmissionPeriod.value = transmissionDraft.period;
+  if (document.activeElement !== transmissionForwardLimit) transmissionForwardLimit.value = transmissionDraft.forwardLimit;
+  if (document.activeElement !== transmissionReverseLimit) transmissionReverseLimit.value = transmissionDraft.reverseLimit;
   transmissionTravelMode.value = transmissionDraft.travelMode;
+  setTransmissionDirectionValue(transmissionDraft.direction);
   syncTransmissionTravelFields();
 }
 function saveTransmissionDialog() {
@@ -1199,11 +2050,13 @@ function saveTransmissionDialog() {
 async function persistUiState(device = activeDevice) {
   if (device === activeDevice) saveUiState(device, false);
   try {
-    await fetch('/api/ui_state', {
+    const res = await fetch('/api/ui_state', {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:apiHeaders({'Content-Type':'application/json'}),
       body: JSON.stringify({device, state: currentProfile(device)})
     });
+    const data = await res.json();
+    showApiError(data);
   } catch (err) {
     console.error(err);
   }
@@ -1218,6 +2071,7 @@ function scheduleUiStateSave(device = activeDevice) {
 function saveUiState(device = activeDevice) {
   const profile = currentProfile(device);
   profile.transmission = normalizedTransmission(profile);
+  profile.incrementalCurve = storeIncrementalCurveState(device, profile.incrementalCurve, false);
   profile.absPos = Number(absPos.value);
   profile.absSpeedRpm = Number(absSpeedRpm.value);
   profile.absAccel = Number(absAccel.value);
@@ -1239,6 +2093,7 @@ function saveUiState(device = activeDevice) {
 function loadUiState(device = activeDevice) {
   const profile = currentProfile(device);
   profile.transmission = normalizedTransmission(profile);
+  profile.incrementalCurve = storeIncrementalCurveState(device, profile.incrementalCurve, false);
   absPos.value = profile.absPos;
   absSpeedRpm.value = profile.absSpeedRpm;
   absAccel.value = profile.absAccel;
@@ -1248,7 +2103,7 @@ function loadUiState(device = activeDevice) {
   torqueCmd.value = profile.torqueCmd;
   gearMasterRatio.value = profile.gearMasterRatio || 1;
   gearSlaveRatio.value = profile.gearSlaveRatio || 1;
-  if (profile.gearMaster && profile.gearMaster !== device) {
+  if (profile.gearMaster && profile.gearMaster !== device && (profile.gearMaster === 'virtual' || supportsDevice(profile.gearMaster))) {
     gearMasterSelect.value = profile.gearMaster;
   } else {
     gearMasterSelect.value = preferredGearMaster(device);
@@ -1260,13 +2115,16 @@ function loadUiState(device = activeDevice) {
 }
 async function hydrateUiStateFromServer() {
   try {
-    const res = await fetch('/api/ui_state');
+    const res = await fetch('/api/ui_state', {headers:apiHeaders()});
     const data = await res.json();
+    showApiError(data);
     if (!data || !data.ok || !data.state || !data.state.devices) return;
     for (const device of axisDevices()) {
       if (!data.state.devices[device]) continue;
       Object.assign(deviceProfiles[device], data.state.devices[device]);
       deviceProfiles[device].transmission = normalizedTransmission(deviceProfiles[device]);
+      deviceProfiles[device].incrementalCurve = normalizeIncrementalCurveState(deviceProfiles[device].incrementalCurve);
+      incrementalCurveSnapshots[device] = JSON.stringify(deviceProfiles[device].incrementalCurve);
     }
   } catch (err) {
     console.error(err);
@@ -1312,13 +2170,98 @@ function motionPayload(target) {
   }, currentMotionBoundsPayload());
 }
 function currentMotionBoundsPayload(profile = currentProfile()) {
-  const bounds = transmissionBounds(profile);
+  const bounds = transmissionMotionBounds(profile);
+  if (!bounds) return {};
   const minNative = axisCounts(bounds.minCounts);
   const maxNative = axisCounts(bounds.maxCounts);
   return {
     min_pos: Math.min(minNative, maxNative),
     max_pos: Math.max(minNative, maxNative)
   };
+}
+function storeIncrementalCurveState(device, nextState, shouldSchedule = true) {
+  const normalized = normalizeIncrementalCurveState(nextState);
+  const snapshot = JSON.stringify(normalized);
+  currentProfile(device).incrementalCurve = normalized;
+  if (incrementalCurveSnapshots[device] !== snapshot) {
+    incrementalCurveSnapshots[device] = snapshot;
+    if (shouldSchedule) {
+      scheduleUiStateSave(device);
+    }
+  }
+  return normalized;
+}
+function buildIncrementalAxisContext(device = activeDevice) {
+  const profile = currentProfile(device);
+  const tx = normalizedTransmission(profile);
+  const bounds = currentMotionBoundsPayload(profile);
+  const status = currentStatus(device);
+  const timeUnit = 's';
+  return {
+    countsPerRev: REV,
+    userUnitsPerRev: transmissionPerRev(tx),
+    positionUnit: tx.unit,
+    speedUnit: `${tx.unit}/${timeUnit}`,
+    accelUnit: `${tx.unit}/${timeUnit}²`,
+    decelUnit: `${tx.unit}/${timeUnit}²`,
+    jerkUnit: `${tx.unit}/${timeUnit}³`,
+    dwellUnit: timeUnit,
+    timeUnit,
+    language: currentLang,
+    direction: tx.direction,
+    axisSign: 1,
+    currentPositionCounts: status ? Number(status.pos || 0) : axisCounts(Number(profile.absPos || 0)),
+    minPositionCounts: bounds.min_pos !== undefined ? Number(bounds.min_pos) : undefined,
+    maxPositionCounts: bounds.max_pos !== undefined ? Number(bounds.max_pos) : undefined
+  };
+}
+function destroyIncrementalEditor() {
+  if (incrementalEditor && typeof incrementalEditor.destroy === 'function') {
+    incrementalEditor.destroy();
+  }
+  incrementalEditor = null;
+  incrementalEditorDevice = '';
+  incrementalEditorLanguage = '';
+}
+function syncIncrementalEditor(forceRemount = false) {
+  const host = document.getElementById('incrementalProfileHost');
+  const selectedMode = (modeSelect && modeSelect.value) || currentProfile().mode || 'position';
+  const editorApi = window.MctivityMotionCurveEditor && window.MctivityMotionCurveEditor.single;
+  if (!host || selectedMode !== 'incremental' || !editorApi) {
+    if (selectedMode !== 'incremental') {
+      destroyIncrementalEditor();
+    }
+    return null;
+  }
+  const device = activeDevice;
+  const initialParams = currentIncrementalCurve(device);
+  const axisContext = buildIncrementalAxisContext(device);
+  const needRemount = forceRemount || !incrementalEditor || incrementalEditorDevice !== device || incrementalEditorLanguage !== currentLang;
+  if (needRemount) {
+    destroyIncrementalEditor();
+    incrementalEditor = editorApi.mount(host, {
+      language: currentLang,
+      hostMode: 'embedded',
+      initialParams,
+      axisContext,
+      onChange(result) {
+        storeIncrementalCurveState(device, result && result.params, true);
+      }
+    });
+    incrementalEditorDevice = device;
+    incrementalEditorLanguage = currentLang;
+    return incrementalEditor;
+  }
+  incrementalEditor.setParams(initialParams);
+  incrementalEditor.setAxisContext(axisContext);
+  return incrementalEditor;
+}
+function currentIncrementalCommandProfile() {
+  const editor = syncIncrementalEditor(false);
+  if (!editor || typeof editor.getCommandProfile !== 'function') {
+    return null;
+  }
+  return editor.getCommandProfile(buildIncrementalAxisContext(activeDevice));
 }
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function updateFeedbackDial(handId, valueId, value, maxAbs, digits, unit) {
@@ -1332,17 +2275,52 @@ function updateFeedbackDial(handId, valueId, value, maxAbs, digits, unit) {
   const unitEl = valueEl.nextElementSibling;
   if (unitEl && unit) unitEl.textContent = unit;
 }
+function getApiToken() {
+  return sessionStorage.getItem(API_TOKEN_KEY) || '';
+}
+function setApiToken(value) {
+  const token = String(value || '').trim();
+  if (token) sessionStorage.setItem(API_TOKEN_KEY, token);
+  else sessionStorage.removeItem(API_TOKEN_KEY);
+}
+function apiHeaders(extra = {}) {
+  const headers = Object.assign({}, extra);
+  const token = getApiToken();
+  if (token) headers['X-MCTIVITY-Token'] = token;
+  return headers;
+}
+function initApiTokenInput() {
+  const input = document.getElementById('apiTokenInput');
+  if (!input) return;
+  input.value = getApiToken();
+  input.addEventListener('input', () => setApiToken(input.value));
+  input.addEventListener('change', () => hydrateUiStateFromServer().catch(err => console.error(err)));
+}
+function showApiError(data) {
+  const text = UI_TEXT[currentLang];
+  if (!data || data.ok) return;
+  if (data.error === 'unauthorized') {
+    openDiagModal(text.unauthorizedTitle, text.unauthorizedBody);
+    return;
+  }
+  if (data.error === 'unsupported_command') {
+    const required = data.required_capability || '--';
+    openDiagModal(text.unsupportedCommand, text.requiredCapability + ': ' + required);
+  }
+}
 async function api(payload) {
   if ((payload && payload.cmd) === 'status') {
     const res = await fetch('/api/status?device=' + encodeURIComponent(activeDevice));
     const data = await res.json();
     if (data.ok && data.status) render(data.status);
+    showApiError(data);
     return data;
   }
   const requestPayload = Object.assign({}, payload, {device: activeDevice});
-  const res = await fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(requestPayload)});
+  const res = await fetch('/api/command', {method:'POST', headers:apiHeaders({'Content-Type':'application/json'}), body: JSON.stringify(requestPayload)});
   const data = await res.json();
   if (data.ok && data.status) render(data.status);
+  showApiError(data);
   return data;
 }
 function cls(el, good) { el.className = 'value ' + (good ? 'good' : 'bad'); }
@@ -1358,24 +2336,39 @@ function refreshModeOptions() {
       opt.textContent = modeLabel(opt.value);
     }
   }
+  applyCapabilityModeAvailability(activeDevice);
 }
 function refreshGearMasterOptions() {
   if (!gearMasterSelect || !gearMasterSelect.options) return;
   gearMasterSelect.options[0].textContent = axisDisplayName('mctivity');
   gearMasterSelect.options[1].textContent = axisDisplayName('fv3');
+  gearMasterSelect.options[1].disabled = !supportsDevice('fv3');
+  gearMasterSelect.options[1].hidden = !supportsDevice('fv3');
   if (gearMasterSelect.options[2]) gearMasterSelect.options[2].textContent = UI_TEXT[currentLang].virtualAxis;
 }
 function refreshStaticText() {
   const text = UI_TEXT[currentLang];
   document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
+  document.body.classList.toggle('lang-en', currentLang === 'en');
+  document.body.classList.toggle('lang-zh', currentLang === 'zh');
   document.title = text.pageTitle;
   setText('pageTitle', text.pageTitle);
   setText('tabMonitorBtn', text.axisA);
   setText('tabConfigBtn', text.axisB);
   setText('protocolChip', 'EtherCAT');
+  setText('profileLabel', text.profile);
+  setText('featureCountLabel', text.features);
+  setText('capabilityCountLabel', text.capabilities);
+  setText('warningCountLabel', text.warnings);
   const langToggleBtn = document.getElementById('langToggleBtn');
   const langZhBtn = document.getElementById('langZhBtn');
   const langEnBtn = document.getElementById('langEnBtn');
+  const apiTokenInput = document.getElementById('apiTokenInput');
+  if (apiTokenInput) {
+    apiTokenInput.placeholder = text.apiToken;
+    apiTokenInput.setAttribute('aria-label', text.apiToken);
+    apiTokenInput.title = text.apiToken;
+  }
   if (langToggleBtn) {
     langToggleBtn.setAttribute('aria-label', currentLang === 'zh' ? '语言' : 'Language');
     langToggleBtn.title = currentLang === 'zh' ? '语言' : 'Language';
@@ -1401,6 +2394,9 @@ function refreshStaticText() {
   setText('transmissionModalTitle', text.transmissionModalTitle);
   setText('transmissionTypeFieldLabel', text.transmissionTypeFieldLabel);
   setText('transmissionTravelModeLabel', text.transmissionTravelModeLabel);
+  setText('transmissionDirectionLabel', text.transmissionDirectionLabel);
+  setText('transmissionReverseText', text.reverseDirection);
+  setText('transmissionForwardText', text.forwardDirection);
   setText('transmissionAmountLabel', text.transmissionAmountLabel);
   setText('transmissionRevsLabel', text.transmissionRevsLabel);
   setText('transmissionPeriodLabel', text.transmissionPeriodLabel);
@@ -1408,6 +2404,8 @@ function refreshStaticText() {
   setText('transmissionReverseLabel', text.transmissionReverseLabel);
   setText('transmissionCancelBtn', text.transmissionCancelBtn);
   setText('transmissionSaveBtn', text.transmissionSaveBtn);
+  setText('diagCopyBtn', text.copy);
+  setText('diagCloseBtn', text.close);
   const transmissionTypeSelect = document.getElementById('transmissionType');
   if (transmissionTypeSelect && transmissionTypeSelect.options[0]) transmissionTypeSelect.options[0].textContent = text.rotaryType;
   if (transmissionTypeSelect && transmissionTypeSelect.options[1]) transmissionTypeSelect.options[1].textContent = text.linearType;
@@ -1426,8 +2424,6 @@ function refreshStaticText() {
   const positionLabels = document.querySelectorAll('#panel-position .vertical-slider label');
   if (positionLabels[0]) positionLabels[0].textContent = text.speed;
   if (positionLabels[1]) positionLabels[1].textContent = text.accel;
-  const positionButton = document.querySelector('#panel-position button.blue');
-  if (positionButton) positionButton.textContent = text.move;
   const targetUnit = document.querySelector('.target-unit');
   if (targetUnit) targetUnit.textContent = normalizedTransmission(currentProfile()).unit;
   const jogTitles = document.querySelectorAll('#panel-jog .slider-title');
@@ -1482,12 +2478,14 @@ function refreshStaticText() {
   document.querySelectorAll('#tabConfig .point-actions button').forEach(btn => btn.textContent = text.record);
   refreshModeOptions();
   refreshGearMasterOptions();
+  renderCapabilitySummary();
 }
 function applyLanguage() {
   refreshStaticText();
   refreshGearPanel(activeDevice);
   syncModeSelectDisabled(activeDevice);
   syncModePanels((currentProfile(activeDevice) && currentProfile(activeDevice).mode) || modeSelect.value || 'position', true);
+  syncIncrementalEditor(true);
   updateSliders();
   const status = currentStatus();
   if (status) render(status);
@@ -1549,19 +2547,67 @@ function faultName(err, sw) {
   return names[code] || ((Number(sw) & 0x0008) ? text.faultServo : text.faultCode);
 }
 function showTab(name) {
-  saveUiState();
-  activeDevice = name === 'config' ? 'fv3' : 'mctivity';
-  tabMonitor.classList.add('active');
-  tabConfig.classList.remove('active');
-  tabMonitorBtn.classList.toggle('active', activeDevice === 'mctivity');
-  tabConfigBtn.classList.toggle('active', activeDevice === 'fv3');
+  switchAxis(name === 'config' ? 'fv3' : 'mctivity');
+}
+function switchAxis(deviceName) {
+  try {
+    saveUiState();
+  } catch (err) {
+    console.error('saveUiState before axis switch failed', err);
+  }
+  const monitorPanel = document.getElementById('tabMonitor');
+  const configPanel = document.getElementById('tabConfig');
+  const monitorBtn = document.getElementById('tabMonitorBtn');
+  const configBtn = document.getElementById('tabConfigBtn');
+  activeDevice = supportsDevice(deviceName) && deviceName === 'fv3' ? 'fv3' : 'mctivity';
+  if (monitorPanel) monitorPanel.classList.add('active');
+  if (configPanel) configPanel.classList.remove('active');
+  if (monitorBtn) monitorBtn.classList.toggle('active', activeDevice === 'mctivity');
+  if (configBtn) configBtn.classList.toggle('active', activeDevice === 'fv3');
   loadUiState();
   enforceGearConstraints();
   feedbackByDevice[activeDevice] = null;
   syncModePanels(modeSelect.value || 'position', true);
+  syncIncrementalEditor(true);
   setGearPanelLocked(isGearPanelLocked(activeDevice));
   updateSliders();
+  const cachedStatus = currentStatus(activeDevice);
+  if (cachedStatus) {
+    render(cachedStatus);
+  }
   api({cmd:'status'}).catch(() => {});
+}
+function bindAxisSwitchButtons() {
+  const bindings = [
+    ['tabMonitorBtn', 'mctivity'],
+    ['tabConfigBtn', 'fv3'],
+  ];
+  bindings.forEach(([id, device]) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.removeAttribute('onclick');
+    const activate = event => {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (supportsDevice(device)) switchAxis(device);
+    };
+    button.addEventListener('click', activate);
+    button.addEventListener('touchend', activate, {passive:false});
+  });
+}
+function refreshDeviceTabs() {
+  const configBtn = document.getElementById('tabConfigBtn');
+  const fv3Enabled = supportsDevice('fv3');
+  if (configBtn) {
+    configBtn.hidden = !fv3Enabled;
+    configBtn.disabled = !fv3Enabled;
+    configBtn.setAttribute('aria-hidden', fv3Enabled ? 'false' : 'true');
+  }
+  if (!fv3Enabled && activeDevice === 'fv3') {
+    activeDevice = 'mctivity';
+  }
 }
 function renderMotionToggle(active, activeText) {
   const motionIndicator = document.getElementById('motionIndicator');
@@ -1572,21 +2618,28 @@ function renderMotionToggle(active, activeText) {
   motionText.textContent = active ? (activeText || text.inMotion) : text.standstill;
 }
 function syncModePanels(mode, force=false) {
-  const active = mode || 'position';
+  const active = modeIsAssembled(mode || 'position') ? (mode || 'position') : 'position';
   if (!force && modePanelStateByDevice[activeDevice] === active) return;
   modePanelStateByDevice[activeDevice] = active;
   const text = UI_TEXT[currentLang];
+  const activeModeCard = document.querySelector('.active-mode-card');
   for (const key of Object.keys(MODE_LABELS.zh)) {
     const panel = document.getElementById('panel-' + key);
     if (panel) panel.classList.toggle('active', key === active);
   }
+  if (activeModeCard) {
+    activeModeCard.classList.toggle('incremental-scroll', active === 'incremental');
+  }
   if (active === 'position') {
     setText('modePanelTitle', text.posParams);
+  } else if (active === 'incremental') {
+    setText('modePanelTitle', text.incrementalParams);
   } else if (active === 'gear_cam') {
     setText('modePanelTitle', text.gearParams);
   } else {
     setText('modePanelTitle', modeLabel(active) + ' ' + text.controlSuffix);
   }
+  syncIncrementalEditor(active === 'incremental');
 }
 function updateGearMaster() {
   if (isGearPanelLocked()) return;
@@ -1691,11 +2744,14 @@ function render(s) {
     if (modeSelect && device === activeDevice && !modeUi.pending && s.control_mode && modeSelect.value !== s.control_mode) {
       modeSelect.value = s.control_mode;
     }
-    if (!modeUi.pending && s.control_mode) {
+  if (!modeUi.pending && s.control_mode) {
       currentProfile(device).mode = s.control_mode;
     }
     syncModePanels(modeUi.pending || s.control_mode || currentProfile(device).mode || 'position');
     enforceGearConstraints();
+  }
+  if (device === activeDevice && incrementalEditor) {
+    incrementalEditor.setAxisContext(buildIncrementalAxisContext(device));
   }
   const a = deg(s.pos);
   setText('encoderAngle', a.toFixed(1) + ' deg');
@@ -1935,6 +2991,24 @@ async function startSinglePointMotion() {
     }
     motionState.gearEngaged = false;
     setGearPanelLocked(false);
+    if (modeSelect && modeSelect.value === 'incremental') {
+      syncIncrementalEditor(false);
+      const curveProfile = currentIncrementalCommandProfile();
+      if (!curveProfile || !curveProfile.command) {
+        throw new Error('incremental profile editor is unavailable');
+      }
+      if (!curveProfile.valid) {
+        openDiagModal(modeLabel('incremental'), (curveProfile.errors || []).join('\n') || 'incremental profile is not executable');
+        throw new Error('incremental profile is not executable');
+      }
+      const modeResult = await api({cmd:'set_mode', mode:'incremental'});
+      if (!modeResult.ok) throw new Error(modeResult.error || 'set_mode incremental failed');
+      if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
+      const moveResult = await api(curveProfile.command);
+      if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
+      if (!moveResult.ok) throw new Error(moveResult.error || 'move_curve_rel failed');
+      return moveResult;
+    }
     if (modeSelect && modeSelect.value !== 'position') {
       modeSelect.value = 'position';
       syncModePanels('position');
@@ -1974,7 +3048,11 @@ function gotoPoint(n) { absPos.value = currentProfile().points[n]; updateSliders
 function lockViewport() {
   document.addEventListener('gesturestart', e => e.preventDefault(), {passive:false});
   document.addEventListener('touchmove', e => {
-    if (!e.target.closest('input[type=range]') && !e.target.closest('.gear-wheel')) e.preventDefault();
+    if (
+      !e.target.closest('input[type=range]') &&
+      !e.target.closest('.gear-wheel') &&
+      !e.target.closest('.active-mode-card.incremental-scroll')
+    ) e.preventDefault();
   }, {passive:false});
   document.addEventListener('dblclick', e => e.preventDefault(), {passive:false});
 }
@@ -1987,6 +3065,7 @@ lockViewport();
 document.addEventListener('pointerdown', tryFullscreen, {once:true});
 const langToggleBtn = document.getElementById('langToggleBtn');
 const langDropdown = document.getElementById('langDropdown');
+bindAxisSwitchButtons();
 if (langToggleBtn) {
   langToggleBtn.addEventListener('click', toggleLanguageMenu);
 }
@@ -2004,9 +3083,57 @@ if (modeSelect) {
     syncModePanels((currentModeUi().pending || (currentStatus() && currentStatus().control_mode) || currentProfile().mode || modeSelect.value || 'position'), true);
   });
 }
+const warningChip = document.getElementById('warningChip');
+if (warningChip) {
+  warningChip.addEventListener('click', showWarningDetails);
+  warningChip.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      showWarningDetails();
+    }
+  });
+}
+const featureChip = document.getElementById('featureChip');
+if (featureChip) {
+  featureChip.addEventListener('click', showFeatureDetails);
+  featureChip.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      showFeatureDetails();
+    }
+  });
+}
+initApiTokenInput();
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeDiagModal();
+    closeTransmissionDialog();
+  }
+});
 async function bootstrapUi() {
+  try {
+    const res = await fetch('/api/capabilities');
+    const data = await res.json();
+    if (data && data.ok) {
+      capabilityState.loaded = true;
+      capabilityState.profile = data.profile || 'unknown';
+      capabilityState.capabilities = new Set(Array.isArray(data.capabilities) ? data.capabilities : []);
+      capabilityState.modeMap = (data.mode_capability_map && typeof data.mode_capability_map === 'object') ? data.mode_capability_map : {};
+      capabilityState.modeHmiModuleMap = (data.mode_hmi_module_map && typeof data.mode_hmi_module_map === 'object') ? data.mode_hmi_module_map : {};
+      capabilityState.activeFeatures = Array.isArray(data.active_features) ? data.active_features : [];
+      capabilityState.enabledFeatureKeys = Array.isArray(data.enabled_feature_keys) ? data.enabled_feature_keys : [];
+      capabilityState.featureAssembly = (data.feature_assembly && typeof data.feature_assembly === 'object') ? data.feature_assembly : {loaded:{}, skipped:{}};
+      capabilityState.featureRegistrySource = data.feature_registry_source || '';
+      capabilityState.warnings = Array.isArray(data.warnings) ? data.warnings : [];
+      capabilityState.generatedAt = data.generated_at || '';
+    }
+  } catch (err) {
+    console.error(err);
+  }
+  refreshDeviceTabs();
   await hydrateUiStateFromServer();
   loadUiState('mctivity');
+  applyCapabilityModeAvailability('mctivity');
   enforceGearConstraints();
   applyLanguage();
   setInterval(() => api({cmd:'status'}).catch(() => {}), 300);
@@ -2038,6 +3165,16 @@ def _default_ui_state():
     return {"devices": {}}
 
 
+def _finite_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _normalize_ui_device_state(raw):
     if not isinstance(raw, dict):
         return None
@@ -2055,10 +3192,9 @@ def _normalize_ui_device_state(raw):
     )
     for field in numeric_fields:
         if field in raw:
-            try:
-                normalized[field] = float(raw[field])
-            except (TypeError, ValueError):
-                pass
+            value = _finite_float(raw[field])
+            if value is not None:
+                normalized[field] = value
     if "mode" in raw and isinstance(raw["mode"], str):
         normalized["mode"] = raw["mode"]
     if "gearMaster" in raw and isinstance(raw["gearMaster"], str):
@@ -2067,26 +3203,40 @@ def _normalize_ui_device_state(raw):
     if isinstance(points, dict):
         normalized_points = {}
         for key, value in points.items():
-            try:
-                normalized_points[str(key)] = float(value)
-            except (TypeError, ValueError):
-                continue
+            number = _finite_float(value)
+            if number is not None:
+                normalized_points[str(key)] = number
         if normalized_points:
             normalized["points"] = normalized_points
     tx = raw.get("transmission")
     if isinstance(tx, dict):
         normalized_tx = {}
-        for key in ("type", "unit", "travelMode"):
+        for key in ("type", "unit", "travelMode", "direction"):
             if key in tx and isinstance(tx[key], str):
                 normalized_tx[key] = tx[key]
         for key in ("revs", "amount", "period", "forwardLimit", "reverseLimit"):
             if key in tx:
-                try:
-                    normalized_tx[key] = float(tx[key])
-                except (TypeError, ValueError):
-                    continue
+                value = _finite_float(tx[key])
+                if value is not None:
+                    normalized_tx[key] = value
         if normalized_tx:
             normalized["transmission"] = normalized_tx
+    incremental_curve = raw.get("incrementalCurve")
+    if isinstance(incremental_curve, dict):
+        normalized_curve = {}
+        mode = incremental_curve.get("mode")
+        blend = incremental_curve.get("blend")
+        if isinstance(mode, str):
+            normalized_curve["mode"] = mode
+        if isinstance(blend, str):
+            normalized_curve["blend"] = blend
+        for key in ("targetPosition", "targetSpeed", "accel", "decel", "dwell"):
+            if key in incremental_curve:
+                value = _finite_float(incremental_curve[key])
+                if value is not None:
+                    normalized_curve[key] = value
+        if normalized_curve:
+            normalized["incrementalCurve"] = normalized_curve
     return normalized
 
 
@@ -2126,7 +3276,7 @@ def save_ui_state(device, state):
             os.makedirs(directory, exist_ok=True)
         tmp_path = UI_STATE_PATH + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(merged, fh, ensure_ascii=False, indent=2)
+            json.dump(merged, fh, ensure_ascii=False, indent=2, allow_nan=False)
         os.replace(tmp_path, UI_STATE_PATH)
 
 
@@ -2220,7 +3370,7 @@ def _mode_name(mode):
 
 def _fv3_mode_code_from_name(mode_name):
     name = str(mode_name or "").strip().lower()
-    if name in ("position", "jog", "point"):
+    if name in ("position", "incremental", "jog", "point"):
         # FV3 single-axis motion uses PP trigger sequence.
         return 1
     if name == "gear_cam":
@@ -2233,6 +3383,18 @@ def _fv3_mode_code_from_name(mode_name):
     if name == "torque":
         return 10
     return 8
+
+
+_VALID_FV3_MODES = {
+    "position",
+    "incremental",
+    "jog",
+    "point",
+    "homing",
+    "velocity",
+    "torque",
+    "gear_cam",
+}
 
 
 def fv3_status():
@@ -2252,17 +3414,46 @@ def _apply_fv3_profile_from_payload(payload):
 
 def fv3_command(payload):
     payload2 = dict(payload)
-    cmd = str(payload2.get("cmd", "status"))
-    if cmd in ("move_abs", "move_rel"):
-        _apply_fv3_profile_from_payload(payload2)
+    cmd = str(payload2.get("cmd", "status")).strip().lower()
     if cmd == "set_mode":
-        mode_code = _fv3_mode_code_from_name(payload2.get("mode", "position"))
-        _write_sdo(FV3_SLAVE_POSITION, "int8", "0x6060", mode_code)
-    if cmd in ("gear_config", "gear_start"):
-        # Keep FV3 in CSP while running electronic gear tracking.
-        _write_sdo(FV3_SLAVE_POSITION, "int8", "0x6060", 8)
-    payload2["device"] = "fv3"
+        mode_name = str(payload2.get("mode", "position")).strip().lower()
+        if mode_name not in _VALID_FV3_MODES:
+            return {"ok": False, "error": "unsupported_fv3_mode", "mode": mode_name}
+    clean = {"cmd": cmd, "device": "fv3"}
+    for key, value in payload2.items():
+        if key not in ("cmd", "device"):
+            clean[key] = value
+    return motiond_command(clean)
+
+
+def _transport_command(device, payload):
+    """
+    Transport layer for axis commands.
+    Keeps protocol behavior unchanged while dispatching by logical feature.
+    """
+    if device not in ("mctivity", "fv3"):
+        return {"ok": False, "error": "unsupported_device"}
+    payload2 = dict(payload)
+    payload2.pop("device", None)
+    if device == "fv3":
+        return fv3_command(payload2)
     return motiond_command(payload2)
+
+
+def _wait_motion_ready(device, timeout_sec=3.0, poll_sec=0.05):
+    end_ts = time.time() + max(0.1, float(timeout_sec))
+    last_status = {}
+    while time.time() <= end_ts:
+        rsp = _transport_command(device, {"cmd": "status"})
+        last_status = rsp.get("status", {}) if isinstance(rsp, dict) else {}
+        if rsp.get("ok") and not last_status.get("fault"):
+            if last_status.get("enabled") and int(last_status.get("settle_cycles") or 0) == 0:
+                return True, None
+        time.sleep(max(0.01, float(poll_sec)))
+    enabled = bool(last_status.get("enabled"))
+    fault = bool(last_status.get("fault"))
+    settle = int(last_status.get("settle_cycles") or 0)
+    return False, f"servo is not ready for motion (enabled={enabled}, fault={fault}, settle_cycles={settle})"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2270,26 +3461,136 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def send_json(self, obj, status=200):
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        try:
+            body = json.dumps(obj, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError):
+            status = 500
+            body = json.dumps({"ok": False, "error": "invalid_json_response"}, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def _is_authorized(self):
+        if not API_TOKEN:
+            return True
+        header_token = self.headers.get("X-MCTIVITY-Token", "").strip()
+        if header_token and hmac.compare_digest(header_token, API_TOKEN):
+            return True
+        auth = self.headers.get("Authorization", "").strip()
+        return bool(auth) and hmac.compare_digest(auth, f"Bearer {API_TOKEN}")
+
+    def _require_authorized(self):
+        if self._is_authorized():
+            return True
+        self.send_json({"ok": False, "error": "unauthorized"}, 401)
+        return False
+
+    def _require_json_content_type(self):
+        ctype = self.headers.get("Content-Type", "")
+        media_type = ctype.split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            self.send_json({"ok": False, "error": "unsupported_media_type"}, 415)
+            return False
+        return True
+
+    def _require_allowed_host(self):
+        host = self.headers.get("Host", "").strip()
+        name = _split_host_header(host)
+        if not name or name not in _allowed_host_names():
+            self.send_json({"ok": False, "error": "forbidden_host"}, 403)
+            return False
+        return True
+
+    def _require_same_origin(self):
+        origin = self.headers.get("Origin", "").strip()
+        if not origin:
+            return True
+        host = self.headers.get("Host", "").strip()
+        if not host:
+            self.send_json({"ok": False, "error": "forbidden_origin"}, 403)
+            return False
+        host_name = _split_host_header(host)
+        port = _port_from_host_header(host)
+        allowed = {f"http://{host}".rstrip("/")}
+        if host_name in ("127.0.0.1", "localhost", "::1"):
+            allowed.add(f"http://127.0.0.1:{port}")
+            allowed.add(f"http://localhost:{port}")
+            allowed.add(f"http://[::1]:{port}")
+        if origin.rstrip("/") not in allowed:
+            self.send_json({"ok": False, "error": "forbidden_origin"}, 403)
+            return False
+        return True
+
+    def _read_json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json({"ok": False, "error": "invalid_content_length"}, 400)
+            return None
+        if length < 0:
+            self.send_json({"ok": False, "error": "invalid_content_length"}, 400)
+            return None
+        if length > MAX_REQUEST_BYTES:
+            self.send_json({"ok": False, "error": "payload_too_large", "max_bytes": MAX_REQUEST_BYTES}, 413)
+            return None
+        body = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            self.send_json({"ok": False, "error": "invalid_json"}, 400)
+            return None
+        if not isinstance(payload, dict):
+            self.send_json({"ok": False, "error": "invalid_json_object"}, 400)
+            return None
+        return payload
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
         device = (query.get("device", ["mctivity"])[0] or "mctivity").lower()
+        if not self._require_allowed_host():
+            return
         if path == "/" or path == "/index.html":
-            body = HTML.encode("utf-8")
+            try:
+                curve_block = MOTION_CURVE_EDITOR_ASSET_PATH.read_text(encoding="utf-8")
+            except Exception:
+                curve_block = ""
+            body = HTML.replace("__MOTION_CURVE_EDITOR_BLOCK__", curve_block).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif path == "/assets/motion-curve-editor.js":
+            try:
+                body = MOTION_CURVE_EDITOR_ASSET_PATH.read_bytes()
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 503)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/assets/logo.png":
+            try:
+                body = (ASSETS_ROOT / "logo.png").read_bytes()
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 503)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif path == "/api/status":
+            device = _normalize_device(device)
+            if device is None:
+                self.send_json({"ok": False, "error": "unsupported_device"}, 400)
+                return
             try:
                 if device == "fv3":
                     self.send_json(fv3_status())
@@ -2297,7 +3598,26 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(motiond_command({"cmd": "status"}))
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 503)
+        elif path == "/api/capabilities":
+            self.send_json(capability_manifest())
+        elif path == "/api/health/modular":
+            manifest = capability_manifest()
+            warnings = manifest.get("warnings", [])
+            self.send_json(
+                {
+                    "ok": True,
+                    "status": "healthy" if not warnings else "degraded",
+                    "profile": manifest.get("profile"),
+                    "feature_count": len(manifest.get("active_features", [])),
+                    "capability_count": len(manifest.get("capabilities", [])),
+                    "warning_count": len(warnings),
+                    "warnings": warnings,
+                    "generated_at": manifest.get("generated_at"),
+                }
+            )
         elif path == "/api/ui_state":
+            if not self._require_authorized():
+                return
             try:
                 self.send_json({"ok": True, "state": load_ui_state()})
             except Exception as exc:
@@ -2310,22 +3630,74 @@ class Handler(BaseHTTPRequestHandler):
         if path not in ("/api/command", "/api/ui_state"):
             self.send_error(404)
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length) if length else b"{}"
+        if not self._require_allowed_host():
+            return
+        if not self._require_same_origin():
+            return
+        if not self._require_json_content_type():
+            return
+        if not self._require_authorized():
+            return
+        payload = self._read_json_body()
+        if payload is None:
+            return
         try:
-            payload = json.loads(body.decode("utf-8"))
             if path == "/api/ui_state":
-                device = str(payload.get("device", "mctivity")).lower()
+                device = _normalize_device(payload.get("device", "mctivity"))
+                if device is None:
+                    self.send_json({"ok": False, "error": "unsupported_device"}, 400)
+                    return
                 state = payload.get("state", {})
                 save_ui_state(device, state)
                 self.send_json({"ok": True, "state": load_ui_state()})
             else:
-                device = str(payload.pop("device", "mctivity")).lower()
-                if device == "fv3":
-                    status = fv3_command(payload)
-                    self.send_json(status, 400 if not status.get("ok") else 200)
-                else:
-                    self.send_json(motiond_command(payload))
+                cmd = _normalize_command_name(payload)
+                if cmd is None:
+                    self.send_json({"ok": False, "error": "unsupported_command"}, 400)
+                    return
+                if cmd == "set_mode":
+                    mode_name = str(payload.get("mode", "")).strip().lower()
+                    if mode_name not in _VALID_MODES:
+                        self.send_json({"ok": False, "error": "unsupported_mode", "mode": mode_name}, 400)
+                        return
+                device = _normalize_device(payload.get("device", "mctivity"))
+                if device is None:
+                    self.send_json({"ok": False, "error": "unsupported_device"}, 400)
+                    return
+                payload = _sanitize_command_payload(payload, device)
+                if payload is None:
+                    self.send_json({"ok": False, "error": "unsupported_command"}, 400)
+                    return
+                enabled, required = _command_is_enabled(payload)
+                if not enabled:
+                    self.send_json(
+                        {
+                            "ok": False,
+                            "error": "unsupported_command",
+                            "required_capability": required,
+                            "capabilities": sorted(_CAPABILITY_SET),
+                        },
+                        400,
+                    )
+                    return
+                status = feature_dispatch_axis_command(
+                    device,
+                    payload,
+                    _transport_command,
+                    adapter=ProtocolAdapter(
+                        wait_motion_ready_fn=_wait_motion_ready,
+                        apply_fv3_profile_fn=_apply_fv3_profile_from_payload,
+                        fv3_set_mode_fn=lambda mode_name: _write_sdo(
+                            FV3_SLAVE_POSITION,
+                            "int8",
+                            "0x6060",
+                            _fv3_mode_code_from_name(mode_name),
+                        ),
+                        fv3_force_csp_fn=lambda: _write_sdo(FV3_SLAVE_POSITION, "int8", "0x6060", 8),
+                    ),
+                    enabled_feature_keys=_ENABLED_FEATURE_KEYS,
+                )
+                self.send_json(status, 400 if not status.get("ok") else 200)
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, 503)
 

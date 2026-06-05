@@ -1,0 +1,13 @@
+{
+  "id": "axis-feedback-panel",
+  "type": "hmi_panel",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [],
+  "conflicts": [],
+  "capabilities": [
+    "axis.feedback.view"
+  ],
+  "apiVersion": "v1"
+}
+
