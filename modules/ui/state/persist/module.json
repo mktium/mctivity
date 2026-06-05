@@ -1,0 +1,13 @@
+{
+  "id": "ui-state-persist",
+  "type": "runtime_service",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [],
+  "conflicts": [],
+  "capabilities": [
+    "axis.state.persist"
+  ],
+  "apiVersion": "v1"
+}
+

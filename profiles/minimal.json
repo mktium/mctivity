@@ -1,0 +1,13 @@
+{
+  "profile": "minimal",
+  "domains": [
+    "axis_control_domain"
+  ],
+  "modules": [
+    "axis-feedback-panel",
+    "axis-control-panel",
+    "feature-logic-single-point",
+    "feature-hmi-single-point",
+    "ui-state-persist"
+  ]
+}

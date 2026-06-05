@@ -1,0 +1,66 @@
+{
+  "position": {
+    "logic_modules": [
+      "feature-logic-single-point",
+      "feature-logic-jog",
+      "feature-logic-point",
+      "feature-logic-homing"
+    ],
+    "commands": [
+      "move_abs",
+      "move_rel"
+    ],
+    "modes": [
+      "position",
+      "jog",
+      "point",
+      "homing"
+    ]
+  },
+  "incremental": {
+    "logic_modules": [
+      "feature-logic-incremental"
+    ],
+    "commands": [
+      "move_curve_rel"
+    ],
+    "modes": [
+      "incremental"
+    ]
+  },
+  "velocity": {
+    "logic_modules": [
+      "feature-logic-velocity"
+    ],
+    "commands": [
+      "jog_velocity"
+    ],
+    "modes": [
+      "velocity"
+    ]
+  },
+  "torque": {
+    "logic_modules": [
+      "feature-logic-torque"
+    ],
+    "commands": [
+      "torque_cmd"
+    ],
+    "modes": [
+      "torque"
+    ]
+  },
+  "gear_cam": {
+    "logic_modules": [
+      "feature-logic-electronic-gear"
+    ],
+    "commands": [
+      "gear_config",
+      "gear_start",
+      "gear_stop"
+    ],
+    "modes": [
+      "gear_cam"
+    ]
+  }
+}

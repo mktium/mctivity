@@ -1,0 +1,30 @@
+{
+  "profile": "full",
+  "domains": [
+    "axis_control_domain",
+    "device_application_domain"
+  ],
+  "modules": [
+    "axis-feedback-panel",
+    "axis-control-panel",
+    "feature-logic-single-point",
+    "feature-hmi-single-point",
+    "feature-logic-incremental",
+    "feature-hmi-incremental",
+    "feature-logic-jog",
+    "feature-hmi-jog",
+    "feature-logic-point",
+    "feature-hmi-point",
+    "feature-logic-homing",
+    "feature-hmi-homing",
+    "feature-logic-velocity",
+    "feature-hmi-velocity",
+    "feature-logic-torque",
+    "feature-hmi-torque",
+    "feature-logic-electronic-gear",
+    "feature-hmi-electronic-gear",
+    "feature-logic-dual-axis-fv3",
+    "feature-hmi-dual-axis-fv3",
+    "ui-state-persist"
+  ]
+}

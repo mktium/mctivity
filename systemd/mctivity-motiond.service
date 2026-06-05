@@ -5,11 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=iiru
+User=mctivity
+Group=mctivity
 WorkingDirectory=/opt/mctivity/mctivity_pdo_monitor
 ExecStart=/opt/mctivity/mctivity_pdo_monitor/mctivity_motiond
 Restart=always
 RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
