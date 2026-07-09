@@ -9,6 +9,7 @@ OUTPUT_PREFERENCE="${MCTIVITY_KIOSK_OUTPUT_PREFERENCE:-HDMI-1,HDMI-A-1,DP-1,DP-2
 DISABLE_OTHER_OUTPUTS="${MCTIVITY_KIOSK_DISABLE_OTHER_OUTPUTS:-1}"
 MAP_TOUCH="${MCTIVITY_KIOSK_MAP_TOUCH:-1}"
 TOUCH_NAME="${MCTIVITY_KIOSK_TOUCH_NAME:-G2Touch}"
+SCALE_FACTOR="${MCTIVITY_KIOSK_SCALE_FACTOR:-1.5}"
 PROFILE_DIR="${MCTIVITY_KIOSK_PROFILE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mctivity/chromium-kiosk}"
 
 find_chromium() {
@@ -124,6 +125,7 @@ mkdir -p "$PROFILE_DIR"
 
 exec "$CHROMIUM" \
   --kiosk "$URL" \
+  --force-device-scale-factor="$SCALE_FACTOR" \
   --no-first-run \
   --no-default-browser-check \
   --disable-restore-session-state \

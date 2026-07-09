@@ -58,6 +58,7 @@ MCTIVITY_KIOSK_OUTPUT_PREFERENCE=HDMI-1,HDMI-A-1,DP-1,DP-2,VGA-1,eDP-1
 MCTIVITY_KIOSK_DISABLE_OTHER_OUTPUTS=1
 MCTIVITY_KIOSK_MAP_TOUCH=1
 MCTIVITY_KIOSK_TOUCH_NAME=G2Touch
+MCTIVITY_KIOSK_SCALE_FACTOR=1.5
 ```
 
 `MCTIVITY_KIOSK_OUTPUT=auto` chooses the first connected output from
@@ -66,6 +67,9 @@ embedded outputs so an attached touchscreen panel is used as the kiosk display.
 When `MCTIVITY_KIOSK_DISABLE_OTHER_OUTPUTS=1`, other connected X outputs are
 turned off for the kiosk session and the touch device is mapped to the active
 kiosk output.
+
+`MCTIVITY_KIOSK_SCALE_FACTOR=1.5` starts Chromium at 150% device scale for
+touchscreen use.
 
 With the local-only HMI binding, remote browser access should use an SSH tunnel:
 
