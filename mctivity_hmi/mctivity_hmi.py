@@ -111,10 +111,13 @@ SYSTEM_POWEROFF_COMMAND = os.environ.get(
     "MCTIVITY_SYSTEM_POWEROFF_COMMAND",
     "/usr/bin/sudo -n /usr/bin/systemctl poweroff",
 ).strip()
-SYSTEM_POWEROFF_CHECK_COMMAND = os.environ.get(
-    "MCTIVITY_SYSTEM_POWEROFF_CHECK_COMMAND",
-    "/usr/bin/sudo -n -l /usr/bin/systemctl poweroff",
+SYSTEM_POWEROFF_PRE_COMMANDS_RAW = os.environ.get(
+    "MCTIVITY_SYSTEM_POWEROFF_PRE_COMMANDS",
+    "/usr/bin/sudo -n /usr/bin/systemctl stop mctivity-motiond.service;;"
+    "/usr/bin/sudo -n /usr/bin/systemctl stop ethercat.service;;"
+    "/usr/bin/sudo -n /usr/bin/systemctl stop mctivity-kiosk.service",
 ).strip()
+SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC = _env_float("MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC", 15.0)
 UI_STATE_PATH = os.environ.get(
     "MCTIVITY_UI_STATE_PATH",
     _default_ui_state_path(),
@@ -3690,17 +3693,73 @@ def _parse_poweroff_command(raw):
     return args or None
 
 
-def _run_poweroff_check():
-    args = _parse_poweroff_command(SYSTEM_POWEROFF_CHECK_COMMAND)
+def _poweroff_pre_commands():
+    commands = []
+    for raw in SYSTEM_POWEROFF_PRE_COMMANDS_RAW.split(";;"):
+        args = _parse_poweroff_command(raw.strip())
+        if args:
+            commands.append(args)
+    return commands
+
+
+def _sudo_check_args_for_command(args):
     if not args:
-        return False, "poweroff check command is empty or invalid"
+        return None
+    check_args = list(args)
+    sudo_path = os.path.basename(check_args[0])
+    if sudo_path == "sudo":
+        check_args = check_args[1:]
+        while check_args and check_args[0] in ("-n", "--non-interactive"):
+            check_args = check_args[1:]
+    if not check_args:
+        return None
+    return ["/usr/bin/sudo", "-n", "-l"] + check_args
+
+
+def _run_command(args, timeout_sec=None):
+    if not args:
+        return False, "command is empty"
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=max(1.0, float(timeout_sec or SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC)),
+        )
     except Exception as exc:
         return False, str(exc)
     if result.returncode != 0:
         return False, (result.stderr or result.stdout or f"exit {result.returncode}").strip()
     return True, (result.stdout or "").strip()
+
+
+def _run_poweroff_permission_checks(commands):
+    checked = []
+    for args in commands:
+        check_args = _sudo_check_args_for_command(args)
+        if not check_args:
+            return False, {"command": " ".join(args), "error": "cannot_build_sudo_check"}
+        ok, detail = _run_command(check_args, timeout_sec=5)
+        item = {"command": " ".join(args), "check": " ".join(check_args)}
+        if ok:
+            checked.append(item)
+            continue
+        item["error"] = detail
+        return False, item
+    return True, checked
+
+
+def _run_poweroff_pre_commands(commands):
+    completed = []
+    for args in commands:
+        ok, detail = _run_command(args)
+        item = {"command": " ".join(args)}
+        if ok:
+            completed.append(item)
+            continue
+        item["error"] = detail
+        return False, item, completed
+    return True, None, completed
 
 
 def _read_poweroff_device_statuses():
@@ -3741,24 +3800,39 @@ def system_poweroff_request(payload):
     if machine["active"]:
         return {"ok": False, "error": "machine_active", "active": machine["active"], "dry_run": dry_run}, 409
 
-    check_ok, check_detail = _run_poweroff_check()
+    pre_commands = _poweroff_pre_commands()
+    poweroff_command = _parse_poweroff_command(SYSTEM_POWEROFF_COMMAND)
+    if not poweroff_command:
+        return {"ok": False, "error": "poweroff_command_invalid", "dry_run": dry_run}, 503
+    all_commands = pre_commands + [poweroff_command]
+    check_ok, check_detail = _run_poweroff_permission_checks(all_commands)
     if not check_ok:
         return {"ok": False, "error": "poweroff_permission_failed", "detail": check_detail, "dry_run": dry_run}, 503
     if dry_run:
-        return {"ok": True, "dry_run": True, "statuses": machine["statuses"], "permission": "ok"}, 200
+        return {
+            "ok": True,
+            "dry_run": True,
+            "statuses": machine["statuses"],
+            "permission": "ok",
+            "pre_commands": [" ".join(args) for args in pre_commands],
+        }, 200
 
-    args = _parse_poweroff_command(SYSTEM_POWEROFF_COMMAND)
-    if not args:
-        return {"ok": False, "error": "poweroff_command_invalid", "dry_run": False}, 503
-    try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=5)
-    except Exception as exc:
-        return {"ok": False, "error": "poweroff_command_failed", "detail": str(exc), "dry_run": False}, 503
-    if result.returncode != 0:
+    pre_ok, pre_error, completed = _run_poweroff_pre_commands(pre_commands)
+    if not pre_ok:
+        return {
+            "ok": False,
+            "error": "poweroff_pre_command_failed",
+            "detail": pre_error,
+            "completed": completed,
+            "dry_run": False,
+        }, 503
+    poweroff_ok, poweroff_detail = _run_command(poweroff_command, timeout_sec=5)
+    if not poweroff_ok:
         return {
             "ok": False,
             "error": "poweroff_command_failed",
-            "detail": (result.stderr or result.stdout or f"exit {result.returncode}").strip(),
+            "detail": poweroff_detail,
+            "completed": completed,
             "dry_run": False,
         }, 503
     return {"ok": True, "dry_run": False, "status": "poweroff_requested"}, 200

@@ -50,7 +50,8 @@ MCTIVITY_WEB_HOST=127.0.0.1
 MCTIVITY_WEB_PORT=2015
 MCTIVITY_SYSTEM_POWEROFF_ENABLED=0
 MCTIVITY_SYSTEM_POWEROFF_COMMAND="/usr/bin/sudo -n /usr/bin/systemctl poweroff"
-MCTIVITY_SYSTEM_POWEROFF_CHECK_COMMAND="/usr/bin/sudo -n -l /usr/bin/systemctl poweroff"
+MCTIVITY_SYSTEM_POWEROFF_PRE_COMMANDS="/usr/bin/sudo -n /usr/bin/systemctl stop mctivity-motiond.service;;/usr/bin/sudo -n /usr/bin/systemctl stop ethercat.service;;/usr/bin/sudo -n /usr/bin/systemctl stop mctivity-kiosk.service"
+MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC=15
 MCTIVITY_KIOSK_URL=http://127.0.0.1:2015/
 MCTIVITY_KIOSK_DISPLAY=:0
 MCTIVITY_KIOSK_VT=7
@@ -86,12 +87,15 @@ MCTIVITY_ENABLE_POWEROFF=1
 When enabled, the installer writes a minimal sudoers rule:
 
 ```text
+iiru ALL=(root) NOPASSWD: /usr/bin/systemctl stop mctivity-motiond.service
+iiru ALL=(root) NOPASSWD: /usr/bin/systemctl stop ethercat.service
+iiru ALL=(root) NOPASSWD: /usr/bin/systemctl stop mctivity-kiosk.service
 iiru ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 ```
 
 The HMI service sets `NoNewPrivileges=false` so the constrained sudoers command
-can elevate. The sudoers rule still limits the HMI user to `systemctl poweroff`
-only.
+can elevate. The sudoers rule still limits the HMI user to the explicit service
+stop commands and `systemctl poweroff`.
 
 The HMI exposes:
 
@@ -115,6 +119,18 @@ The server blocks poweroff if either axis reports `moving=true` or
 `gear_running=true`, or if device status cannot be read. The touchscreen UI
 requires opening the poweroff dialog and holding the red button for 2 seconds
 before the real poweroff request is sent.
+
+On a real poweroff request, HMI runs staged shutdown commands before poweroff:
+
+```text
+systemctl stop mctivity-motiond.service
+systemctl stop ethercat.service
+systemctl stop mctivity-kiosk.service
+systemctl poweroff
+```
+
+Dry-run verifies axis state and sudo permission for the staged commands, but it
+does not stop any service and does not power off the machine.
 
 With the local-only HMI binding, remote browser access should use an SSH tunnel:
 
