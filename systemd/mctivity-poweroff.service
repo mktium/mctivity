@@ -1,0 +1,9 @@
+[Unit]
+Description=MCTIVITY Staged Poweroff
+Documentation=file:/opt/mctivity/docs/touchscreen-kiosk.md
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/mctivity/poweroff.env
+ExecStart=/opt/mctivity/scripts/mctivity-poweroff.sh
+TimeoutStartSec=3min

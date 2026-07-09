@@ -17,6 +17,7 @@ EnvironmentFile=-/etc/mctivity/hmi.env
 ExecStart=/usr/bin/env python3 /opt/mctivity/mctivity_hmi/mctivity_hmi.py
 Restart=always
 RestartSec=2
+TimeoutStopSec=10s
 StateDirectory=mctivity
 # Required for the constrained sudoers poweroff command.
 NoNewPrivileges=false

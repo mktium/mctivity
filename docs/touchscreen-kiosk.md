@@ -49,9 +49,11 @@ MCTIVITY_PROFILE=full
 MCTIVITY_WEB_HOST=127.0.0.1
 MCTIVITY_WEB_PORT=2015
 MCTIVITY_SYSTEM_POWEROFF_ENABLED=0
-MCTIVITY_SYSTEM_POWEROFF_COMMAND="/usr/bin/sudo -n /usr/bin/systemctl poweroff"
-MCTIVITY_SYSTEM_POWEROFF_PRE_COMMANDS="/usr/bin/sudo -n /usr/bin/systemctl stop mctivity-motiond.service;;/usr/bin/sudo -n /usr/bin/systemctl stop ethercat.service;;/usr/bin/sudo -n /usr/bin/systemctl stop mctivity-kiosk.service"
-MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC=15
+MCTIVITY_SYSTEM_POWEROFF_COMMAND="/usr/bin/sudo -n /usr/bin/systemctl --no-block start mctivity-poweroff.service"
+MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC=5
+MCTIVITY_POWEROFF_STOP_UNITS="mctivity-kiosk.service mctivity-hmi.service mctivity-motiond.service ethercat.service"
+MCTIVITY_POWEROFF_STOP_TIMEOUT_SEC=45
+MCTIVITY_POWEROFF_FINAL_COMMAND="/usr/bin/systemctl poweroff"
 MCTIVITY_KIOSK_URL=http://127.0.0.1:2015/
 MCTIVITY_KIOSK_DISPLAY=:0
 MCTIVITY_KIOSK_VT=7
@@ -87,15 +89,12 @@ MCTIVITY_ENABLE_POWEROFF=1
 When enabled, the installer writes a minimal sudoers rule:
 
 ```text
-iiru ALL=(root) NOPASSWD: /usr/bin/systemctl stop mctivity-motiond.service
-iiru ALL=(root) NOPASSWD: /usr/bin/systemctl stop ethercat.service
-iiru ALL=(root) NOPASSWD: /usr/bin/systemctl stop mctivity-kiosk.service
-iiru ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+iiru ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start mctivity-poweroff.service
 ```
 
 The HMI service sets `NoNewPrivileges=false` so the constrained sudoers command
-can elevate. The sudoers rule still limits the HMI user to the explicit service
-stop commands and `systemctl poweroff`.
+can elevate. The sudoers rule still limits the HMI user to starting only the
+dedicated staged poweroff service.
 
 The HMI exposes:
 
@@ -120,17 +119,24 @@ The server blocks poweroff if either axis reports `moving=true` or
 requires opening the poweroff dialog and holding the red button for 2 seconds
 before the real poweroff request is sent.
 
-On a real poweroff request, HMI runs staged shutdown commands before poweroff:
+On a real poweroff request, HMI verifies machine state and sudo permission, then
+starts `mctivity-poweroff.service` without waiting for it to finish. The
+dedicated oneshot service runs outside the HMI dependency chain, so shutdown can
+continue after the Web HMI and kiosk are stopped.
+
+The staged poweroff service runs:
 
 ```text
+systemctl stop mctivity-kiosk.service
+systemctl stop mctivity-hmi.service
 systemctl stop mctivity-motiond.service
 systemctl stop ethercat.service
-systemctl stop mctivity-kiosk.service
 systemctl poweroff
 ```
 
-Dry-run verifies axis state and sudo permission for the staged commands, but it
-does not stop any service and does not power off the machine.
+Dry-run verifies axis state and sudo permission for starting the staged
+poweroff service, but it does not start the service, stop any service, or power
+off the machine.
 
 With the local-only HMI binding, remote browser access should use an SSH tunnel:
 

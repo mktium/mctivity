@@ -20,6 +20,7 @@ StandardError=journal
 ExecStart=/opt/mctivity/scripts/mctivity-kiosk-start.sh
 Restart=always
 RestartSec=3
+TimeoutStopSec=10s
 
 [Install]
 WantedBy=graphical.target

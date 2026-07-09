@@ -16,6 +16,7 @@ This version:
 - keeps motion daemon, Web HMI, and local kiosk startup as separate service responsibilities
 - keeps the HMI local-only by default for touchscreen deployments
 - adds a touch-safe system menu with guarded staged poweroff dry-run and long-press confirmation
+- delegates real poweroff to `mctivity-poweroff.service`, outside the HMI dependency chain
 
 ## Version
 

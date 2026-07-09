@@ -12,6 +12,7 @@ This version:
 - keeps motion control and Web HMI services separate from local display startup
 - uses local-only HMI binding by default for touchscreen deployments
 - adds a touch-safe system menu with guarded, dry-run-verifiable staged poweroff support
+- delegates real poweroff to a dedicated `mctivity-poweroff.service` so shutdown continues after HMI/kiosk stop
 
 ## v1.2.0 Release Notes
 

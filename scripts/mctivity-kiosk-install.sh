@@ -15,9 +15,11 @@ WEB_HOST="${MCTIVITY_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${MCTIVITY_WEB_PORT:-2015}"
 ENABLE_POWEROFF="${MCTIVITY_ENABLE_POWEROFF:-0}"
 SYSTEMCTL_PATH="${MCTIVITY_SYSTEMCTL_PATH:-/usr/bin/systemctl}"
-POWEROFF_COMMAND="${MCTIVITY_SYSTEM_POWEROFF_COMMAND:-/usr/bin/sudo -n ${SYSTEMCTL_PATH} poweroff}"
-POWEROFF_PRE_COMMANDS="${MCTIVITY_SYSTEM_POWEROFF_PRE_COMMANDS:-/usr/bin/sudo -n ${SYSTEMCTL_PATH} stop mctivity-motiond.service;;/usr/bin/sudo -n ${SYSTEMCTL_PATH} stop ethercat.service;;/usr/bin/sudo -n ${SYSTEMCTL_PATH} stop mctivity-kiosk.service}"
-POWEROFF_TIMEOUT="${MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC:-15}"
+POWEROFF_COMMAND="${MCTIVITY_SYSTEM_POWEROFF_COMMAND:-/usr/bin/sudo -n ${SYSTEMCTL_PATH} --no-block start mctivity-poweroff.service}"
+POWEROFF_TIMEOUT="${MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC:-5}"
+POWEROFF_STOP_UNITS="${MCTIVITY_POWEROFF_STOP_UNITS:-mctivity-kiosk.service mctivity-hmi.service mctivity-motiond.service ethercat.service}"
+POWEROFF_STOP_TIMEOUT="${MCTIVITY_POWEROFF_STOP_TIMEOUT_SEC:-45}"
+POWEROFF_FINAL_COMMAND="${MCTIVITY_POWEROFF_FINAL_COMMAND:-${SYSTEMCTL_PATH} poweroff}"
 KIOSK_URL="${MCTIVITY_KIOSK_URL:-http://127.0.0.1:2015/}"
 KIOSK_DISPLAY="${MCTIVITY_KIOSK_DISPLAY:-:0}"
 KIOSK_VT="${MCTIVITY_KIOSK_VT:-7}"
@@ -62,10 +64,17 @@ install -d -m 0755 /etc/mctivity
   printf 'MCTIVITY_UI_STATE_PATH=/var/lib/mctivity/mctivity_hmi_state.json\n'
   printf 'MCTIVITY_SYSTEM_POWEROFF_ENABLED=%s\n' "$ENABLE_POWEROFF"
   printf 'MCTIVITY_SYSTEM_POWEROFF_COMMAND="%s"\n' "$POWEROFF_COMMAND"
-  printf 'MCTIVITY_SYSTEM_POWEROFF_PRE_COMMANDS="%s"\n' "$POWEROFF_PRE_COMMANDS"
   printf 'MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC=%s\n' "$POWEROFF_TIMEOUT"
 } >/etc/mctivity/hmi.env
 chmod 0644 /etc/mctivity/hmi.env
+
+{
+  printf 'MCTIVITY_SYSTEMCTL_PATH=%s\n' "$SYSTEMCTL_PATH"
+  printf 'MCTIVITY_POWEROFF_STOP_UNITS="%s"\n' "$POWEROFF_STOP_UNITS"
+  printf 'MCTIVITY_POWEROFF_STOP_TIMEOUT_SEC=%s\n' "$POWEROFF_STOP_TIMEOUT"
+  printf 'MCTIVITY_POWEROFF_FINAL_COMMAND="%s"\n' "$POWEROFF_FINAL_COMMAND"
+} >/etc/mctivity/poweroff.env
+chmod 0644 /etc/mctivity/poweroff.env
 
 {
   printf 'MCTIVITY_ROOT=%s\n' "$ROOT"
@@ -99,11 +108,13 @@ rewrite_unit() {
 rewrite_unit "${ROOT}/systemd/mctivity-motiond.service" /etc/systemd/system/mctivity-motiond.service
 rewrite_unit "${ROOT}/systemd/mctivity-hmi.service" /etc/systemd/system/mctivity-hmi.service
 rewrite_unit "${ROOT}/systemd/mctivity-kiosk.service" /etc/systemd/system/mctivity-kiosk.service
+rewrite_unit "${ROOT}/systemd/mctivity-poweroff.service" /etc/systemd/system/mctivity-poweroff.service
 
 chmod 0755 \
   "${ROOT}/scripts/mctivity-kiosk-start.sh" \
   "${ROOT}/scripts/mctivity-kiosk-session.sh" \
-  "${ROOT}/scripts/mctivity-kiosk-verify.sh"
+  "${ROOT}/scripts/mctivity-kiosk-verify.sh" \
+  "${ROOT}/scripts/mctivity-poweroff.sh"
 
 if [ "$ENABLE_POWEROFF" = "1" ]; then
   if [ ! -x /usr/bin/sudo ]; then
@@ -120,10 +131,7 @@ if [ "$ENABLE_POWEROFF" = "1" ]; then
   fi
   sudoers_tmp="$(mktemp)"
   {
-    printf '%s ALL=(root) NOPASSWD: %s stop mctivity-motiond.service\n' "$SERVICE_USER" "$SYSTEMCTL_PATH"
-    printf '%s ALL=(root) NOPASSWD: %s stop ethercat.service\n' "$SERVICE_USER" "$SYSTEMCTL_PATH"
-    printf '%s ALL=(root) NOPASSWD: %s stop mctivity-kiosk.service\n' "$SERVICE_USER" "$SYSTEMCTL_PATH"
-    printf '%s ALL=(root) NOPASSWD: %s poweroff\n' "$SERVICE_USER" "$SYSTEMCTL_PATH"
+    printf '%s ALL=(root) NOPASSWD: %s --no-block start mctivity-poweroff.service\n' "$SERVICE_USER" "$SYSTEMCTL_PATH"
   } >"$sudoers_tmp"
   /usr/sbin/visudo -cf "$sudoers_tmp"
   install -m 0440 "$sudoers_tmp" /etc/sudoers.d/mctivity-poweroff
