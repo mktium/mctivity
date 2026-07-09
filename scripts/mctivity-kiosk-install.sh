@@ -13,6 +13,10 @@ INSTALL_PACKAGES="${MCTIVITY_INSTALL_PACKAGES:-0}"
 PROFILE="${MCTIVITY_PROFILE:-full}"
 WEB_HOST="${MCTIVITY_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${MCTIVITY_WEB_PORT:-2015}"
+ENABLE_POWEROFF="${MCTIVITY_ENABLE_POWEROFF:-0}"
+SYSTEMCTL_PATH="${MCTIVITY_SYSTEMCTL_PATH:-/usr/bin/systemctl}"
+POWEROFF_COMMAND="${MCTIVITY_SYSTEM_POWEROFF_COMMAND:-/usr/bin/sudo -n ${SYSTEMCTL_PATH} poweroff}"
+POWEROFF_CHECK_COMMAND="${MCTIVITY_SYSTEM_POWEROFF_CHECK_COMMAND:-/usr/bin/sudo -n -l ${SYSTEMCTL_PATH} poweroff}"
 KIOSK_URL="${MCTIVITY_KIOSK_URL:-http://127.0.0.1:2015/}"
 KIOSK_DISPLAY="${MCTIVITY_KIOSK_DISPLAY:-:0}"
 KIOSK_VT="${MCTIVITY_KIOSK_VT:-7}"
@@ -55,6 +59,9 @@ install -d -m 0755 /etc/mctivity
   printf 'MCTIVITY_WEB_HOST=%s\n' "$WEB_HOST"
   printf 'MCTIVITY_WEB_PORT=%s\n' "$WEB_PORT"
   printf 'MCTIVITY_UI_STATE_PATH=/var/lib/mctivity/mctivity_hmi_state.json\n'
+  printf 'MCTIVITY_SYSTEM_POWEROFF_ENABLED=%s\n' "$ENABLE_POWEROFF"
+  printf 'MCTIVITY_SYSTEM_POWEROFF_COMMAND="%s"\n' "$POWEROFF_COMMAND"
+  printf 'MCTIVITY_SYSTEM_POWEROFF_CHECK_COMMAND="%s"\n' "$POWEROFF_CHECK_COMMAND"
 } >/etc/mctivity/hmi.env
 chmod 0644 /etc/mctivity/hmi.env
 
@@ -95,6 +102,28 @@ chmod 0755 \
   "${ROOT}/scripts/mctivity-kiosk-start.sh" \
   "${ROOT}/scripts/mctivity-kiosk-session.sh" \
   "${ROOT}/scripts/mctivity-kiosk-verify.sh"
+
+if [ "$ENABLE_POWEROFF" = "1" ]; then
+  if [ ! -x /usr/bin/sudo ]; then
+    echo "sudo is required for poweroff support" >&2
+    exit 1
+  fi
+  if [ ! -x "$SYSTEMCTL_PATH" ]; then
+    echo "systemctl not found or not executable: $SYSTEMCTL_PATH" >&2
+    exit 1
+  fi
+  if [ ! -x /usr/sbin/visudo ]; then
+    echo "visudo is required for poweroff sudoers validation" >&2
+    exit 1
+  fi
+  sudoers_tmp="$(mktemp)"
+  printf '%s ALL=(root) NOPASSWD: %s poweroff\n' "$SERVICE_USER" "$SYSTEMCTL_PATH" >"$sudoers_tmp"
+  /usr/sbin/visudo -cf "$sudoers_tmp"
+  install -m 0440 "$sudoers_tmp" /etc/sudoers.d/mctivity-poweroff
+  rm -f "$sudoers_tmp"
+else
+  rm -f /etc/sudoers.d/mctivity-poweroff
+fi
 
 systemctl daemon-reload
 systemctl enable mctivity-motiond.service mctivity-hmi.service mctivity-kiosk.service

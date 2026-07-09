@@ -11,6 +11,7 @@ This version:
 - adds kiosk install and verification scripts
 - keeps motion control and Web HMI services separate from local display startup
 - uses local-only HMI binding by default for touchscreen deployments
+- adds a touch-safe system menu with guarded, dry-run-verifiable poweroff support
 
 ## v1.2.0 Release Notes
 

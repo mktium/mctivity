@@ -48,6 +48,9 @@ Important defaults:
 MCTIVITY_PROFILE=full
 MCTIVITY_WEB_HOST=127.0.0.1
 MCTIVITY_WEB_PORT=2015
+MCTIVITY_SYSTEM_POWEROFF_ENABLED=0
+MCTIVITY_SYSTEM_POWEROFF_COMMAND="/usr/bin/sudo -n /usr/bin/systemctl poweroff"
+MCTIVITY_SYSTEM_POWEROFF_CHECK_COMMAND="/usr/bin/sudo -n -l /usr/bin/systemctl poweroff"
 MCTIVITY_KIOSK_URL=http://127.0.0.1:2015/
 MCTIVITY_KIOSK_DISPLAY=:0
 MCTIVITY_KIOSK_VT=7
@@ -71,6 +74,48 @@ kiosk output.
 `MCTIVITY_KIOSK_SCALE_FACTOR=1.5` starts Chromium at 150% device scale for
 touchscreen use.
 
+## System Menu And Poweroff
+
+The top-left system menu contains language controls and an optional poweroff
+action. Poweroff is disabled unless the installer is run with:
+
+```bash
+MCTIVITY_ENABLE_POWEROFF=1
+```
+
+When enabled, the installer writes a minimal sudoers rule:
+
+```text
+iiru ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+```
+
+The HMI service sets `NoNewPrivileges=false` so the constrained sudoers command
+can elevate. The sudoers rule still limits the HMI user to `systemctl poweroff`
+only.
+
+The HMI exposes:
+
+```text
+POST /api/system/poweroff
+```
+
+The request body must include:
+
+```json
+{"confirm":"poweroff"}
+```
+
+For a no-shutdown permission and machine-state check:
+
+```json
+{"confirm":"poweroff","dry_run":true}
+```
+
+The server blocks poweroff if either axis reports `moving=true` or
+`gear_running=true`, or if device status cannot be read. The touchscreen UI
+requires opening the poweroff dialog and holding the red button for 2 seconds
+before the real poweroff request is sent.
+
 With the local-only HMI binding, remote browser access should use an SSH tunnel:
 
 ```bash
@@ -85,6 +130,7 @@ On the target machine, after copying the release to `/opt/mctivity`, run as root
 MCTIVITY_SERVICE_USER=iiru \
 MCTIVITY_SERVICE_GROUP=iiru \
 MCTIVITY_INSTALL_PACKAGES=1 \
+MCTIVITY_ENABLE_POWEROFF=1 \
 /opt/mctivity/scripts/mctivity-kiosk-install.sh
 ```
 

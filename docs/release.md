@@ -15,6 +15,7 @@ This version:
 - adds installation and verification scripts for kiosk deployments
 - keeps motion daemon, Web HMI, and local kiosk startup as separate service responsibilities
 - keeps the HMI local-only by default for touchscreen deployments
+- adds a touch-safe system menu with guarded poweroff dry-run and long-press confirmation
 
 ## Version
 

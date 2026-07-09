@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shlex
 import socket
 import subprocess
 import threading
@@ -39,6 +40,13 @@ def _env_float(name, default):
         return float(raw)
     except ValueError:
         return default
+
+
+def _env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_ui_state_path():
@@ -98,6 +106,15 @@ MAX_MOVE_MS = max(1, _env_int("MCTIVITY_MAX_MOVE_MS", 60000))
 MAX_GEAR_RATIO = max(1, _env_int("MCTIVITY_MAX_GEAR_RATIO", 200))
 MAX_TORQUE_PERCENT = max(0, _env_int("MCTIVITY_MAX_TORQUE_PERCENT", 100))
 API_TOKEN = os.environ.get("MCTIVITY_API_TOKEN", "").strip()
+SYSTEM_POWEROFF_ENABLED = _env_bool("MCTIVITY_SYSTEM_POWEROFF_ENABLED", False)
+SYSTEM_POWEROFF_COMMAND = os.environ.get(
+    "MCTIVITY_SYSTEM_POWEROFF_COMMAND",
+    "/usr/bin/sudo -n /usr/bin/systemctl poweroff",
+).strip()
+SYSTEM_POWEROFF_CHECK_COMMAND = os.environ.get(
+    "MCTIVITY_SYSTEM_POWEROFF_CHECK_COMMAND",
+    "/usr/bin/sudo -n -l /usr/bin/systemctl poweroff",
+).strip()
 UI_STATE_PATH = os.environ.get(
     "MCTIVITY_UI_STATE_PATH",
     _default_ui_state_path(),
@@ -548,7 +565,7 @@ html, body { width:100%; height:100%; overflow:hidden; overscroll-behavior:none;
 body { margin:0; color:var(--ink); font-family:MiSans,"MiSans VF","PingFang SC","Helvetica Neue",Helvetica,Arial,sans-serif; background:linear-gradient(180deg,#fff 0%,#f5f9fc 100%); -webkit-user-select:none; user-select:none; }
 main { width:100%; height:100dvh; max-width:1360px; margin:0 auto; padding:8px 14px 12px; display:grid; grid-template-rows:auto auto minmax(0,1fr); gap:7px; }
 .topbar { display:grid; grid-template-columns:1fr auto; gap:14px; align-items:end; border-bottom:3px solid var(--theme-blue); padding-bottom:9px; min-height:64px; margin-bottom:14px; }
-.topbar-left { display:flex; align-items:center; gap:10px; min-width:0; }
+.topbar-left { display:flex; align-items:center; gap:10px; min-width:0; padding-left:52px; }
 h1 { margin:0; color:var(--theme-deep); font-size:clamp(20px,2.4vw,30px); line-height:1; font-weight:800; letter-spacing:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .topbar-right { display:flex; align-items:center; justify-content:flex-end; gap:10px; position:relative; }
 .brand-wordmark { color:var(--theme-deep); font-size:19px; line-height:1; font-weight:900; letter-spacing:.08em; white-space:nowrap; text-transform:none; transform:translate(.33em,.33em); }
@@ -564,16 +581,19 @@ h1 { margin:0; color:var(--theme-deep); font-size:clamp(20px,2.4vw,30px); line-h
 .api-token-input:focus { border-color:var(--theme-blue); box-shadow:0 0 0 3px rgba(42,131,183,.12); }
 .tab-btn { position:relative; z-index:13; min-height:36px; padding:7px 18px; border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--theme-deep); box-shadow:none; pointer-events:auto; }
 .tab-btn.active { color:#fff; background:var(--theme-blue); border-color:var(--theme-blue); }
-.lang-menu { position:relative; flex:0 0 auto; }
-.lang-btn { width:28px; height:28px; min-width:28px; min-height:28px; padding:0; border:0; border-radius:0; background:transparent; color:var(--theme-deep); line-height:1; font-weight:400; box-shadow:none; display:grid; place-items:center; cursor:pointer; }
-.lang-btn:hover, .lang-btn[aria-expanded="true"] { transform:none; box-shadow:none; color:var(--theme-blue); background:transparent; }
-.menu-lines { display:grid; gap:6px; width:22px; }
-.menu-lines span { display:block; height:2px; border-radius:999px; background:currentColor; }
-.lang-dropdown { position:absolute; right:0; top:calc(100% + 8px); min-width:132px; padding:6px; display:none; background:rgba(255,255,255,.98); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); z-index:20; }
+.lang-menu { position:fixed; left:12px; top:10px; z-index:40; flex:0 0 auto; }
+.lang-btn { width:44px; height:44px; min-width:44px; min-height:44px; padding:0; border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,.96); color:var(--theme-deep); line-height:1; font-weight:400; box-shadow:0 8px 18px rgba(26,105,165,.10); display:grid; place-items:center; cursor:pointer; }
+.lang-btn:hover, .lang-btn[aria-expanded="true"] { transform:none; box-shadow:0 10px 22px rgba(26,105,165,.14); color:var(--theme-blue); background:#fff; }
+.menu-lines { display:grid; gap:6px; width:24px; }
+.menu-lines span { display:block; height:3px; border-radius:999px; background:currentColor; }
+.lang-dropdown { position:fixed; left:12px; top:62px; width:min(220px,calc(100vw - 24px)); max-height:calc(100dvh - 74px); overflow:auto; padding:6px; display:none; background:rgba(255,255,255,.98); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); z-index:41; }
 .lang-dropdown.open { display:grid; gap:4px; }
-.lang-option { min-height:36px; padding:8px 12px; border:0; border-radius:9px; background:transparent; color:var(--theme-deep); font:inherit; font-size:13px; font-weight:800; text-align:left; }
+.lang-option { min-height:42px; padding:9px 12px; border:0; border-radius:7px; background:transparent; color:var(--theme-deep); font:inherit; font-size:14px; font-weight:800; text-align:left; }
 .lang-option.active { background:var(--soft); color:var(--theme-blue); }
 .lang-option:hover { background:var(--soft); }
+.menu-divider { height:1px; background:var(--line); margin:4px 2px; }
+.shutdown-option { color:var(--bad); }
+.shutdown-option:hover { background:rgba(186,26,26,.08); color:var(--bad); }
 .tab-panel { display:none; min-height:0; overflow:hidden; }
 .tab-panel.active { display:block; }
 .monitor-grid { height:100%; display:grid; grid-template-columns:minmax(320px,1.02fr) minmax(250px,.72fr) minmax(330px,1fr); gap:10px; align-items:start; min-height:0; overflow:hidden; }
@@ -770,6 +790,17 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .modal-inline-label { color:var(--ink); font-size:14px; font-weight:900; white-space:nowrap; }
 .modal-inline-unit { color:#4c5966; font-size:14px; line-height:1; font-weight:900; white-space:nowrap; }
 .modal-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.poweroff-card { max-width:420px; }
+.poweroff-card .modal-actions { grid-template-columns:1fr; }
+.poweroff-copy { margin:0; color:#4c5966; font-size:14px; line-height:1.45; font-weight:800; }
+.poweroff-hold { position:relative; overflow:hidden; width:100%; min-height:64px; border-radius:12px; background:var(--bad); color:#fff; box-shadow:0 12px 26px rgba(186,26,26,.22); touch-action:none; }
+.poweroff-hold:hover { transform:none; box-shadow:0 12px 26px rgba(186,26,26,.22); }
+.poweroff-hold:disabled { opacity:.72; cursor:default; }
+.poweroff-hold-progress { position:absolute; inset:0 auto 0 0; width:0%; background:rgba(255,255,255,.24); pointer-events:none; transition:width .06s linear; }
+.poweroff-hold-text { position:relative; z-index:1; display:block; font-size:16px; line-height:1; font-weight:900; }
+.poweroff-status { min-height:22px; color:#5d6670; font-size:12px; line-height:1.35; font-weight:800; }
+.poweroff-status.bad { color:var(--bad); }
+.poweroff-status.good { color:var(--ok); }
 .diag-body { max-height:min(56dvh,460px); overflow:auto; border:1px solid rgba(166,166,166,.28); border-radius:10px; background:#f8fafc; padding:10px; color:#304050; font-size:12px; line-height:1.5; font-weight:700; white-space:pre-wrap; }
 @media (max-width:1180px) { .feedback-card.encoder { grid-template-columns:128px minmax(0,1fr); column-gap:8px; } .feedback-card.encoder .feedback-metrics { min-width:0; max-width:100%; } .feedback-metric { grid-template-columns:minmax(0,1fr) minmax(0,9.5ch); gap:6px; padding:7px 8px; min-height:48px; } .feedback-metric .label { font-size:10px; min-width:0; overflow-wrap:anywhere; word-break:break-word; } .feedback-metric .value { min-width:0; max-width:100%; font-size:15px; white-space:normal; overflow-wrap:anywhere; word-break:break-word; align-self:start; } .feedback-metric.vertical { min-height:70px; } }
 @media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .protocol-chip { font-size:24px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .position-param { --side-width:108px; --slider-top-offset:114px; --slider-track-height:150px; } .axis-control { min-height:324px; } .vertical-sliders { min-height:188px; } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
@@ -782,12 +813,14 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 <header class="topbar">
   <div class="topbar-left">
     <div class="lang-menu">
-      <button id="langToggleBtn" class="lang-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Language">
+      <button id="langToggleBtn" class="lang-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="System menu">
         <span class="menu-lines" aria-hidden="true"><span></span><span></span><span></span></span>
       </button>
-      <div id="langDropdown" class="lang-dropdown" role="menu" aria-label="Language">
+      <div id="langDropdown" class="lang-dropdown" role="menu" aria-label="System menu">
         <button id="langZhBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('zh')">中文</button>
         <button id="langEnBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('en')">English</button>
+        <div class="menu-divider" role="separator"></div>
+        <button id="poweroffMenuBtn" class="lang-option shutdown-option" type="button" role="menuitem" onclick="openPoweroffModal()">关机</button>
       </div>
     </div>
     <h1 id="pageTitle">轴控</h1>
@@ -1123,6 +1156,20 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
     </div>
   </div>
 </div>
+<div id="poweroffModal" class="modal-shell" onclick="maybeClosePoweroffModal(event)">
+  <div class="modal-card poweroff-card" onclick="event.stopPropagation()">
+    <h3 id="poweroffModalTitle" class="modal-title">关闭工控机</h3>
+    <p id="poweroffModalBody" class="poweroff-copy">请确认设备已停止。长按下方按钮 2 秒后会正常关闭 Ubuntu。</p>
+    <button id="poweroffHoldBtn" class="poweroff-hold" type="button">
+      <span id="poweroffHoldProgress" class="poweroff-hold-progress" aria-hidden="true"></span>
+      <span id="poweroffHoldText" class="poweroff-hold-text">长按 2 秒关机</span>
+    </button>
+    <div id="poweroffStatusText" class="poweroff-status" aria-live="polite"></div>
+    <div class="modal-actions">
+      <button id="poweroffCancelBtn" class="neutral" type="button" onclick="closePoweroffModal()">取消</button>
+    </div>
+  </div>
+</div>
 <script>
 __MOTION_CURVE_EDITOR_BLOCK__
 </script>
@@ -1241,6 +1288,21 @@ const UI_TEXT = {
     reverseDirection:'反方向',
     loadPrefix:'负载 ',
     motorPrefix:'电机 ',
+    systemMenu:'系统菜单',
+    poweroff:'关机',
+    poweroffTitle:'关闭工控机',
+    poweroffBody:'请确认设备已停止。长按下方按钮 2 秒后会正常关闭 Ubuntu。',
+    poweroffHold:'长按 2 秒关机',
+    poweroffHolding:'继续按住',
+    poweroffChecking:'正在检查关机条件...',
+    poweroffSent:'关机命令已发送',
+    poweroffDryRunOk:'关机 dry-run 通过',
+    poweroffMachineActive:'设备仍在运动，请先停止。',
+    poweroffDisabled:'关机功能未启用。',
+    poweroffStatusUnavailable:'无法读取设备状态，已阻止关机。',
+    poweroffPermissionFailed:'关机权限检查失败。',
+    poweroffFailed:'关机请求失败。',
+    poweroffCancel:'取消',
     revUnit:'rev'
   },
   en: {
@@ -1348,6 +1410,21 @@ const UI_TEXT = {
     reverseDirection:'Reverse',
     loadPrefix:'Load ',
     motorPrefix:'Motor ',
+    systemMenu:'System Menu',
+    poweroff:'Power Off',
+    poweroffTitle:'Power Off Controller',
+    poweroffBody:'Confirm the machine is stopped. Hold the red button for 2 seconds to shut down Ubuntu cleanly.',
+    poweroffHold:'Hold 2s To Power Off',
+    poweroffHolding:'Keep Holding',
+    poweroffChecking:'Checking shutdown conditions...',
+    poweroffSent:'Poweroff command sent',
+    poweroffDryRunOk:'Poweroff dry-run passed',
+    poweroffMachineActive:'Machine is still moving. Stop it first.',
+    poweroffDisabled:'Poweroff is not enabled.',
+    poweroffStatusUnavailable:'Device status is unavailable. Poweroff was blocked.',
+    poweroffPermissionFailed:'Poweroff permission check failed.',
+    poweroffFailed:'Poweroff request failed.',
+    poweroffCancel:'Cancel',
     revUnit:'rev'
   }
 };
@@ -1378,6 +1455,8 @@ const deviceProfiles = {
 let uiStateSaveTimer = 0;
 const lastUiStateSnapshot = {mctivity:'', fv3:''};
 let transmissionDraft = null;
+const POWEROFF_HOLD_MS = 2000;
+const poweroffHoldState = {active:false, startedAt:0, raf:0, pointerId:null, done:false};
 const modeUiStateByDevice = {
   mctivity: {pending:null, interacting:false},
   fv3: {pending:null, interacting:false}
@@ -2363,6 +2442,7 @@ function refreshStaticText() {
   const langToggleBtn = document.getElementById('langToggleBtn');
   const langZhBtn = document.getElementById('langZhBtn');
   const langEnBtn = document.getElementById('langEnBtn');
+  const poweroffMenuBtn = document.getElementById('poweroffMenuBtn');
   const apiTokenInput = document.getElementById('apiTokenInput');
   if (apiTokenInput) {
     apiTokenInput.placeholder = text.apiToken;
@@ -2370,9 +2450,14 @@ function refreshStaticText() {
     apiTokenInput.title = text.apiToken;
   }
   if (langToggleBtn) {
-    langToggleBtn.setAttribute('aria-label', currentLang === 'zh' ? '语言' : 'Language');
-    langToggleBtn.title = currentLang === 'zh' ? '语言' : 'Language';
+    langToggleBtn.setAttribute('aria-label', text.systemMenu);
+    langToggleBtn.title = text.systemMenu;
   }
+  if (poweroffMenuBtn) poweroffMenuBtn.textContent = text.poweroff;
+  setText('poweroffModalTitle', text.poweroffTitle);
+  setText('poweroffModalBody', text.poweroffBody);
+  setText('poweroffHoldText', text.poweroffHold);
+  setText('poweroffCancelBtn', text.poweroffCancel);
   if (langZhBtn) langZhBtn.classList.toggle('active', currentLang === 'zh');
   if (langEnBtn) langEnBtn.classList.toggle('active', currentLang === 'en');
   const leftCard = document.querySelector('.left-stack .card h2');
@@ -2513,6 +2598,137 @@ function setLanguage(lang) {
   closeLanguageMenu();
   applyLanguage();
   return false;
+}
+function poweroffElements() {
+  return {
+    modal: document.getElementById('poweroffModal'),
+    holdBtn: document.getElementById('poweroffHoldBtn'),
+    holdText: document.getElementById('poweroffHoldText'),
+    progress: document.getElementById('poweroffHoldProgress'),
+    status: document.getElementById('poweroffStatusText')
+  };
+}
+function setPoweroffProgress(percent) {
+  const els = poweroffElements();
+  if (els.progress) els.progress.style.width = Math.max(0, Math.min(100, percent)) + '%';
+}
+function setPoweroffStatus(message, state) {
+  const els = poweroffElements();
+  if (!els.status) return;
+  els.status.textContent = message || '';
+  els.status.classList.toggle('bad', state === 'bad');
+  els.status.classList.toggle('good', state === 'good');
+}
+function resetPoweroffHold() {
+  if (poweroffHoldState.raf) cancelAnimationFrame(poweroffHoldState.raf);
+  poweroffHoldState.active = false;
+  poweroffHoldState.startedAt = 0;
+  poweroffHoldState.raf = 0;
+  poweroffHoldState.pointerId = null;
+  poweroffHoldState.done = false;
+  setPoweroffProgress(0);
+  const els = poweroffElements();
+  if (els.holdBtn) els.holdBtn.disabled = false;
+  if (els.holdText) els.holdText.textContent = UI_TEXT[currentLang].poweroffHold;
+}
+function openPoweroffModal() {
+  closeLanguageMenu();
+  resetPoweroffHold();
+  setPoweroffStatus('', '');
+  const els = poweroffElements();
+  if (els.modal) els.modal.classList.add('open');
+  return false;
+}
+function closePoweroffModal() {
+  resetPoweroffHold();
+  const els = poweroffElements();
+  if (els.modal) els.modal.classList.remove('open');
+}
+function maybeClosePoweroffModal(event) {
+  if (event && event.target && event.target.id === 'poweroffModal') closePoweroffModal();
+}
+function poweroffErrorText(error) {
+  const text = UI_TEXT[currentLang];
+  if (error === 'machine_active') return text.poweroffMachineActive;
+  if (error === 'poweroff_disabled') return text.poweroffDisabled;
+  if (error === 'status_unavailable') return text.poweroffStatusUnavailable;
+  if (error === 'poweroff_permission_failed') return text.poweroffPermissionFailed;
+  return text.poweroffFailed;
+}
+async function requestPoweroff(dryRun) {
+  const payload = {confirm:'poweroff'};
+  if (dryRun) payload.dry_run = true;
+  const res = await fetch('/api/system/poweroff', {
+    method:'POST',
+    headers:apiHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify(payload)
+  });
+  const data = await res.json().catch(() => ({ok:false, error:'invalid_response'}));
+  if (!res.ok || !data.ok) {
+    const err = new Error(poweroffErrorText(data.error));
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+async function finishPoweroffHold() {
+  const els = poweroffElements();
+  poweroffHoldState.active = false;
+  poweroffHoldState.done = true;
+  if (els.holdBtn) els.holdBtn.disabled = true;
+  if (els.holdText) els.holdText.textContent = UI_TEXT[currentLang].poweroffChecking;
+  setPoweroffStatus(UI_TEXT[currentLang].poweroffChecking, '');
+  try {
+    await requestPoweroff(false);
+    setPoweroffStatus(UI_TEXT[currentLang].poweroffSent, 'good');
+    if (els.holdText) els.holdText.textContent = UI_TEXT[currentLang].poweroffSent;
+  } catch (err) {
+    setPoweroffStatus(err.message || UI_TEXT[currentLang].poweroffFailed, 'bad');
+    if (els.holdBtn) els.holdBtn.disabled = false;
+    if (els.holdText) els.holdText.textContent = UI_TEXT[currentLang].poweroffHold;
+    setPoweroffProgress(0);
+    poweroffHoldState.done = false;
+  }
+}
+function stepPoweroffHold(ts) {
+  if (!poweroffHoldState.active) return;
+  if (!poweroffHoldState.startedAt) poweroffHoldState.startedAt = ts;
+  const elapsed = ts - poweroffHoldState.startedAt;
+  const percent = Math.min(100, (elapsed / POWEROFF_HOLD_MS) * 100);
+  setPoweroffProgress(percent);
+  const els = poweroffElements();
+  if (els.holdText) els.holdText.textContent = percent >= 45 ? UI_TEXT[currentLang].poweroffHolding : UI_TEXT[currentLang].poweroffHold;
+  if (percent >= 100) {
+    finishPoweroffHold();
+    return;
+  }
+  poweroffHoldState.raf = requestAnimationFrame(stepPoweroffHold);
+}
+function startPoweroffHold(event) {
+  const els = poweroffElements();
+  if (!els.holdBtn || els.holdBtn.disabled) return;
+  event.preventDefault();
+  poweroffHoldState.active = true;
+  poweroffHoldState.startedAt = 0;
+  poweroffHoldState.pointerId = event.pointerId;
+  poweroffHoldState.done = false;
+  setPoweroffStatus('', '');
+  setPoweroffProgress(0);
+  if (els.holdBtn.setPointerCapture) {
+    try { els.holdBtn.setPointerCapture(event.pointerId); } catch (err) {}
+  }
+  poweroffHoldState.raf = requestAnimationFrame(stepPoweroffHold);
+}
+function cancelPoweroffHold() {
+  if (!poweroffHoldState.active || poweroffHoldState.done) return;
+  resetPoweroffHold();
+}
+function movePoweroffHold(event) {
+  if (!poweroffHoldState.active) return;
+  const els = poweroffElements();
+  if (!els.holdBtn) return;
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  if (!target || !els.holdBtn.contains(target)) cancelPoweroffHold();
 }
 function hex4(value) { return '0x' + (Number(value) & 0xffff).toString(16).toUpperCase().padStart(4, '0'); }
 function faultName(err, sw) {
@@ -3065,9 +3281,17 @@ lockViewport();
 document.addEventListener('pointerdown', tryFullscreen, {once:true});
 const langToggleBtn = document.getElementById('langToggleBtn');
 const langDropdown = document.getElementById('langDropdown');
+const poweroffHoldBtn = document.getElementById('poweroffHoldBtn');
 bindAxisSwitchButtons();
 if (langToggleBtn) {
   langToggleBtn.addEventListener('click', toggleLanguageMenu);
+}
+if (poweroffHoldBtn) {
+  poweroffHoldBtn.addEventListener('pointerdown', startPoweroffHold);
+  poweroffHoldBtn.addEventListener('pointerup', cancelPoweroffHold);
+  poweroffHoldBtn.addEventListener('pointercancel', cancelPoweroffHold);
+  poweroffHoldBtn.addEventListener('pointerleave', cancelPoweroffHold);
+  poweroffHoldBtn.addEventListener('pointermove', movePoweroffHold);
 }
 document.addEventListener('pointerdown', event => {
   if (!langDropdown || !langToggleBtn) return;
@@ -3456,6 +3680,90 @@ def _wait_motion_ready(device, timeout_sec=3.0, poll_sec=0.05):
     return False, f"servo is not ready for motion (enabled={enabled}, fault={fault}, settle_cycles={settle})"
 
 
+def _parse_poweroff_command(raw):
+    if not raw:
+        return None
+    try:
+        args = shlex.split(raw)
+    except ValueError:
+        return None
+    return args or None
+
+
+def _run_poweroff_check():
+    args = _parse_poweroff_command(SYSTEM_POWEROFF_CHECK_COMMAND)
+    if not args:
+        return False, "poweroff check command is empty or invalid"
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        return False, str(exc)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+    return True, (result.stdout or "").strip()
+
+
+def _read_poweroff_device_statuses():
+    devices = ["mctivity"]
+    if _DEVICE_CAPABILITY.get("fv3") in _CAPABILITY_SET:
+        devices.append("fv3")
+    statuses = []
+    active = []
+    for device in devices:
+        try:
+            rsp = fv3_status() if device == "fv3" else motiond_command({"cmd": "status"})
+        except Exception as exc:
+            return None, {"device": device, "error": str(exc)}
+        if not isinstance(rsp, dict) or not rsp.get("ok"):
+            return None, {"device": device, "error": (rsp or {}).get("error", "status_unavailable")}
+        status = rsp.get("status", {})
+        if not isinstance(status, dict):
+            return None, {"device": device, "error": "invalid_status"}
+        moving = bool(status.get("moving"))
+        gear_running = bool(status.get("gear_running"))
+        item = {"device": device, "moving": moving, "gear_running": gear_running}
+        statuses.append(item)
+        if moving or gear_running:
+            active.append(item)
+    return {"statuses": statuses, "active": active}, None
+
+
+def system_poweroff_request(payload):
+    if str(payload.get("confirm", "")).strip().lower() != "poweroff":
+        return {"ok": False, "error": "invalid_confirm"}, 400
+    dry_run = bool(payload.get("dry_run"))
+    if not SYSTEM_POWEROFF_ENABLED:
+        return {"ok": False, "error": "poweroff_disabled", "dry_run": dry_run}, 403
+
+    machine, status_error = _read_poweroff_device_statuses()
+    if status_error is not None:
+        return {"ok": False, "error": "status_unavailable", "detail": status_error, "dry_run": dry_run}, 503
+    if machine["active"]:
+        return {"ok": False, "error": "machine_active", "active": machine["active"], "dry_run": dry_run}, 409
+
+    check_ok, check_detail = _run_poweroff_check()
+    if not check_ok:
+        return {"ok": False, "error": "poweroff_permission_failed", "detail": check_detail, "dry_run": dry_run}, 503
+    if dry_run:
+        return {"ok": True, "dry_run": True, "statuses": machine["statuses"], "permission": "ok"}, 200
+
+    args = _parse_poweroff_command(SYSTEM_POWEROFF_COMMAND)
+    if not args:
+        return {"ok": False, "error": "poweroff_command_invalid", "dry_run": False}, 503
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        return {"ok": False, "error": "poweroff_command_failed", "detail": str(exc), "dry_run": False}, 503
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "error": "poweroff_command_failed",
+            "detail": (result.stderr or result.stdout or f"exit {result.returncode}").strip(),
+            "dry_run": False,
+        }, 503
+    return {"ok": True, "dry_run": False, "status": "poweroff_requested"}, 200
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -3627,7 +3935,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/api/command", "/api/ui_state"):
+        if path not in ("/api/command", "/api/ui_state", "/api/system/poweroff"):
             self.send_error(404)
             return
         if not self._require_allowed_host():
@@ -3650,6 +3958,9 @@ class Handler(BaseHTTPRequestHandler):
                 state = payload.get("state", {})
                 save_ui_state(device, state)
                 self.send_json({"ok": True, "state": load_ui_state()})
+            elif path == "/api/system/poweroff":
+                response, status = system_poweroff_request(payload)
+                self.send_json(response, status)
             else:
                 cmd = _normalize_command_name(payload)
                 if cmd is None:

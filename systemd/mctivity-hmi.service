@@ -18,7 +18,8 @@ ExecStart=/usr/bin/env python3 /opt/mctivity/mctivity_hmi/mctivity_hmi.py
 Restart=always
 RestartSec=2
 StateDirectory=mctivity
-NoNewPrivileges=true
+# Required for the constrained sudoers poweroff command.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
