@@ -1,4 +1,18 @@
-# mctivity v1.2.0 Release Notes
+# mctivity v1.4.0 Release Notes
+
+## v1.4.0 Touchscreen Kiosk
+
+`mctivity v1.4.0` adds an optional local touchscreen kiosk layer on top of the v1.2.0 modular baseline.
+
+This version:
+
+- adds the `ui-touchscreen` runtime module
+- adds `mctivity-kiosk.service` for local fullscreen browser startup
+- adds kiosk install and verification scripts
+- keeps motion control and Web HMI services separate from local display startup
+- uses local-only HMI binding by default for touchscreen deployments
+
+## v1.2.0 Release Notes
 
 ## Release Status
 

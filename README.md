@@ -1,15 +1,16 @@
-# mctivity v1.2.0
+# mctivity v1.4.0
 
-> Status: `v1.2.0` is a preview/source release for controlled lab evaluation and integration testing. It is not a certified safety system and must not be used as the sole protection layer for machinery.
+> Status: `v1.4.0` is a site-integration release based on `v1.2.0`. It is not a certified safety system and must not be used as the sole protection layer for machinery.
 
 `mctivity` is a dual-axis EtherCAT motion-control software stack including:
 
 - motion daemon
 - Web HMI
 - modular assembly layer
+- optional local touchscreen kiosk layer
 - command-line control tool
 
-This version establishes the first modular baseline of the project while keeping the existing axis-control workflow intact.
+This version builds on the first modular baseline while adding an optional local touchscreen kiosk layer for industrial-panel deployments.
 
 Core updates:
 
@@ -19,6 +20,7 @@ Core updates:
 - torque mode is registered in the same feature assembly path as the other axis modes
 - FV3 dual-axis access is gated by the `full` profile capability set
 - API commands are validated, field-ordered, and sanitized before being forwarded to `motiond`
+- touchscreen kiosk startup is packaged as a separate runtime module and systemd service
 
 ## Platform
 
@@ -41,6 +43,7 @@ Core updates:
 - systemd examples assume a dedicated `mctivity:mctivity` user and group
 - UI state is intended to live in `/var/lib/mctivity/` under systemd
 - see [Assembly Quickstart](docs/assembly-quickstart.md) for profile switching and verification
+- see [Touchscreen Kiosk](docs/touchscreen-kiosk.md) for local fullscreen display deployment
 
 ## Build and Start
 
@@ -108,3 +111,4 @@ Trademark note:
 2. [Technical Change Notes](docs/release.md)
 3. [Architecture](docs/architecture.md)
 4. [Assembly Quickstart](docs/assembly-quickstart.md)
+5. [Touchscreen Kiosk](docs/touchscreen-kiosk.md)

@@ -1,0 +1,25 @@
+[Unit]
+Description=MCTIVITY Local Touchscreen Kiosk
+After=systemd-user-sessions.service mctivity-hmi.service
+Requires=mctivity-hmi.service
+Conflicts=getty@tty7.service
+
+[Service]
+Type=simple
+User=mctivity
+Group=mctivity
+EnvironmentFile=-/etc/mctivity/kiosk.env
+WorkingDirectory=/opt/mctivity
+PAMName=login
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+ExecStart=/opt/mctivity/scripts/mctivity-kiosk-start.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target

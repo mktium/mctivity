@@ -25,6 +25,7 @@
     "feature-hmi-electronic-gear",
     "feature-logic-dual-axis-fv3",
     "feature-hmi-dual-axis-fv3",
-    "ui-state-persist"
+    "ui-state-persist",
+    "ui-touchscreen"
   ]
 }

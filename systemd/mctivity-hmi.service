@@ -9,8 +9,11 @@ Type=simple
 User=mctivity
 Group=mctivity
 WorkingDirectory=/opt/mctivity/mctivity_hmi
+Environment=MCTIVITY_PROFILE=full
 Environment=MCTIVITY_WEB_HOST=127.0.0.1
+Environment=MCTIVITY_WEB_PORT=2015
 Environment=MCTIVITY_UI_STATE_PATH=/var/lib/mctivity/mctivity_hmi_state.json
+EnvironmentFile=-/etc/mctivity/hmi.env
 ExecStart=/usr/bin/env python3 /opt/mctivity/mctivity_hmi/mctivity_hmi.py
 Restart=always
 RestartSec=2

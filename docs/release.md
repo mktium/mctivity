@@ -4,6 +4,18 @@ Full release status and safety notes are in [../RELEASE_NOTES.md](../RELEASE_NOT
 
 `v1.2.0` is a preview/source release for controlled lab evaluation and integration testing. It is not a certified safety system and must not be used as the sole protection layer for machinery.
 
+## Version v1.4.0
+
+Version `v1.4.0` adds an optional local touchscreen kiosk layer for industrial-panel deployments.
+
+This version:
+
+- adds `ui-touchscreen` as an independent runtime module
+- adds `mctivity-kiosk.service` for local fullscreen browser startup
+- adds installation and verification scripts for kiosk deployments
+- keeps motion daemon, Web HMI, and local kiosk startup as separate service responsibilities
+- keeps the HMI local-only by default for touchscreen deployments
+
 ## Version
 
 Version `v1.2.0` marks the first modular baseline of `mctivity`.

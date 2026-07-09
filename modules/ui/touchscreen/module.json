@@ -1,0 +1,12 @@
+{
+  "id": "ui-touchscreen",
+  "type": "runtime_service",
+  "version": "1.0.0",
+  "domain": "device_application_domain",
+  "requires": [],
+  "conflicts": [],
+  "capabilities": [
+    "ui.touchscreen.kiosk"
+  ],
+  "apiVersion": "v1"
+}
