@@ -5,7 +5,7 @@
 `mctivity v1.4.1` adds a selectable single-slave topology for the Uservo DS1-E4806N drive used by project CYMG20241203.
 
 - adds the `axis-device-uservo` module and `axis-d-uservo` profile
-- reuses the proven axis A CSP command path while presenting the site axis as axis D
+- implements a dedicated Uservo Axis D CSP path rather than treating the legacy Axis A timing as proven for this slave
 - matches live EtherCAT identity `0x00666999:0x00004806`
 - matches the drive's default `0x1600` and `0x1a00` PDO assignment
 - uses `10000` counts per motor revolution and a 1 ms cycle
@@ -15,6 +15,10 @@
 - enforces `MCTIVITY_COMMISSIONING_INHIBIT=1` in the motion daemon during first deployment
 - permits only a non-energizing `0x0080` fault-reset pulse under inhibit so a restart-latched communication fault can be cleared without entering the enable sequence
 - reports the actual backend topology, scale, and inhibit state for drift-resistant verification
+- pins identity, PDO, DC, cycle, watchdog, and supported-mode claims to the official `XActant-E-XML-6120R.xml` ESI and DS1 product documentation
+- replaces catch-up bursts and counter-derived DC time with a no-catch-up deadline scheduler and explicit realtime/WC telemetry
+- bounds command-socket work inside each 1 ms cycle and refreshes DC application time during the shortened safe shutdown sequence
+- requires locked memory and `SCHED_FIFO` for Axis D and latches a safe hold after any post-arm timing or communication failure
 
 The first deployment gate permits EtherCAT OP, working-counter validation, and position feedback only. The verification script uses a non-energizing mode-selection request to confirm the low-level commissioning lock. It does not send enable and does not authorize motor enable or motion.
 

@@ -51,7 +51,7 @@ Environment-file drop-ins were installed for `mctivity-motiond.service` and `mct
 - `scripts/mctivity-axis-d-verify.sh` completed successfully against the deployed release
 - all four services were active: EtherCAT, motion daemon, HMI, and kiosk
 
-The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. Its timing and `0x81xx` range are consistent with a communication-class fault, but the available drive manual does not provide an exact `0x8100` fault-table entry. The release therefore retains a commissioning-safe fault reset that can pulse only controlword `0x0080`; it cannot enter the enable sequence. Final acceptance requires the fault bit to be clear after this reset while inhibit remains active.
+The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. The official XActant fault table identifies it as `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises the alarm. The default timeout is 100 ms and object `0x36B5` configures it. The original 300-cycle shutdown used a stale DC application time and exceeded this timeout; that shutdown behavior is a defect, not evidence that the official PDO map is wrong.
 
 The target network configuration already declared `enp3s0` as an EtherCAT-only interface, but the kernel still had IPv6 autoconfiguration enabled and assigned a link-local address. `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` now persistently disables IPv6 on that interface only; Wi-Fi and Tailscale are unchanged. After applying it and issuing the safe fault reset, `0x603f` remained `0x0000` during the initial observation window and the position remained unchanged.
 

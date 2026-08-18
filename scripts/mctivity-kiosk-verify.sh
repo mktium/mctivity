@@ -50,6 +50,11 @@ if profile == "axis-d-uservo":
     assert status.get("servo_request") is False, status
     assert status.get("fault") is False, status
     assert status.get("cw") == 0, status
+    assert status.get("rt_memory_locked") is True, status
+    assert status.get("rt_scheduler_policy") == 1, status
+    assert int(status.get("rt_scheduler_priority", 0)) > 0, status
+    assert status.get("timing_guard_armed") is True, status
+    assert status.get("communication_timing_fault") is False, status
 
     with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
         # A set-mode request must be rejected by the commissioning gate, but it
@@ -77,6 +82,7 @@ if profile == "axis-d-uservo":
     assert post_status.get("servo_request") is False, post_status
     assert post_status.get("fault") is False, post_status
     assert post_status.get("cw") == 0, post_status
+    assert post_status.get("communication_timing_fault") is False, post_status
     print("axis D no-motion gate ok")
 PY
 

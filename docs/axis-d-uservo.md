@@ -4,7 +4,7 @@
 
 This profile supports the CYMG20241203 DS1-E4806N drive as a single EtherCAT axis displayed as Axis D. It intentionally does not request the legacy MCTIVITY or FV3 slaves.
 
-Live identity and scale captured on 2026-08-18:
+Identity, timing, and PDO data were checked against the official `XActant-E-XML-6120R.xml` ESI as well as the live slave on 2026-08-18:
 
 - device name: `Uservo`
 - vendor ID: `0x00666999`
@@ -36,6 +36,7 @@ The first deployment must retain:
 
 ```text
 MCTIVITY_COMMISSIONING_INHIBIT=1
+MCTIVITY_REQUIRE_REALTIME=1
 ```
 
 With inhibit active:
@@ -46,7 +47,7 @@ With inhibit active:
 - status, disable, stop, and the non-energizing CiA 402 fault-reset pulse remain available
 - enable, mode changes, and all motion commands are rejected by `motiond`
 
-The commissioning fault reset can write only controlword `0x0080`; it never enters the CiA 402 enable sequence. This is needed to clear a communication fault latched when the EtherCAT application is deliberately restarted. After a reset, verify the controlword returns to zero and the axis remains disabled before continuing.
+The implementation retains a narrowly scoped commissioning fault-reset path, but it is not part of ordinary deployment or no-motion acceptance. Do not use it merely to make a failed timing test pass. The corrected shutdown path reduces its contribution to a planned restart from 300 stale-time cycles to 20 fresh-time cycles. The complete stop/re-exec/master-activation gap must still be measured against the drive's default 100 ms PDO-loss timeout.
 
 The first profile intentionally omits velocity mode because the drive's default RxPDO has target position (`0x607a`) but not target velocity (`0x60ff`). Position-based modes use conservative UI defaults: 0.01 revolution relative move, a +/-1 revolution position range, 30 rpm default speed, and 222 rpm maximum speed. These values are preparation for a later onsite motion gate; inhibit remains authoritative until that separate gate is approved.
 
@@ -63,6 +64,8 @@ The default TxPDO does not contain `0x603f` (error code). The statusword fault b
 7. Confirm a non-energizing `set_mode` request returns `commissioning_inhibit`, then read status again and confirm the axis remains disabled with controlword zero.
 
 Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo`, checks the backend's own topology/scale/inhibit fields, and uses a non-energizing mode-selection request to prove command rejection. It deliberately does not send an enable command.
+
+Then run `scripts/mctivity-axis-d-stability.py --duration 1800 --max-position-span 0` under normal kiosk load. The stability gate requires no position change and no increase in deadline misses, skipped periods, WC transitions, or incomplete-WC cycles. See [Axis D EtherCAT Realtime Contract](axis-d-ethercat-realtime.md) for the official-source baseline and complete no-motion gate.
 
 On MKTLIN01, `enp3s0` is dedicated to EtherCAT. Install `config/90-mctivity-ethercat-enp3s0.conf` as `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` so the normal IPv6 stack does not configure or transmit on the fieldbus interface. Do not apply this host-specific file to an interface that is also used for normal networking.
 

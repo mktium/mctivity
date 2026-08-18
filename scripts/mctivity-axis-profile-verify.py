@@ -76,6 +76,24 @@ def main():
                 raise SystemExit("axis-d-uservo velocity-count defaults invalid")
             if not (0 < int(device["default_accel_rpm_s"]) <= int(device["max_accel_rpm_s"])):
                 raise SystemExit("axis-d-uservo acceleration defaults invalid")
+            expected_identity = {
+                "vendor_id": "0x00666999",
+                "product_code": "0x00004806",
+                "revision": "0x00000001",
+                "cycle_ns": 1000000,
+                "counts_per_rev": 10000,
+                "commissioning_inhibit_default": True,
+            }
+            for key, expected in expected_identity.items():
+                if device.get(key) != expected:
+                    raise SystemExit(
+                        f"axis-d-uservo official identity/timing mismatch for {key}: "
+                        f"expected {expected!r}, got {device.get(key)!r}"
+                    )
+            expected_rxpdo = ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"]
+            expected_txpdo = ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"]
+            if device.get("rxpdo") != expected_rxpdo or device.get("txpdo") != expected_txpdo:
+                raise SystemExit("axis-d-uservo PDOs do not match XActant-E-XML-6120R Uservo defaults")
     if checked < 1:
         raise SystemExit("no axis_device module found")
     print(f"axis profile ok: {checked} device profile(s)")

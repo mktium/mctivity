@@ -2,7 +2,9 @@
 set -euo pipefail
 
 python3 -m py_compile mctivity_hmi/*.py
+python3 -m py_compile scripts/mctivity-axis-d-stability.py
 python3 scripts/mctivity-axis-profile-verify.py
+make -C mctivity_pdo_monitor test
 
 python3 - <<'PY'
 import json

@@ -2,6 +2,7 @@
 set -eu
 
 SERVICE_NAME="${SERVICE_NAME:-mctivity-hmi.service}"
+ROOT="${MCTIVITY_ROOT:-/opt/mctivity}"
 PROFILE_NAME="${1:-standard}"
 AXIS_ENV_DIR="/etc/mctivity"
 AXIS_ENV_FILE="${AXIS_ENV_DIR}/axis.env"
@@ -22,13 +23,19 @@ if [ "${PROFILE_NAME}" = "axis-d-uservo" ]; then
 MCTIVITY_TOPOLOGY=axis-d-uservo
 MCTIVITY_PROFILE=axis-d-uservo
 MCTIVITY_COMMISSIONING_INHIBIT=1
+MCTIVITY_REQUIRE_REALTIME=1
 EOF
+  mkdir -p /etc/systemd/system/mctivity-motiond.service.d
+  install -m 0644 "${ROOT}/systemd/mctivity-motiond-axis-d-realtime.conf" \
+    /etc/systemd/system/mctivity-motiond.service.d/10-axis-d-realtime.conf
 else
   cat > "${AXIS_ENV_FILE}" <<EOF
 MCTIVITY_TOPOLOGY=legacy-dual
 MCTIVITY_PROFILE=${PROFILE_NAME}
 MCTIVITY_COMMISSIONING_INHIBIT=0
+MCTIVITY_REQUIRE_REALTIME=0
 EOF
+  rm -f /etc/systemd/system/mctivity-motiond.service.d/10-axis-d-realtime.conf
 fi
 chmod 0644 "${AXIS_ENV_FILE}"
 

@@ -14,10 +14,13 @@ PROFILE="${MCTIVITY_PROFILE:-full}"
 if [ "$PROFILE" = "axis-d-uservo" ]; then
   TOPOLOGY="${MCTIVITY_TOPOLOGY:-axis-d-uservo}"
   COMMISSIONING_INHIBIT="${MCTIVITY_COMMISSIONING_INHIBIT:-1}"
+  REQUIRE_REALTIME="${MCTIVITY_REQUIRE_REALTIME:-1}"
 else
   TOPOLOGY="${MCTIVITY_TOPOLOGY:-legacy-dual}"
   COMMISSIONING_INHIBIT="${MCTIVITY_COMMISSIONING_INHIBIT:-0}"
+  REQUIRE_REALTIME="${MCTIVITY_REQUIRE_REALTIME:-0}"
 fi
+RT_CPU="${MCTIVITY_RT_CPU:-}"
 WEB_HOST="${MCTIVITY_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${MCTIVITY_WEB_PORT:-2015}"
 ENABLE_POWEROFF="${MCTIVITY_ENABLE_POWEROFF:-0}"
@@ -68,6 +71,7 @@ install -d -m 0755 /etc/mctivity
   printf 'MCTIVITY_TOPOLOGY=%s\n' "$TOPOLOGY"
   printf 'MCTIVITY_PROFILE=%s\n' "$PROFILE"
   printf 'MCTIVITY_COMMISSIONING_INHIBIT=%s\n' "$COMMISSIONING_INHIBIT"
+  printf 'MCTIVITY_REQUIRE_REALTIME=%s\n' "$REQUIRE_REALTIME"
 } >/etc/mctivity/axis.env
 chmod 0644 /etc/mctivity/axis.env
 
@@ -124,10 +128,30 @@ rewrite_unit "${ROOT}/systemd/mctivity-hmi.service" /etc/systemd/system/mctivity
 rewrite_unit "${ROOT}/systemd/mctivity-kiosk.service" /etc/systemd/system/mctivity-kiosk.service
 rewrite_unit "${ROOT}/systemd/mctivity-poweroff.service" /etc/systemd/system/mctivity-poweroff.service
 
+motiond_dropin_dir=/etc/systemd/system/mctivity-motiond.service.d
+motiond_dropin="${motiond_dropin_dir}/10-axis-d-realtime.conf"
+if [ "$PROFILE" = "axis-d-uservo" ]; then
+  install -d -m 0755 "$motiond_dropin_dir"
+  if [ -n "$RT_CPU" ] && ! printf '%s' "$RT_CPU" | grep -Eq '^[0-9]+$'; then
+    echo "invalid MCTIVITY_RT_CPU: $RT_CPU" >&2
+    exit 1
+  fi
+  realtime_tmp="$(mktemp)"
+  cp "${ROOT}/systemd/mctivity-motiond-axis-d-realtime.conf" "$realtime_tmp"
+  if [ -n "$RT_CPU" ]; then
+    printf 'CPUAffinity=%s\n' "$RT_CPU" >>"$realtime_tmp"
+  fi
+  install -m 0644 "$realtime_tmp" "$motiond_dropin"
+  rm -f "$realtime_tmp"
+else
+  rm -f "$motiond_dropin"
+fi
+
 chmod 0755 \
   "${ROOT}/scripts/mctivity-kiosk-start.sh" \
   "${ROOT}/scripts/mctivity-kiosk-session.sh" \
   "${ROOT}/scripts/mctivity-axis-d-verify.sh" \
+  "${ROOT}/scripts/mctivity-axis-d-stability.py" \
   "${ROOT}/scripts/mctivity-kiosk-verify.sh" \
   "${ROOT}/scripts/mctivity-poweroff.sh"
 

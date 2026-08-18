@@ -3,16 +3,20 @@
 #include <fcntl.h>
 #include <math.h>
 #include <netinet/in.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <ecrt.h>
+
+#include "realtime_schedule.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
@@ -39,11 +43,37 @@
 #define CURVE_BLEND_LINEAR 0
 #define CURVE_BLEND_SMOOTH 1
 #define CURVE_BLEND_AGGRESSIVE 2
+#define AXIS_D_GOOD_CYCLES_TO_ARM 1000U
+#define AXIS_D_SERVER_ACCEPT_BUDGET 1U
+#define AXIS_D_SERVER_COMMAND_BUDGET 2U
+#define AXIS_D_SHUTDOWN_CYCLES 20U
 
 static volatile sig_atomic_t running = 1;
 static int uservo_axis_d_topology = 0;
 static int commissioning_inhibit = 0;
+static int require_realtime = 0;
 static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
+
+typedef struct {
+    uint64_t deadline_miss_count;
+    uint64_t skipped_periods;
+    uint64_t last_wake_lateness_ns;
+    uint64_t max_wake_lateness_ns;
+    uint64_t last_cycle_runtime_ns;
+    uint64_t max_cycle_runtime_ns;
+    uint64_t wc_change_count;
+    uint64_t wc_incomplete_cycles;
+    uint64_t consecutive_good_cycles;
+    unsigned int previous_wc;
+    int have_previous_wc;
+    int timing_guard_armed;
+    int communication_timing_fault;
+    int memory_locked;
+    int scheduler_policy;
+    int scheduler_priority;
+} realtime_status_t;
+
+static realtime_status_t realtime_status;
 
 /* MCTIVITY PDO offsets (slave 0). */
 static unsigned int mctivity_off_controlword;
@@ -344,6 +374,111 @@ static void sleep_until_next(struct timespec *wake_time)
 static uint64_t timespec_to_ns(const struct timespec *ts)
 {
     return (uint64_t)ts->tv_sec * NSEC_PER_SEC + (uint64_t)ts->tv_nsec;
+}
+
+static uint64_t monotonic_now_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return timespec_to_ns(&now);
+}
+
+static int sleep_until_ns(uint64_t deadline_ns)
+{
+    struct timespec deadline = {
+        .tv_sec = (time_t)(deadline_ns / NSEC_PER_SEC),
+        .tv_nsec = (long)(deadline_ns % NSEC_PER_SEC),
+    };
+    int rc;
+
+    do {
+        rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL);
+    } while (rc == EINTR && running);
+    if (rc != 0 && running) {
+        errno = rc;
+        return -1;
+    }
+    return 0;
+}
+
+static void record_axis_d_skipped_periods(uint64_t skipped_periods)
+{
+    if (skipped_periods == 0) {
+        return;
+    }
+    realtime_status.deadline_miss_count++;
+    realtime_status.skipped_periods += skipped_periods;
+    realtime_status.consecutive_good_cycles = 0;
+    if (realtime_status.timing_guard_armed) {
+        realtime_status.communication_timing_fault = 1;
+    }
+}
+
+static int wait_for_axis_d_cycle(uint64_t *previous_deadline_ns, uint64_t *scheduled_time_ns)
+{
+    uint64_t now_ns = monotonic_now_ns();
+    mctivity_schedule_step_t step =
+        mctivity_schedule_next(*previous_deadline_ns, now_ns, PERIOD_NS);
+
+    record_axis_d_skipped_periods(step.skipped_periods);
+    *previous_deadline_ns = step.deadline_ns;
+
+    for (;;) {
+        if (sleep_until_ns(*previous_deadline_ns) < 0) {
+            return -1;
+        }
+
+        now_ns = monotonic_now_ns();
+        realtime_status.last_wake_lateness_ns =
+            now_ns > *previous_deadline_ns ? now_ns - *previous_deadline_ns : 0;
+        if (realtime_status.last_wake_lateness_ns > realtime_status.max_wake_lateness_ns) {
+            realtime_status.max_wake_lateness_ns = realtime_status.last_wake_lateness_ns;
+        }
+        if (realtime_status.last_wake_lateness_ns < PERIOD_NS) {
+            break;
+        }
+
+        step = mctivity_schedule_after_late_wake(*previous_deadline_ns, now_ns, PERIOD_NS);
+        record_axis_d_skipped_periods(step.skipped_periods);
+        *previous_deadline_ns = step.deadline_ns;
+    }
+    *scheduled_time_ns = *previous_deadline_ns;
+    return 0;
+}
+
+static int prepare_axis_d_realtime(void)
+{
+    struct sched_param param;
+    volatile unsigned char stack_prefault[64U * 1024U];
+
+    memset(&realtime_status, 0, sizeof(realtime_status));
+    for (size_t i = 0; i < sizeof(stack_prefault); i += 4096U) {
+        stack_prefault[i] = 0;
+    }
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
+        realtime_status.memory_locked = 1;
+    } else {
+        perror("mlockall");
+    }
+
+    realtime_status.scheduler_policy = sched_getscheduler(0);
+    memset(&param, 0, sizeof(param));
+    if (sched_getparam(0, &param) == 0) {
+        realtime_status.scheduler_priority = param.sched_priority;
+    }
+
+    if (require_realtime &&
+        (!realtime_status.memory_locked || realtime_status.scheduler_policy != SCHED_FIFO ||
+         realtime_status.scheduler_priority <= 0)) {
+        fprintf(
+            stderr,
+            "Axis D requires locked memory and SCHED_FIFO (locked=%d policy=%d priority=%d)\n",
+            realtime_status.memory_locked,
+            realtime_status.scheduler_policy,
+            realtime_status.scheduler_priority);
+        return -1;
+    }
+    return 0;
 }
 
 static int set_nonblock(int fd)
@@ -1001,7 +1136,7 @@ static void send_status_fd(int fd, int axis)
 {
     axis_runtime_t *ax = &axes[axis];
     const status_t *s = &ax->st;
-    char out[1400];
+    char out[2000];
     int n = snprintf(
         out, sizeof(out),
         "{\"ok\":true,\"status\":{\"device\":\"%s\",\"topology\":\"%s\","
@@ -1010,7 +1145,14 @@ static void send_status_fd(int fd, int axis)
         "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,"
         "\"control_mode\":\"%s\",\"pos_raw\":%d,\"pos\":%d,\"target_raw\":%d,\"target\":%d,"
         "\"following_error\":%d,\"soft_zero_raw\":%d,\"jog_velocity_cps\":%d,\"torque_cmd\":%d,"
-        "\"torque_feedback\":%d,\"homed\":%s,\"cycles\":%u,\"last_command\":\"%s\",\"message\":\"%s\"}}\n",
+        "\"torque_feedback\":%d,\"homed\":%s,\"cycles\":%u,"
+        "\"rt_memory_locked\":%s,\"rt_scheduler_policy\":%d,\"rt_scheduler_priority\":%d,"
+        "\"rt_deadline_miss_count\":%llu,\"rt_skipped_periods\":%llu,"
+        "\"rt_last_wake_lateness_ns\":%llu,\"rt_max_wake_lateness_ns\":%llu,"
+        "\"rt_last_cycle_runtime_ns\":%llu,\"rt_max_cycle_runtime_ns\":%llu,"
+        "\"wc_change_count\":%llu,\"wc_incomplete_cycles\":%llu,"
+        "\"timing_guard_armed\":%s,\"communication_timing_fault\":%s,"
+        "\"last_command\":\"%s\",\"message\":\"%s\"}}\n",
         axis_name(axis), uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual",
         (long long)counts_per_rev, commissioning_inhibit ? "true" : "false",
         s->enabled ? "true" : "false", s->servo_request ? "true" : "false",
@@ -1019,9 +1161,25 @@ static void send_status_fd(int fd, int axis)
         s->operational, s->wc, s->wc_complete ? "true" : "false", s->cw, s->sw, s->err, s->mode_display,
         s->control_mode, s->pos_raw, s->pos_user, s->target_raw, s->target_user, s->following_error,
         s->soft_zero_raw, s->jog_velocity_cps, s->torque_cmd, s->torque_feedback, s->homed ? "true" : "false",
-        s->cycles, s->last_command, s->message);
+        s->cycles,
+        realtime_status.memory_locked ? "true" : "false",
+        realtime_status.scheduler_policy,
+        realtime_status.scheduler_priority,
+        (unsigned long long)realtime_status.deadline_miss_count,
+        (unsigned long long)realtime_status.skipped_periods,
+        (unsigned long long)realtime_status.last_wake_lateness_ns,
+        (unsigned long long)realtime_status.max_wake_lateness_ns,
+        (unsigned long long)realtime_status.last_cycle_runtime_ns,
+        (unsigned long long)realtime_status.max_cycle_runtime_ns,
+        (unsigned long long)realtime_status.wc_change_count,
+        (unsigned long long)realtime_status.wc_incomplete_cycles,
+        realtime_status.timing_guard_armed ? "true" : "false",
+        realtime_status.communication_timing_fault ? "true" : "false",
+        s->last_command,
+        s->message);
     if (n > 0) {
-        (void)send(fd, out, (size_t)n, MSG_NOSIGNAL);
+        size_t send_len = (size_t)n < sizeof(out) ? (size_t)n : sizeof(out) - 1;
+        (void)send(fd, out, send_len, MSG_NOSIGNAL);
     }
 }
 
@@ -1053,6 +1211,17 @@ static void handle_command(int fd, const char *line)
         strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0 &&
         strcmp(cmd, "fault_reset") != 0 && strcmp(cmd, "reset_fault") != 0) {
         send_error_fd(fd, "commissioning_inhibit");
+        return;
+    }
+
+    if (uservo_axis_d_topology && realtime_status.communication_timing_fault &&
+        strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0) {
+        send_error_fd(fd, "communication_timing_fault");
+        return;
+    }
+
+    if (uservo_axis_d_topology && !realtime_status.timing_guard_armed && strcmp(cmd, "enable") == 0) {
+        send_error_fd(fd, "timing_guard_not_armed");
         return;
     }
 
@@ -1570,7 +1739,10 @@ static int setup_server(void)
         close(fd);
         return -1;
     }
-    set_nonblock(fd);
+    if (set_nonblock(fd) < 0) {
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 
@@ -1581,11 +1753,15 @@ static void close_client(client_t *c)
     }
     c->fd = -1;
     c->len = 0;
+    c->buf[0] = '\0';
 }
 
-static void poll_server(void)
+static void poll_server(unsigned int accept_budget, unsigned int command_budget, unsigned int read_budget_per_client)
 {
-    for (;;) {
+    unsigned int accepted = 0;
+    unsigned int commands = 0;
+
+    while (accepted < accept_budget) {
         int cfd = accept(listen_fd, NULL, NULL);
         if (cfd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -1593,12 +1769,17 @@ static void poll_server(void)
             }
             break;
         }
-        set_nonblock(cfd);
+        accepted++;
+        if (set_nonblock(cfd) < 0) {
+            close(cfd);
+            continue;
+        }
         int placed = 0;
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].fd < 0) {
                 clients[i].fd = cfd;
                 clients[i].len = 0;
+                clients[i].buf[0] = '\0';
                 placed = 1;
                 break;
             }
@@ -1611,11 +1792,33 @@ static void poll_server(void)
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
         client_t *c = &clients[i];
+        unsigned int reads = 0;
         if (c->fd < 0) {
             continue;
         }
-        for (;;) {
+
+        while (commands < command_budget) {
+            char *newline = strchr(c->buf, '\n');
+            if (newline != NULL) {
+                *newline = '\0';
+                handle_command(c->fd, c->buf);
+                commands++;
+                size_t used = (size_t)(newline - c->buf) + 1;
+                memmove(c->buf, c->buf + used, c->len - used + 1);
+                c->len -= used;
+                continue;
+            }
+
+            if (reads >= read_budget_per_client) {
+                break;
+            }
+            if (c->len >= sizeof(c->buf) - 1) {
+                send_error_fd(c->fd, "command too long");
+                close_client(c);
+                break;
+            }
             ssize_t n = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len - 1, 0);
+            reads++;
             if (n == 0) {
                 close_client(c);
                 break;
@@ -1629,14 +1832,6 @@ static void poll_server(void)
             }
             c->len += (size_t)n;
             c->buf[c->len] = '\0';
-            char *newline;
-            while ((newline = strchr(c->buf, '\n')) != NULL) {
-                *newline = '\0';
-                handle_command(c->fd, c->buf);
-                size_t used = (size_t)(newline - c->buf) + 1;
-                memmove(c->buf, c->buf + used, c->len - used + 1);
-                c->len -= used;
-            }
             if (c->len >= sizeof(c->buf) - 1) {
                 send_error_fd(c->fd, "command too long");
                 close_client(c);
@@ -1812,15 +2007,64 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
     }
 }
 
+static void update_axis_d_communication_guard(axis_runtime_t *axis)
+{
+    status_t *s = &axis->st;
+    int healthy = s->operational && s->wc_complete;
+
+    if (realtime_status.have_previous_wc && realtime_status.previous_wc != s->wc) {
+        realtime_status.wc_change_count++;
+    }
+    realtime_status.previous_wc = s->wc;
+    realtime_status.have_previous_wc = 1;
+
+    if (healthy) {
+        if (realtime_status.consecutive_good_cycles < AXIS_D_GOOD_CYCLES_TO_ARM) {
+            realtime_status.consecutive_good_cycles++;
+        }
+        if (realtime_status.consecutive_good_cycles >= AXIS_D_GOOD_CYCLES_TO_ARM) {
+            realtime_status.timing_guard_armed = 1;
+        }
+    } else {
+        realtime_status.wc_incomplete_cycles++;
+        realtime_status.consecutive_good_cycles = 0;
+        if (realtime_status.timing_guard_armed) {
+            realtime_status.communication_timing_fault = 1;
+        }
+    }
+
+    if (realtime_status.communication_timing_fault) {
+        s->servo_request = 0;
+        clear_motion(axis);
+        axis->stop_velocity_cps = 0;
+        axis->target_velocity_cps = 0;
+        axis->velocity_remainder = 0;
+        axis->fault_reset_cycles = 0;
+        axis->pp_pulse_cycles = 0;
+        axis->fv3_halt_cycles = 0;
+        axis->gear_running = 0;
+        axis->gear_has_last_master_pos = 0;
+        axis->commanded_mode = 0;
+        s->moving = 0;
+        s->cw = 0;
+        s->target_raw = s->pos_raw;
+        s->target_user = s->pos_user;
+        snprintf(s->message, sizeof(s->message), "communication timing fault latched; restart required");
+    }
+}
+
 static int run_uservo_axis_d(void)
 {
     ec_master_t *master;
     ec_domain_t *domain;
     ec_slave_config_t *slave_config;
     uint8_t *process_data;
-    struct timespec wake_time;
-    uint64_t app_time_base;
+    uint64_t deadline_ns;
     axis_runtime_t *axis = &axes[AXIS_MCTIVITY];
+
+    if (prepare_axis_d_realtime() < 0) {
+        return 1;
+    }
 
     master = ecrt_request_master(0);
     if (!master) {
@@ -1842,6 +2086,11 @@ static int run_uservo_axis_d(void)
         return 1;
     }
     ecrt_slave_config_dc(slave_config, 0x0300, PERIOD_NS, 0, 0, 0);
+    if (ecrt_master_select_reference_clock(master, slave_config)) {
+        fprintf(stderr, "failed to select Uservo axis D DC reference clock\n");
+        ecrt_release_master(master);
+        return 1;
+    }
 
     if (ecrt_domain_reg_pdo_entry_list(domain, uservo_domain_regs)) {
         fprintf(stderr, "failed to register Uservo axis D PDO entries\n");
@@ -1874,15 +2123,22 @@ static int run_uservo_axis_d(void)
         (long long)counts_per_rev);
     fflush(stdout);
 
-    clock_gettime(CLOCK_MONOTONIC, &wake_time);
-    app_time_base = timespec_to_ns(&wake_time);
+    deadline_ns = monotonic_now_ns();
 
     while (running) {
-        uint64_t app_time = app_time_base + (uint64_t)axis->st.cycles * PERIOD_NS;
+        uint64_t scheduled_time_ns;
+        uint64_t cycle_started_ns;
+        uint64_t cycle_finished_ns;
         ec_slave_config_state_t slave_state;
         ec_domain_state_t domain_state;
 
-        ecrt_master_application_time(master, app_time);
+        if (wait_for_axis_d_cycle(&deadline_ns, &scheduled_time_ns) < 0) {
+            perror("Axis D cycle sleep");
+            break;
+        }
+        cycle_started_ns = monotonic_now_ns();
+
+        ecrt_master_application_time(master, scheduled_time_ns);
         ecrt_master_receive(master);
         ecrt_domain_process(domain);
         ecrt_slave_config_state(slave_config, &slave_state);
@@ -1902,15 +2158,26 @@ static int run_uservo_axis_d(void)
         axis->st.fault = (axis->st.sw & 0x0008) != 0;
         axis->st.pos_user = axis->st.pos_raw - axis->st.soft_zero_raw;
 
+        update_axis_d_communication_guard(axis);
         if (commissioning_inhibit) {
             axis->st.servo_request = 0;
+            axis->st.target_raw = axis->st.pos_raw;
+            axis->st.target_user = axis->st.pos_user;
         }
         axis_cycle_logic(axis, AXIS_MCTIVITY);
 
+        if (realtime_status.communication_timing_fault) {
+            axis->st.cw = 0;
+        }
+
         EC_WRITE_U16(
             process_data + uservo_off_controlword,
-            commissioning_inhibit ? (axis->st.cw == 0x0080 ? 0x0080 : 0x0000) : axis->st.cw);
-        EC_WRITE_S8(process_data + uservo_off_mode, commissioning_inhibit ? 0 : axis->commanded_mode);
+            realtime_status.communication_timing_fault
+                ? 0x0000
+                : (commissioning_inhibit ? (axis->st.cw == 0x0080 ? 0x0080 : 0x0000) : axis->st.cw));
+        EC_WRITE_S8(
+            process_data + uservo_off_mode,
+            commissioning_inhibit || realtime_status.communication_timing_fault ? 0 : axis->commanded_mode);
         EC_WRITE_S32(process_data + uservo_off_target_position, axis->st.target_raw);
         EC_WRITE_U32(process_data + uservo_off_digital_output, 0);
 
@@ -1919,24 +2186,35 @@ static int run_uservo_axis_d(void)
         ecrt_master_sync_slave_clocks(master);
         ecrt_master_send(master);
 
-        poll_server();
+        poll_server(AXIS_D_SERVER_ACCEPT_BUDGET, AXIS_D_SERVER_COMMAND_BUDGET, 1);
         axis->st.cycles++;
-        sleep_until_next(&wake_time);
+
+        cycle_finished_ns = monotonic_now_ns();
+        realtime_status.last_cycle_runtime_ns = cycle_finished_ns - cycle_started_ns;
+        if (realtime_status.last_cycle_runtime_ns > realtime_status.max_cycle_runtime_ns) {
+            realtime_status.max_cycle_runtime_ns = realtime_status.last_cycle_runtime_ns;
+        }
     }
 
     printf("Disabling Uservo axis D output before exit...\n");
-    for (int i = 0; i < 300; i++) {
+    for (unsigned int i = 0; i < AXIS_D_SHUTDOWN_CYCLES; i++) {
+        uint64_t scheduled_time_ns;
+        if (wait_for_axis_d_cycle(&deadline_ns, &scheduled_time_ns) < 0) {
+            break;
+        }
+        ecrt_master_application_time(master, scheduled_time_ns);
         ecrt_master_receive(master);
         ecrt_domain_process(domain);
         EC_WRITE_U16(process_data + uservo_off_controlword, 0x0000);
         EC_WRITE_S8(process_data + uservo_off_mode, 0);
-        EC_WRITE_S32(process_data + uservo_off_target_position, axis->st.target_raw);
+        EC_WRITE_S32(
+            process_data + uservo_off_target_position,
+            EC_READ_S32(process_data + uservo_off_position_actual));
         EC_WRITE_U32(process_data + uservo_off_digital_output, 0);
         ecrt_domain_queue(domain);
         ecrt_master_sync_reference_clock(master);
         ecrt_master_sync_slave_clocks(master);
         ecrt_master_send(master);
-        sleep_until_next(&wake_time);
     }
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -1963,6 +2241,9 @@ int main(void)
     uservo_axis_d_topology = topology && strcmp(topology, "axis-d-uservo") == 0;
     commissioning_inhibit = uservo_axis_d_topology
         ? env_flag_default("MCTIVITY_COMMISSIONING_INHIBIT", 1)
+        : 0;
+    require_realtime = uservo_axis_d_topology
+        ? env_flag_default("MCTIVITY_REQUIRE_REALTIME", 1)
         : 0;
     counts_per_rev = uservo_axis_d_topology ? USERVO_COUNTS_PER_REV : LEGACY_COUNTS_PER_REV;
 
@@ -2118,7 +2399,7 @@ int main(void)
         ecrt_master_sync_slave_clocks(master);
         ecrt_master_send(master);
 
-        poll_server();
+        poll_server(UINT32_MAX, UINT32_MAX, UINT32_MAX);
 
         axes[AXIS_MCTIVITY].st.cycles++;
         axes[AXIS_FV3].st.cycles++;

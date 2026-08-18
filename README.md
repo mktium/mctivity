@@ -26,6 +26,9 @@ Core updates:
 - commissioning inhibit is enabled by default and enforced inside `motiond`
 - the initial axis D UI uses a +/-1 revolution envelope, 0.01 revolution default move, 30 rpm default speed, and 222 rpm cap
 - velocity mode is excluded until a compatible target-velocity PDO path is configured and tested
+- the Axis D 1 ms loop skips expired deadlines instead of sending catch-up bursts and exposes realtime/WC counters
+- Axis D refuses cyclic startup unless memory locking and `SCHED_FIFO` are actually active
+- communication timing failures latch a zero-controlword hold instead of automatically re-enabling after WC recovery
 
 ## Platform
 
@@ -50,6 +53,7 @@ Core updates:
 - see [Assembly Quickstart](docs/assembly-quickstart.md) for profile switching and verification
 - see [Touchscreen Kiosk](docs/touchscreen-kiosk.md) for local fullscreen display deployment
 - see [Uservo Axis D](docs/axis-d-uservo.md) for topology selection and no-motion commissioning
+- see [Axis D EtherCAT Realtime Contract](docs/axis-d-ethercat-realtime.md) for official ESI parameters and the loaded no-motion stability gate
 
 ## Build and Start
 
