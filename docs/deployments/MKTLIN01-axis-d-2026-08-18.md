@@ -5,7 +5,7 @@
 - implementation commit: `dbb3a94` (`Add Uservo axis D commissioning profile`)
 - branch: `feature/v1.4.1-axis-d-uservo`
 - target: `MKTLIN01`
-- target release path: `/opt/mctivity-releases/dbb3a94`
+- target release path: `/opt/mctivity-releases/v1.4.1-axis-d`
 - active path: `/opt/mctivity`
 - pre-deployment backup: `/opt/mctivity-backups/pre-axis-d-20260818T130934`
 - rollback directory retained on target: `/opt/mctivity.rollback.20260818T130934`
