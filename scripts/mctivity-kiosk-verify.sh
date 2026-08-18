@@ -48,6 +48,7 @@ if profile == "axis-d-uservo":
     assert status.get("wc_complete") is True, status
     assert status.get("enabled") is False, status
     assert status.get("servo_request") is False, status
+    assert status.get("fault") is False, status
     assert status.get("cw") == 0, status
 
     with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
@@ -74,6 +75,7 @@ if profile == "axis-d-uservo":
     post_status = json.loads(response.decode("utf-8")).get("status") or {}
     assert post_status.get("enabled") is False, post_status
     assert post_status.get("servo_request") is False, post_status
+    assert post_status.get("fault") is False, post_status
     assert post_status.get("cw") == 0, post_status
     print("axis D no-motion gate ok")
 PY

@@ -13,6 +13,7 @@
 - omits velocity/CSV mode because the selected default RxPDO has no `0x60ff` target-velocity entry
 - leaves the legacy MCTIVITY/FV3 topology unchanged unless explicitly selected
 - enforces `MCTIVITY_COMMISSIONING_INHIBIT=1` in the motion daemon during first deployment
+- permits only a non-energizing `0x0080` fault-reset pulse under inhibit so a restart-latched communication fault can be cleared without entering the enable sequence
 - reports the actual backend topology, scale, and inhibit state for drift-resistant verification
 
 The first deployment gate permits EtherCAT OP, working-counter validation, and position feedback only. The verification script uses a non-energizing mode-selection request to confirm the low-level commissioning lock. It does not send enable and does not authorize motor enable or motion.

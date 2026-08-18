@@ -49,6 +49,8 @@ Environment-file drop-ins were installed for `mctivity-motiond.service` and `mct
 - the Axis D verifier used a non-energizing `set_mode(position)` request and confirmed it was rejected with `commissioning_inhibit`
 - all four services were active: EtherCAT, motion daemon, HMI, and kiosk
 
+The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. This is a communication-class fault. The release therefore retains a commissioning-safe fault reset that can pulse only controlword `0x0080`; it cannot enter the enable sequence. Final acceptance requires the fault bit to be clear after this reset while inhibit remains active.
+
 No enable or motion command was sent during this deployment.
 
 ## Remaining Gate

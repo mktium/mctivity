@@ -1050,7 +1050,8 @@ static void handle_command(int fd, const char *line)
     }
 
     if (uservo_axis_d_topology && commissioning_inhibit &&
-        strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0) {
+        strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0 &&
+        strcmp(cmd, "fault_reset") != 0 && strcmp(cmd, "reset_fault") != 0) {
         send_error_fd(fd, "commissioning_inhibit");
         return;
     }
@@ -1900,11 +1901,12 @@ static int run_uservo_axis_d(void)
 
         if (commissioning_inhibit) {
             axis->st.servo_request = 0;
-            axis->fault_reset_cycles = 0;
         }
         axis_cycle_logic(axis, AXIS_MCTIVITY);
 
-        EC_WRITE_U16(process_data + uservo_off_controlword, commissioning_inhibit ? 0x0000 : axis->st.cw);
+        EC_WRITE_U16(
+            process_data + uservo_off_controlword,
+            commissioning_inhibit ? (axis->st.cw == 0x0080 ? 0x0080 : 0x0000) : axis->st.cw);
         EC_WRITE_S8(process_data + uservo_off_mode, commissioning_inhibit ? 0 : axis->commanded_mode);
         EC_WRITE_S32(process_data + uservo_off_target_position, axis->st.target_raw);
         EC_WRITE_U32(process_data + uservo_off_digital_output, 0);

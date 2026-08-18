@@ -43,8 +43,10 @@ With inhibit active:
 - cyclic controlword is forced to `0`
 - cyclic mode request is forced to `0`
 - target position is initialized from actual position
-- status, disable, and stop remain available
-- enable, fault reset, mode changes, and all motion commands are rejected by `motiond`
+- status, disable, stop, and the non-energizing CiA 402 fault-reset pulse remain available
+- enable, mode changes, and all motion commands are rejected by `motiond`
+
+The commissioning fault reset can write only controlword `0x0080`; it never enters the CiA 402 enable sequence. This is needed to clear a communication fault latched when the EtherCAT application is deliberately restarted. After a reset, verify the controlword returns to zero and the axis remains disabled before continuing.
 
 The first profile intentionally omits velocity mode because the drive's default RxPDO has target position (`0x607a`) but not target velocity (`0x60ff`). Position-based modes use conservative UI defaults: 0.01 revolution relative move, a +/-1 revolution position range, 30 rpm default speed, and 222 rpm maximum speed. These values are preparation for a later onsite motion gate; inhibit remains authoritative until that separate gate is approved.
 
