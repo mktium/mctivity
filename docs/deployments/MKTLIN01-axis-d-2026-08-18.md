@@ -2,7 +2,8 @@
 
 ## Release
 
-- implementation commit: `dbb3a94` (`Add Uservo axis D commissioning profile`)
+- implementation base commit: `dbb3a94` (`Add Uservo axis D commissioning profile`)
+- deployed release commit: `80a40de` (`Persist MKTLIN01 EtherCAT interface isolation`)
 - branch: `feature/v1.4.1-axis-d-uservo`
 - target: `MKTLIN01`
 - target release path: `/opt/mctivity-releases/v1.4.1-axis-d`
@@ -13,7 +14,7 @@
 The Git archive SHA-256 matched before extraction:
 
 ```text
-3c69e359492e4c7712a79cb80cc2430e455ae390a44317f0d9f06bb4a54f2bc9
+9f980911d95edcf5834acf90ebbcbefd80af715ec0b8af3669fd3a70b9b0d53a
 ```
 
 The target ran the repository release preflight and rebuilt `mctivity_motiond` against `/opt/etherlab`. The resulting binary resolved `libethercat.so.1` from `/opt/etherlab/lib`.
@@ -45,15 +46,16 @@ Environment-file drop-ins were installed for `mctivity-motiond.service` and `mct
 - servo request: false
 - moving: false
 - target position followed actual position
-- two samples three seconds apart both reported `pos_raw=1612`
+- two final samples ten seconds apart both reported `pos_raw=1612`
 - the Axis D verifier used a non-energizing `set_mode(position)` request and confirmed it was rejected with `commissioning_inhibit`
+- `scripts/mctivity-axis-d-verify.sh` completed successfully against the deployed release
 - all four services were active: EtherCAT, motion daemon, HMI, and kiosk
 
 The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. This is a communication-class fault. The release therefore retains a commissioning-safe fault reset that can pulse only controlword `0x0080`; it cannot enter the enable sequence. Final acceptance requires the fault bit to be clear after this reset while inhibit remains active.
 
 The target network configuration already declared `enp3s0` as an EtherCAT-only interface, but the kernel still had IPv6 autoconfiguration enabled and assigned a link-local address. `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` now persistently disables IPv6 on that interface only; Wi-Fi and Tailscale are unchanged. After applying it and issuing the safe fault reset, `0x603f` remained `0x0000` during the initial observation window and the position remained unchanged.
 
-Kernel logs still showed occasional skipped/unmatched EtherCAT datagrams. The IPv6 correction improved the observed drive-fault behavior but does not by itself prove the timing issue is fully resolved. Treat this as an open commissioning risk and investigate it before removing inhibit or attempting the first motion.
+Kernel logs still showed frequent domain working-counter changes, even though each reported sample returned to `3/3`; earlier logs also contained skipped/unmatched EtherCAT datagrams. The IPv6 correction improved the observed drive-fault behavior but does not resolve the EtherCAT timing instability. Treat this as a blocking commissioning risk: investigate it before removing inhibit or attempting the first motion.
 
 No enable or motion command was sent during this deployment.
 
