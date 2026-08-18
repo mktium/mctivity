@@ -64,6 +64,8 @@ The default TxPDO does not contain `0x603f` (error code). The statusword fault b
 
 Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo`, checks the backend's own topology/scale/inhibit fields, and uses a non-energizing mode-selection request to prove command rejection. It deliberately does not send an enable command.
 
+On MKTLIN01, `enp3s0` is dedicated to EtherCAT. Install `config/90-mctivity-ethercat-enp3s0.conf` as `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` so the normal IPv6 stack does not configure or transmit on the fieldbus interface. Do not apply this host-specific file to an interface that is also used for normal networking.
+
 This gate does not include motor enable or motion. Removing commissioning inhibit requires a separate onsite decision after the no-motion gate passes.
 
 ## Rollback

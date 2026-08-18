@@ -1793,6 +1793,9 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
     if (ax->fault_reset_cycles > 0 && s->wc_complete) {
         s->cw = 0x0080;
         ax->fault_reset_cycles--;
+        if (ax->fault_reset_cycles == 0) {
+            snprintf(s->message, sizeof(s->message), "fault reset pulse complete; servo remains disabled");
+        }
     } else if (axis == AXIS_FV3 && ax->fv3_halt_cycles > 0 && s->servo_request && s->wc_complete) {
         s->cw = 0x010f;
     } else if (axis == AXIS_FV3 && ax->pp_pulse_cycles > 0 && s->servo_request && s->wc_complete) {

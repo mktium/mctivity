@@ -51,6 +51,10 @@ Environment-file drop-ins were installed for `mctivity-motiond.service` and `mct
 
 The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. This is a communication-class fault. The release therefore retains a commissioning-safe fault reset that can pulse only controlword `0x0080`; it cannot enter the enable sequence. Final acceptance requires the fault bit to be clear after this reset while inhibit remains active.
 
+The target network configuration already declared `enp3s0` as an EtherCAT-only interface, but the kernel still had IPv6 autoconfiguration enabled and assigned a link-local address. `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` now persistently disables IPv6 on that interface only; Wi-Fi and Tailscale are unchanged. After applying it and issuing the safe fault reset, `0x603f` remained `0x0000` during the initial observation window and the position remained unchanged.
+
+Kernel logs still showed occasional skipped/unmatched EtherCAT datagrams. The IPv6 correction improved the observed drive-fault behavior but does not by itself prove the timing issue is fully resolved. Treat this as an open commissioning risk and investigate it before removing inhibit or attempting the first motion.
+
 No enable or motion command was sent during this deployment.
 
 ## Remaining Gate
