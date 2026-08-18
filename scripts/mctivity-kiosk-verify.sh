@@ -15,7 +15,7 @@ status_json="$(curl -fsS "${URL}/api/status?device=mctivity")"
 echo "mctivity status ok"
 capabilities="$(curl -fsS "${URL}/api/capabilities")"
 echo "capabilities ok"
-if printf '%s' "$capabilities" | grep -q 'axis.device.fv3.access'; then
+if CAPABILITIES_JSON="$capabilities" python3 -c 'import json, os, sys; sys.exit(0 if "axis.device.fv3.access" in json.loads(os.environ["CAPABILITIES_JSON"]).get("capabilities", []) else 1)'; then
   curl -fsS "${URL}/api/status?device=fv3" >/dev/null && echo "fv3 status ok"
 fi
 curl -fsS "${URL}/api/health/modular" >/dev/null && echo "modular health ok"
