@@ -1,4 +1,21 @@
-# mctivity v1.4.0 Release Notes
+# mctivity v1.4.1 Release Notes
+
+## v1.4.1 Uservo Axis D
+
+`mctivity v1.4.1` adds a selectable single-slave topology for the Uservo DS1-E4806N drive used by project CYMG20241203.
+
+- adds the `axis-device-uservo` module and `axis-d-uservo` profile
+- reuses the proven axis A CSP command path while presenting the site axis as axis D
+- matches live EtherCAT identity `0x00666999:0x00004806`
+- matches the drive's default `0x1600` and `0x1a00` PDO assignment
+- uses `10000` counts per motor revolution and a 1 ms cycle
+- limits the initial UI envelope to +/-1 revolution, defaults to 0.01 revolution at 30 rpm, and caps the profile UI at 222 rpm
+- omits velocity/CSV mode because the selected default RxPDO has no `0x60ff` target-velocity entry
+- leaves the legacy MCTIVITY/FV3 topology unchanged unless explicitly selected
+- enforces `MCTIVITY_COMMISSIONING_INHIBIT=1` in the motion daemon during first deployment
+- reports the actual backend topology, scale, and inhibit state for drift-resistant verification
+
+The first deployment gate permits EtherCAT OP, working-counter validation, and position feedback only. The verification script uses a non-energizing mode-selection request to confirm the low-level commissioning lock. It does not send enable and does not authorize motor enable or motion.
 
 ## v1.4.0 Touchscreen Kiosk
 

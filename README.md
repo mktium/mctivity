@@ -1,6 +1,6 @@
-# mctivity v1.4.0
+# mctivity v1.4.1
 
-> Status: `v1.4.0` is a site-integration release based on `v1.2.0`. It is not a certified safety system and must not be used as the sole protection layer for machinery.
+> Status: `v1.4.1` is a site-integration release based on `v1.4.0`. It is not a certified safety system and must not be used as the sole protection layer for machinery.
 
 `mctivity` is a dual-axis EtherCAT motion-control software stack including:
 
@@ -10,7 +10,7 @@
 - optional local touchscreen kiosk layer
 - command-line control tool
 
-This version builds on the first modular baseline while adding an optional local touchscreen kiosk layer for industrial-panel deployments.
+This version builds on the first modular baseline and touchscreen kiosk layer while adding a selectable Uservo DS1 axis D topology.
 
 Core updates:
 
@@ -21,6 +21,11 @@ Core updates:
 - FV3 dual-axis access is gated by the `full` profile capability set
 - API commands are validated, field-ordered, and sanitized before being forwarded to `motiond`
 - touchscreen kiosk startup is packaged as a separate runtime module and systemd service
+- `axis-d-uservo` selects one Uservo DS1-E4806N axis at EtherCAT position 0
+- axis D uses the drive-reported `10000` counts/rev and its default 4-entry Rx/Tx PDO maps
+- commissioning inhibit is enabled by default and enforced inside `motiond`
+- the initial axis D UI uses a +/-1 revolution envelope, 0.01 revolution default move, 30 rpm default speed, and 222 rpm cap
+- velocity mode is excluded until a compatible target-velocity PDO path is configured and tested
 
 ## Platform
 
@@ -44,6 +49,7 @@ Core updates:
 - UI state is intended to live in `/var/lib/mctivity/` under systemd
 - see [Assembly Quickstart](docs/assembly-quickstart.md) for profile switching and verification
 - see [Touchscreen Kiosk](docs/touchscreen-kiosk.md) for local fullscreen display deployment
+- see [Uservo Axis D](docs/axis-d-uservo.md) for topology selection and no-motion commissioning
 
 ## Build and Start
 
@@ -82,7 +88,11 @@ sudo systemctl enable --now mctivity-hmi.service
 
 `mctivity_ctl.py` is a local low-level daemon client. It connects directly to `motiond` and bypasses HMI profile/capability gating.
 
+The axis D commissioning inhibit is enforced in `motiond`, so it also blocks low-level CLI enable and motion commands. Select the topology through `/etc/mctivity/axis.env`; the repository template is `config/axis-d-uservo.env`.
+
 `mctivity_motiond` in v1.2.0 is built for the current two-slave EtherCAT topology: MCTIVITY axis at slave position 0 and FV3 axis at slave position 1. `minimal` and `standard` profiles hide or reject FV3 at the HMI/API layer, but they do not change the EtherCAT topology expected by `motiond`.
+
+`v1.4.1` keeps that legacy topology as the default. Setting `MCTIVITY_TOPOLOGY=axis-d-uservo` selects the single-slave Uservo axis D path instead; the legacy A/B slave configuration is not requested in that mode.
 
 Motion safety limits can be tightened or relaxed with environment variables:
 

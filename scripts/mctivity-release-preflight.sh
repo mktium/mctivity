@@ -2,6 +2,7 @@
 set -euo pipefail
 
 python3 -m py_compile mctivity_hmi/*.py
+python3 scripts/mctivity-axis-profile-verify.py
 
 python3 - <<'PY'
 import json

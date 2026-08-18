@@ -2,6 +2,10 @@
 
 Full release status and safety notes are in [../RELEASE_NOTES.md](../RELEASE_NOTES.md).
 
+## Version v1.4.1
+
+Version `v1.4.1` adds the project-specific Uservo DS1 axis D topology, profile metadata, per-revolution scaling, and a motion-daemon commissioning inhibit. The legacy A/B topology remains the default.
+
 `v1.2.0` is a preview/source release for controlled lab evaluation and integration testing. It is not a certified safety system and must not be used as the sole protection layer for machinery.
 
 ## Version v1.4.0

@@ -1,13 +1,14 @@
 [Unit]
 Description=MCTIVITY Motion Daemon
-After=network-online.target
-Wants=network-online.target
+After=network-online.target ethercat.service
+Wants=network-online.target ethercat.service
 
 [Service]
 Type=simple
 User=mctivity
 Group=mctivity
 WorkingDirectory=/opt/mctivity/mctivity_pdo_monitor
+EnvironmentFile=-/etc/mctivity/axis.env
 ExecStart=/opt/mctivity/mctivity_pdo_monitor/mctivity_motiond
 Restart=always
 RestartSec=2

@@ -18,6 +18,9 @@
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
 #define FV3_VENDOR_ID 0x00000ebc
 #define FV3_PRODUCT_CODE 0x00000010
+#define USERVO_VENDOR_ID 0x00666999
+#define USERVO_PRODUCT_CODE 0x00004806
+#define USERVO_COUNTS_PER_REV 10000LL
 
 #define AXIS_MCTIVITY 0
 #define AXIS_FV3 1
@@ -31,13 +34,16 @@
 #define DEFAULT_MOVE_MS 3000
 #define ENABLE_SETTLE_CYCLES 300U
 #define DEFAULT_JOG_VELOCITY 200000
-#define COUNTS_PER_REV 8388608LL
+#define LEGACY_COUNTS_PER_REV 8388608LL
 #define DEFAULT_STOP_DECEL_RPM_S 300U
 #define CURVE_BLEND_LINEAR 0
 #define CURVE_BLEND_SMOOTH 1
 #define CURVE_BLEND_AGGRESSIVE 2
 
 static volatile sig_atomic_t running = 1;
+static int uservo_axis_d_topology = 0;
+static int commissioning_inhibit = 0;
+static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
 
 /* MCTIVITY PDO offsets (slave 0). */
 static unsigned int mctivity_off_controlword;
@@ -111,6 +117,34 @@ static ec_sync_info_t fv3_syncs[] = {
     {0xff, 0, 0, NULL, 0}
 };
 
+/* Uservo DS1-E4806N axis D PDOs (single slave at physical position 0). */
+static unsigned int uservo_off_controlword;
+static unsigned int uservo_off_mode;
+static unsigned int uservo_off_target_position;
+static unsigned int uservo_off_digital_output;
+static unsigned int uservo_off_statusword;
+static unsigned int uservo_off_mode_display;
+static unsigned int uservo_off_position_actual;
+static unsigned int uservo_off_digital_input;
+
+static ec_pdo_entry_info_t uservo_pdo_entries[] = {
+    {0x6040, 0x00, 16}, {0x6060, 0x00, 8}, {0x607a, 0x00, 32}, {0x60fe, 0x01, 32},
+    {0x6041, 0x00, 16}, {0x6061, 0x00, 8}, {0x6064, 0x00, 32}, {0x60fd, 0x00, 32},
+};
+
+static ec_pdo_info_t uservo_pdos[] = {
+    {0x1600, 4, uservo_pdo_entries + 0},
+    {0x1a00, 4, uservo_pdo_entries + 4},
+};
+
+static ec_sync_info_t uservo_syncs[] = {
+    {0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE},
+    {1, EC_DIR_INPUT, 0, NULL, EC_WD_DISABLE},
+    {2, EC_DIR_OUTPUT, 1, uservo_pdos + 0, EC_WD_ENABLE},
+    {3, EC_DIR_INPUT, 1, uservo_pdos + 1, EC_WD_DISABLE},
+    {0xff, 0, 0, NULL, 0}
+};
+
 static const ec_pdo_entry_reg_t mctivity_domain_regs[] = {
     {0, 0, MCTIVITY_VENDOR_ID, MCTIVITY_PRODUCT_CODE, 0x6040, 0, &mctivity_off_controlword, NULL},
     {0, 0, MCTIVITY_VENDOR_ID, MCTIVITY_PRODUCT_CODE, 0x6060, 0, &mctivity_off_mode, NULL},
@@ -140,6 +174,18 @@ static const ec_pdo_entry_reg_t fv3_domain_regs[] = {
     {0, 1, FV3_VENDOR_ID, FV3_PRODUCT_CODE, 0x60ba, 0, &fv3_off_touch_probe_pos1, NULL},
     {0, 1, FV3_VENDOR_ID, FV3_PRODUCT_CODE, 0x60bc, 0, &fv3_off_touch_probe_pos2, NULL},
     {0, 1, FV3_VENDOR_ID, FV3_PRODUCT_CODE, 0x60fd, 0, &fv3_off_digital_input, NULL},
+    {}
+};
+
+static const ec_pdo_entry_reg_t uservo_domain_regs[] = {
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x6040, 0, &uservo_off_controlword, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x6060, 0, &uservo_off_mode, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x607a, 0, &uservo_off_target_position, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x60fe, 1, &uservo_off_digital_output, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x6041, 0, &uservo_off_statusword, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x6061, 0, &uservo_off_mode_display, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x6064, 0, &uservo_off_position_actual, NULL},
+    {0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE, 0x60fd, 0, &uservo_off_digital_input, NULL},
     {}
 };
 
@@ -242,6 +288,19 @@ static void handle_signal(int sig)
     running = 0;
 }
 
+static int env_flag_default(const char *name, int fallback)
+{
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        return fallback;
+    }
+    if (strcmp(value, "0") == 0 || strcmp(value, "false") == 0 || strcmp(value, "no") == 0 ||
+        strcmp(value, "off") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
 static const char *axis_name(int axis)
 {
     return axis == AXIS_FV3 ? "fv3" : "mctivity";
@@ -249,6 +308,9 @@ static const char *axis_name(int axis)
 
 static const char *axis_label(int axis)
 {
+    if (uservo_axis_d_topology && axis == AXIS_MCTIVITY) {
+        return "Axis D Uservo";
+    }
     return axis == AXIS_FV3 ? "FV3" : "MCTIVITY";
 }
 
@@ -601,7 +663,7 @@ static uint32_t rpm_to_counts_s(uint32_t rpm)
     if (rpm == 0) {
         return 0;
     }
-    counts_s = ((int64_t)rpm * COUNTS_PER_REV) / 60LL;
+    counts_s = ((int64_t)rpm * counts_per_rev) / 60LL;
     if (counts_s < 1) {
         return 1U;
     }
@@ -617,7 +679,7 @@ static uint32_t rpm_s_to_counts_s2(uint32_t rpm_s)
     if (rpm_s == 0) {
         rpm_s = DEFAULT_STOP_DECEL_RPM_S;
     }
-    counts_s2 = ((int64_t)rpm_s * COUNTS_PER_REV) / 60LL;
+    counts_s2 = ((int64_t)rpm_s * counts_per_rev) / 60LL;
     if (counts_s2 < 1) {
         return 1U;
     }
@@ -939,16 +1001,19 @@ static void send_status_fd(int fd, int axis)
 {
     axis_runtime_t *ax = &axes[axis];
     const status_t *s = &ax->st;
-    char out[1200];
+    char out[1400];
     int n = snprintf(
         out, sizeof(out),
-        "{\"ok\":true,\"status\":{\"device\":\"%s\",\"enabled\":%s,\"servo_request\":%s,"
+        "{\"ok\":true,\"status\":{\"device\":\"%s\",\"topology\":\"%s\","
+        "\"counts_per_rev\":%lld,\"commissioning_inhibit\":%s,\"enabled\":%s,\"servo_request\":%s,"
         "\"moving\":%s,\"gear_running\":%s,\"fault\":%s,\"settle_cycles\":%u,\"al_state\":%u,\"operational\":%u,"
         "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,"
         "\"control_mode\":\"%s\",\"pos_raw\":%d,\"pos\":%d,\"target_raw\":%d,\"target\":%d,"
         "\"following_error\":%d,\"soft_zero_raw\":%d,\"jog_velocity_cps\":%d,\"torque_cmd\":%d,"
         "\"torque_feedback\":%d,\"homed\":%s,\"cycles\":%u,\"last_command\":\"%s\",\"message\":\"%s\"}}\n",
-        axis_name(axis), s->enabled ? "true" : "false", s->servo_request ? "true" : "false",
+        axis_name(axis), uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual",
+        (long long)counts_per_rev, commissioning_inhibit ? "true" : "false",
+        s->enabled ? "true" : "false", s->servo_request ? "true" : "false",
         s->moving ? "true" : "false", ax->gear_running ? "true" : "false", s->fault ? "true" : "false",
         s->enable_settle_cycles, s->al_state,
         s->operational, s->wc, s->wc_complete ? "true" : "false", s->cw, s->sw, s->err, s->mode_display,
@@ -981,6 +1046,19 @@ static void handle_command(int fd, const char *line)
     char cmd[64];
     if (!command_from_line(line, cmd, sizeof(cmd))) {
         send_error_fd(fd, "missing command");
+        return;
+    }
+
+    if (uservo_axis_d_topology && commissioning_inhibit &&
+        strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0) {
+        send_error_fd(fd, "commissioning_inhibit");
+        return;
+    }
+
+    if (uservo_axis_d_topology &&
+        (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
+         strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "jog_velocity") == 0 || strcmp(cmd, "torque_cmd") == 0)) {
+        send_error_fd(fd, "unsupported_for_axis_d_uservo");
         return;
     }
 
@@ -1158,6 +1236,12 @@ static void handle_command(int fd, const char *line)
         char mode[24];
         if (!find_str(line, "mode", mode, sizeof(mode)) || !is_safe_mode_name(mode)) {
             send_error_fd(fd, "set_mode requires a supported mode");
+            return;
+        }
+        if (uservo_axis_d_topology &&
+            strcmp(mode, "position") != 0 && strcmp(mode, "incremental") != 0 && strcmp(mode, "jog") != 0 &&
+            strcmp(mode, "point") != 0) {
+            send_error_fd(fd, "unsupported_for_axis_d_uservo");
             return;
         }
         clear_motion(ax);
@@ -1724,6 +1808,140 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
     }
 }
 
+static int run_uservo_axis_d(void)
+{
+    ec_master_t *master;
+    ec_domain_t *domain;
+    ec_slave_config_t *slave_config;
+    uint8_t *process_data;
+    struct timespec wake_time;
+    uint64_t app_time_base;
+    axis_runtime_t *axis = &axes[AXIS_MCTIVITY];
+
+    master = ecrt_request_master(0);
+    if (!master) {
+        fprintf(stderr, "failed to request EtherCAT master 0\n");
+        return 1;
+    }
+
+    domain = ecrt_master_create_domain(master);
+    slave_config = ecrt_master_slave_config(master, 0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE);
+    if (!domain || !slave_config) {
+        fprintf(stderr, "failed to create Uservo axis D domain or slave config\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+
+    if (ecrt_slave_config_pdos(slave_config, EC_END, uservo_syncs)) {
+        fprintf(stderr, "failed to configure Uservo axis D PDOs\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    ecrt_slave_config_dc(slave_config, 0x0300, PERIOD_NS, 0, 0, 0);
+
+    if (ecrt_domain_reg_pdo_entry_list(domain, uservo_domain_regs)) {
+        fprintf(stderr, "failed to register Uservo axis D PDO entries\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    if (ecrt_master_activate(master)) {
+        fprintf(stderr, "failed to activate EtherCAT master for Uservo axis D\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+
+    process_data = ecrt_domain_data(domain);
+    if (!process_data) {
+        fprintf(stderr, "failed to get Uservo axis D domain data\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+
+    if (commissioning_inhibit) {
+        axis->commanded_mode = 0;
+        axis->st.servo_request = 0;
+        snprintf(axis->st.message, sizeof(axis->st.message), "axis D commissioning inhibit active");
+    }
+
+    printf(
+        "Axis D Uservo motion daemon listening on 127.0.0.1:%d (inhibit=%s, counts/rev=%lld)\n",
+        SERVER_PORT,
+        commissioning_inhibit ? "on" : "off",
+        (long long)counts_per_rev);
+    fflush(stdout);
+
+    clock_gettime(CLOCK_MONOTONIC, &wake_time);
+    app_time_base = timespec_to_ns(&wake_time);
+
+    while (running) {
+        uint64_t app_time = app_time_base + (uint64_t)axis->st.cycles * PERIOD_NS;
+        ec_slave_config_state_t slave_state;
+        ec_domain_state_t domain_state;
+
+        ecrt_master_application_time(master, app_time);
+        ecrt_master_receive(master);
+        ecrt_domain_process(domain);
+        ecrt_slave_config_state(slave_config, &slave_state);
+        ecrt_domain_state(domain, &domain_state);
+
+        axis->st.sw = EC_READ_U16(process_data + uservo_off_statusword);
+        axis->st.err = 0;
+        axis->st.mode_display = EC_READ_S8(process_data + uservo_off_mode_display);
+        axis->st.pos_raw = EC_READ_S32(process_data + uservo_off_position_actual);
+        axis->st.following_error = 0;
+        axis->st.torque_feedback = 0;
+        axis->st.al_state = slave_state.al_state;
+        axis->st.operational = slave_state.operational;
+        axis->st.wc = domain_state.working_counter;
+        axis->st.wc_complete = domain_state.wc_state == EC_WC_COMPLETE;
+        axis->st.enabled = operation_enabled(axis->st.sw);
+        axis->st.fault = (axis->st.sw & 0x0008) != 0;
+        axis->st.pos_user = axis->st.pos_raw - axis->st.soft_zero_raw;
+
+        if (commissioning_inhibit) {
+            axis->st.servo_request = 0;
+            axis->fault_reset_cycles = 0;
+        }
+        axis_cycle_logic(axis, AXIS_MCTIVITY);
+
+        EC_WRITE_U16(process_data + uservo_off_controlword, commissioning_inhibit ? 0x0000 : axis->st.cw);
+        EC_WRITE_S8(process_data + uservo_off_mode, commissioning_inhibit ? 0 : axis->commanded_mode);
+        EC_WRITE_S32(process_data + uservo_off_target_position, axis->st.target_raw);
+        EC_WRITE_U32(process_data + uservo_off_digital_output, 0);
+
+        ecrt_domain_queue(domain);
+        ecrt_master_sync_reference_clock(master);
+        ecrt_master_sync_slave_clocks(master);
+        ecrt_master_send(master);
+
+        poll_server();
+        axis->st.cycles++;
+        sleep_until_next(&wake_time);
+    }
+
+    printf("Disabling Uservo axis D output before exit...\n");
+    for (int i = 0; i < 300; i++) {
+        ecrt_master_receive(master);
+        ecrt_domain_process(domain);
+        EC_WRITE_U16(process_data + uservo_off_controlword, 0x0000);
+        EC_WRITE_S8(process_data + uservo_off_mode, 0);
+        EC_WRITE_S32(process_data + uservo_off_target_position, axis->st.target_raw);
+        EC_WRITE_U32(process_data + uservo_off_digital_output, 0);
+        ecrt_domain_queue(domain);
+        ecrt_master_sync_reference_clock(master);
+        ecrt_master_sync_slave_clocks(master);
+        ecrt_master_send(master);
+        sleep_until_next(&wake_time);
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        close_client(&clients[i]);
+    }
+    close(listen_fd);
+    ecrt_release_master(master);
+    return 0;
+}
+
 int main(void)
 {
     ec_master_t *master;
@@ -1735,6 +1953,13 @@ int main(void)
     uint8_t *pd_fv3;
     struct timespec wake_time;
     uint64_t app_time_base;
+    const char *topology = getenv("MCTIVITY_TOPOLOGY");
+
+    uservo_axis_d_topology = topology && strcmp(topology, "axis-d-uservo") == 0;
+    commissioning_inhibit = uservo_axis_d_topology
+        ? env_flag_default("MCTIVITY_COMMISSIONING_INHIBIT", 1)
+        : 0;
+    counts_per_rev = uservo_axis_d_topology ? USERVO_COUNTS_PER_REV : LEGACY_COUNTS_PER_REV;
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -1756,6 +1981,10 @@ int main(void)
     if (listen_fd < 0) {
         perror("failed to start command server on 127.0.0.1:10001");
         return 1;
+    }
+
+    if (uservo_axis_d_topology) {
+        return run_uservo_axis_d();
     }
 
     master = ecrt_request_master(0);

@@ -11,6 +11,13 @@ SERVICE_USER="${MCTIVITY_SERVICE_USER:-mctivity}"
 SERVICE_GROUP="${MCTIVITY_SERVICE_GROUP:-$SERVICE_USER}"
 INSTALL_PACKAGES="${MCTIVITY_INSTALL_PACKAGES:-0}"
 PROFILE="${MCTIVITY_PROFILE:-full}"
+if [ "$PROFILE" = "axis-d-uservo" ]; then
+  TOPOLOGY="${MCTIVITY_TOPOLOGY:-axis-d-uservo}"
+  COMMISSIONING_INHIBIT="${MCTIVITY_COMMISSIONING_INHIBIT:-1}"
+else
+  TOPOLOGY="${MCTIVITY_TOPOLOGY:-legacy-dual}"
+  COMMISSIONING_INHIBIT="${MCTIVITY_COMMISSIONING_INHIBIT:-0}"
+fi
 WEB_HOST="${MCTIVITY_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${MCTIVITY_WEB_PORT:-2015}"
 ENABLE_POWEROFF="${MCTIVITY_ENABLE_POWEROFF:-0}"
@@ -56,6 +63,13 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 /etc/mctivity
+
+{
+  printf 'MCTIVITY_TOPOLOGY=%s\n' "$TOPOLOGY"
+  printf 'MCTIVITY_PROFILE=%s\n' "$PROFILE"
+  printf 'MCTIVITY_COMMISSIONING_INHIBIT=%s\n' "$COMMISSIONING_INHIBIT"
+} >/etc/mctivity/axis.env
+chmod 0644 /etc/mctivity/axis.env
 
 {
   printf 'MCTIVITY_PROFILE=%s\n' "$PROFILE"
@@ -113,6 +127,7 @@ rewrite_unit "${ROOT}/systemd/mctivity-poweroff.service" /etc/systemd/system/mct
 chmod 0755 \
   "${ROOT}/scripts/mctivity-kiosk-start.sh" \
   "${ROOT}/scripts/mctivity-kiosk-session.sh" \
+  "${ROOT}/scripts/mctivity-axis-d-verify.sh" \
   "${ROOT}/scripts/mctivity-kiosk-verify.sh" \
   "${ROOT}/scripts/mctivity-poweroff.sh"
 

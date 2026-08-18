@@ -2,7 +2,7 @@
 
 ## Overall Structure
 
-`mctivity v1.2.0` can be understood as four layers:
+`mctivity v1.4.1` can be understood as four layers:
 
 1. runtime UI/API shell
 2. modular assembly layer
@@ -98,6 +98,13 @@ Device-level modules:
 
 - `feature-logic-dual-axis-fv3` provides `axis.device.fv3.access`
 - `feature-hmi-dual-axis-fv3` exposes Axis B in HMI when the capability is active
+- `axis-device-uservo` selects the single-slave Uservo backend and presents the primary HMI axis as Axis D
+
+## Axis D Topology Selection
+
+The default runtime remains the legacy two-slave MCTIVITY/FV3 topology. When `MCTIVITY_TOPOLOGY=axis-d-uservo` is loaded, `motiond` requests only the Uservo DS1 slave at physical position 0 and reuses the primary CSP axis runtime slot. The public transport device remains `mctivity` for compatibility, while the HMI label and module metadata identify it as Axis D.
+
+`MCTIVITY_COMMISSIONING_INHIBIT=1` is enforced below the HMI/API layer. In that state the cyclic control word is forced to zero, the requested operation mode is zero, and commands other than status/disable/stop are rejected.
 
 ## Incremental Command Path
 

@@ -99,6 +99,18 @@ Use:
 
 - `profiles/full.json`
 
+### Uservo Axis D
+
+- one DS1-E4806N slave at EtherCAT physical position 0
+- primary HMI axis is labelled Axis D
+- no FV3 or legacy MCTIVITY slave is requested
+- commissioning inhibit is enabled by the supplied environment template
+
+Use:
+
+- `profiles/axis-d-uservo.json`
+- `config/axis-d-uservo.env`
+
 ## How to Start
 
 Before using the systemd examples, create the runtime user/group that the sample units expect:

@@ -107,6 +107,7 @@ MAX_GEAR_RATIO = max(1, _env_int("MCTIVITY_MAX_GEAR_RATIO", 200))
 MAX_TORQUE_PERCENT = max(0, _env_int("MCTIVITY_MAX_TORQUE_PERCENT", 100))
 API_TOKEN = os.environ.get("MCTIVITY_API_TOKEN", "").strip()
 SYSTEM_POWEROFF_ENABLED = _env_bool("MCTIVITY_SYSTEM_POWEROFF_ENABLED", False)
+COMMISSIONING_INHIBIT = _env_bool("MCTIVITY_COMMISSIONING_INHIBIT", False)
 SYSTEM_POWEROFF_COMMAND = os.environ.get(
     "MCTIVITY_SYSTEM_POWEROFF_COMMAND",
     "/usr/bin/sudo -n /usr/bin/systemctl --no-block start mctivity-poweroff.service",
@@ -344,6 +345,7 @@ def _build_module_runtime():
             "domains": [],
             "modules": [],
             "active_features": [],
+            "axis_devices": [],
             "capabilities": [],
             "warnings": [f"profile_load_failed:{PROFILE_PATH}"],
         }
@@ -351,6 +353,7 @@ def _build_module_runtime():
     active_features = []
     warnings = []
     manifests = {}
+    axis_devices = []
     for module_id in profile["modules"]:
         manifest = _load_manifest(module_id)
         if not manifest:
@@ -358,6 +361,8 @@ def _build_module_runtime():
             continue
         manifests[module_id] = manifest
         active_features.append(module_id)
+        if manifest.get("type") == "axis_device" and isinstance(manifest.get("device"), dict):
+            axis_devices.append(dict(manifest["device"]))
         for cap in manifest.get("capabilities", []):
             if isinstance(cap, str):
                 capabilities.add(cap)
@@ -377,6 +382,7 @@ def _build_module_runtime():
         "domains": profile.get("domains", []),
         "modules": profile["modules"],
         "active_features": active_features,
+        "axis_devices": axis_devices,
         "capabilities": sorted(capabilities),
         "warnings": warnings,
     }
@@ -387,6 +393,33 @@ _MODULE_RUNTIME["warnings"] = list(_MODULE_RUNTIME.get("warnings", [])) + get_fe
 _CAPABILITY_SET = set(_MODULE_RUNTIME.get("capabilities", []))
 _ENABLED_FEATURE_KEYS = resolve_enabled_feature_keys(_MODULE_RUNTIME.get("active_features", []))
 _FEATURE_ASSEMBLY = describe_feature_assembly(_MODULE_RUNTIME.get("active_features", []))
+_AXIS_DEVICES = list(_MODULE_RUNTIME.get("axis_devices", []))
+_PRIMARY_AXIS_DEVICE = _AXIS_DEVICES[0] if _AXIS_DEVICES else {}
+_PRIMARY_AXIS_LABEL = str(_PRIMARY_AXIS_DEVICE.get("logical_axis", "A")).strip().upper() or "A"
+_PRIMARY_AXIS_COUNTS_PER_REV = max(1, int(_PRIMARY_AXIS_DEVICE.get("counts_per_rev", 8388608)))
+_PRIMARY_AXIS_MAX_POSITION_REVS = max(1, int(_PRIMARY_AXIS_DEVICE.get("max_position_revolutions", 200)))
+_PRIMARY_AXIS_MAX_POSITION_COUNTS = _PRIMARY_AXIS_COUNTS_PER_REV * _PRIMARY_AXIS_MAX_POSITION_REVS
+_PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS = max(
+    1,
+    int(round(_PRIMARY_AXIS_COUNTS_PER_REV * float(_PRIMARY_AXIS_DEVICE.get("default_relative_revolutions", 0.5)))),
+)
+_PRIMARY_AXIS_POSITION_STEP_COUNTS = max(1, int(_PRIMARY_AXIS_DEVICE.get("position_step_counts", 1024)))
+_PRIMARY_AXIS_DEFAULT_SPEED_RPM = max(1, int(_PRIMARY_AXIS_DEVICE.get("default_speed_rpm", 120)))
+_PRIMARY_AXIS_MAX_SPEED_RPM = min(MAX_SPEED_RPM, max(1, int(_PRIMARY_AXIS_DEVICE.get("max_speed_rpm", MAX_SPEED_RPM))))
+_PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S = max(1, int(_PRIMARY_AXIS_DEVICE.get("default_accel_rpm_s", 300)))
+_PRIMARY_AXIS_MAX_ACCEL_RPM_S = min(
+    MAX_ACCEL_RPM_S,
+    max(1, int(_PRIMARY_AXIS_DEVICE.get("max_accel_rpm_s", MAX_ACCEL_RPM_S))),
+)
+_PRIMARY_AXIS_DEFAULT_VELOCITY_CPS = min(
+    MAX_JOG_VELOCITY_CPS,
+    max(1, int(_PRIMARY_AXIS_DEVICE.get("default_velocity_counts_s", 200000))),
+)
+_PRIMARY_AXIS_MAX_VELOCITY_CPS = min(
+    MAX_JOG_VELOCITY_CPS,
+    max(1, int(_PRIMARY_AXIS_DEVICE.get("max_velocity_counts_s", MAX_JOG_VELOCITY_CPS))),
+)
+_PRIMARY_AXIS_MAX_ACCEL_COUNTS_S2 = max(1, (_PRIMARY_AXIS_MAX_ACCEL_RPM_S * _PRIMARY_AXIS_COUNTS_PER_REV) // 60)
 
 
 def capability_manifest():
@@ -395,6 +428,10 @@ def capability_manifest():
         "profile": _MODULE_RUNTIME.get("profile"),
         "domains": _MODULE_RUNTIME.get("domains", []),
         "active_features": _MODULE_RUNTIME.get("active_features", []),
+        "axis_devices": _AXIS_DEVICES,
+        "primary_axis_label": _PRIMARY_AXIS_LABEL,
+        "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV,
+        "commissioning_inhibit": COMMISSIONING_INHIBIT,
         "capabilities": _MODULE_RUNTIME.get("capabilities", []),
         "warnings": _MODULE_RUNTIME.get("warnings", []),
         "enabled_feature_keys": sorted(_ENABLED_FEATURE_KEYS),
@@ -468,17 +505,17 @@ def _validate_command_numbers(cmd, clean):
             return False
     if "min_pos" in clean and "max_pos" in clean and clean["min_pos"] > clean["max_pos"]:
         return False
-    if "velocity" in clean and abs(clean["velocity"]) > MAX_JOG_VELOCITY_CPS:
+    if "velocity" in clean and abs(clean["velocity"]) > min(MAX_JOG_VELOCITY_CPS, _PRIMARY_AXIS_MAX_VELOCITY_CPS):
         return False
-    if "vmax_counts_s" in clean and clean["vmax_counts_s"] > MAX_CURVE_VELOCITY_CPS:
+    if "vmax_counts_s" in clean and clean["vmax_counts_s"] > min(MAX_CURVE_VELOCITY_CPS, _PRIMARY_AXIS_MAX_VELOCITY_CPS):
         return False
     for key in ("accel_counts_s2", "decel_counts_s2", "deceleration_counts_s2"):
-        if key in clean and clean[key] > MAX_CURVE_ACCEL_COUNTS_S2:
+        if key in clean and clean[key] > min(MAX_CURVE_ACCEL_COUNTS_S2, _PRIMARY_AXIS_MAX_ACCEL_COUNTS_S2):
             return False
-    if "speed_rpm" in clean and clean["speed_rpm"] > MAX_SPEED_RPM:
+    if "speed_rpm" in clean and clean["speed_rpm"] > _PRIMARY_AXIS_MAX_SPEED_RPM:
         return False
     for key in ("acceleration_rpm_s", "deceleration_rpm_s", "deceleration"):
-        if key in clean and clean[key] > MAX_ACCEL_RPM_S:
+        if key in clean and clean[key] > _PRIMARY_AXIS_MAX_ACCEL_RPM_S:
             return False
     if "move_ms" in clean and clean["move_ms"] > MAX_MOVE_MS:
         return False
@@ -922,9 +959,9 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <div class="axis-control">
               <div class="slider-head"><span class="slider-title">目标绝对位置</span></div>
               <div class="position-axis">
-                <div class="axis-labels"><span id="axisMinRev">-200 rev</span><span></span><span id="axisMaxRev">+200 rev</span></div>
+                <div class="axis-labels"><span id="axisMinRev">-__PRIMARY_AXIS_MAX_POSITION_REVS__ rev</span><span></span><span id="axisMaxRev">+__PRIMARY_AXIS_MAX_POSITION_REVS__ rev</span></div>
                 <div id="currentPositionMarker" class="current-position-marker"></div>
-                <input id="absPos" type="range" min="-1677721600" max="1677721600" step="1024" value="0" oninput="updateSliders()">
+                <input id="absPos" type="range" min="-__PRIMARY_AXIS_MAX_POSITION_COUNTS__" max="__PRIMARY_AXIS_MAX_POSITION_COUNTS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" value="0" oninput="updateSliders()">
               </div>
               <div class="target-readout">
                 <div class="target-cell"><div><span id="targetRevBig" class="target-number">0</span><span class="target-unit">rev</span></div></div>
@@ -934,13 +971,13 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <div class="vertical-sliders">
               <div class="vertical-slider">
                 <label for="absSpeedRpm">速度</label>
-                <input id="absSpeedRpm" type="range" min="1" max="3000" step="1" value="120" oninput="updateSliders()">
-                <span id="absSpeedText">120 rpm</span>
+                <input id="absSpeedRpm" type="range" min="1" max="__PRIMARY_AXIS_MAX_SPEED_RPM__" step="1" value="__PRIMARY_AXIS_DEFAULT_SPEED_RPM__" oninput="updateSliders()">
+                <span id="absSpeedText">__PRIMARY_AXIS_DEFAULT_SPEED_RPM__ rpm</span>
               </div>
               <div class="vertical-slider">
                 <label for="absAccel">加速度</label>
-                <input id="absAccel" type="range" min="10" max="3000" step="10" value="300" oninput="updateSliders()">
-                <span id="absAccelText">300 rpm/s</span>
+                <input id="absAccel" type="range" min="10" max="__PRIMARY_AXIS_MAX_ACCEL_RPM_S__" step="10" value="__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__" oninput="updateSliders()">
+                <span id="absAccelText">__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__ rpm/s</span>
               </div>
             </div>
           </div>
@@ -953,7 +990,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         <div id="panel-jog" class="mode-panel">
           <div class="slider-card">
             <div class="slider-head"><span class="slider-title">相对位移</span><span id="relText" class="slider-number">--</span></div>
-            <input id="relDelta" type="range" min="-8388608" max="8388608" step="1024" value="4194304" oninput="updateSliders()">
+            <input id="relDelta" type="range" min="-__PRIMARY_AXIS_COUNTS_PER_REV__" max="__PRIMARY_AXIS_COUNTS_PER_REV__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" value="__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__" oninput="updateSliders()">
             <div class="meta"><span id="relRev">--</span><span id="relDeg">--</span><span id="relRpm">--</span></div>
             <button class="blue" onclick="moveRel()">相对移动</button>
           </div>
@@ -980,7 +1017,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         <div id="panel-velocity" class="mode-panel">
           <div class="slider-card">
             <div class="slider-head"><span class="slider-title">速度点动</span><span id="velText" class="slider-number">--</span></div>
-            <input id="velCps" type="range" min="10000" max="1200000" step="10000" value="200000" oninput="updateSliders()">
+            <input id="velCps" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" oninput="updateSliders()">
             <div class="control-row three">
               <button class="blue" onclick="jogVelocity(-Number(velCps.value))">反转</button>
               <button class="stop" onclick="stopMotion()">停止</button>
@@ -1053,13 +1090,13 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
       <div class="param-grid">
         <div class="param-card">
           <h3>位置/点动</h3>
-          <label>默认相对位移<input id="cfgRel" type="number" value="4194304" step="1024" onchange="applyConfig()"></label>
-          <label>默认绝对位置<input id="cfgAbs" type="number" value="0" step="1024" onchange="applyConfig()"></label>
+          <label>默认相对位移<input id="cfgRel" type="number" value="__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" onchange="applyConfig()"></label>
+          <label>默认绝对位置<input id="cfgAbs" type="number" value="0" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" onchange="applyConfig()"></label>
           <label>默认运动时间 ms<input id="cfgMs" type="number" value="3000" min="500" max="15000" step="100" onchange="applyConfig()"></label>
         </div>
         <div class="param-card">
           <h3>速度/转矩</h3>
-          <label>默认速度 cnt/s<input id="cfgVel" type="number" value="200000" min="10000" step="10000" onchange="applyConfig()"></label>
+          <label>默认速度 cnt/s<input id="cfgVel" type="number" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" onchange="applyConfig()"></label>
           <label>转矩上限 %<input id="cfgTorqueLimit" type="number" value="100" min="1" max="100" step="1" onchange="applyConfig()"></label>
         </div>
         <div class="param-card">
@@ -1171,7 +1208,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 __MOTION_CURVE_EDITOR_BLOCK__
 </script>
 <script>
-const REV = 8388608;
+const REV = __PRIMARY_AXIS_COUNTS_PER_REV__;
+const PRIMARY_AXIS_LABEL = '__PRIMARY_AXIS_LABEL__';
 const AXIS_DIR = -1;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
@@ -1184,6 +1222,7 @@ const UI_TEXT = {
     pageTitle:'轴控',
     axisA:'轴 A',
     axisB:'轴 B',
+    axisD:'轴 D',
     profile:'装配',
     features:'模块',
     capabilities:'能力',
@@ -1306,6 +1345,7 @@ const UI_TEXT = {
     pageTitle:'Axis Control',
     axisA:'Axis A',
     axisB:'Axis B',
+    axisD:'Axis D',
     profile:'Profile',
     features:'Features',
     capabilities:'Caps',
@@ -1446,7 +1486,7 @@ const motionStateByDevice = {
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
 };
 const deviceProfiles = {
-  mctivity: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
+  mctivity: {mode:'position', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velCps:__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
   fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
 let uiStateSaveTimer = 0;
@@ -1473,7 +1513,8 @@ const capabilityState = {
   featureAssembly:{loaded:{}, skipped:{}},
   featureRegistrySource:'',
   warnings:[],
-  generatedAt:''
+  generatedAt:'',
+  commissioningInhibit:false
 };
 let diagModalText = '';
 function currentModeUi(device = activeDevice) {
@@ -1486,7 +1527,7 @@ function syncModeSelectDisabled(device = activeDevice) {
 function axisDisplayName(device) {
   const text = UI_TEXT[currentLang];
   if (device === 'fv3') return text.axisB;
-  if (device === 'mctivity') return text.axisA;
+  if (device === 'mctivity') return PRIMARY_AXIS_LABEL === 'D' ? text.axisD : text.axisA;
   return text.virtualAxis;
 }
 function supportsDevice(device) {
@@ -2429,7 +2470,7 @@ function refreshStaticText() {
   document.body.classList.toggle('lang-zh', currentLang === 'zh');
   document.title = text.pageTitle;
   setText('pageTitle', text.pageTitle);
-  setText('tabMonitorBtn', text.axisA);
+  setText('tabMonitorBtn', axisDisplayName('mctivity'));
   setText('tabConfigBtn', text.axisB);
   setText('protocolChip', 'EtherCAT');
   setText('profileLabel', text.profile);
@@ -3040,6 +3081,9 @@ function applyConfig() {
 }
 function cmd(name) { return api({cmd:name}); }
 function toggleEnable() {
+  if (capabilityState.commissioningInhibit) {
+    return Promise.resolve({ok:false, error:'commissioning_inhibit'});
+  }
   const status = currentStatus();
   const motionState = currentMotion();
   if (!(status && status.servo_request)) {
@@ -3347,11 +3391,17 @@ async function bootstrapUi() {
       capabilityState.featureRegistrySource = data.feature_registry_source || '';
       capabilityState.warnings = Array.isArray(data.warnings) ? data.warnings : [];
       capabilityState.generatedAt = data.generated_at || '';
+      capabilityState.commissioningInhibit = Boolean(data.commissioning_inhibit);
     }
   } catch (err) {
     console.error(err);
   }
   refreshDeviceTabs();
+  const enableToggle = document.getElementById('enableToggle');
+  if (enableToggle && capabilityState.commissioningInhibit) {
+    enableToggle.disabled = true;
+    enableToggle.title = currentLang === 'zh' ? '轴 D 调试锁定中' : 'Axis D commissioning inhibit is active';
+  }
   await hydrateUiStateFromServer();
   loadUiState('mctivity');
   applyCapabilityModeAvailability('mctivity');
@@ -3365,6 +3415,19 @@ bootstrapUi();
 </body>
 </html>
 """
+
+HTML = HTML.replace("__PRIMARY_AXIS_COUNTS_PER_REV__", str(_PRIMARY_AXIS_COUNTS_PER_REV))
+HTML = HTML.replace("__PRIMARY_AXIS_LABEL__", _PRIMARY_AXIS_LABEL)
+HTML = HTML.replace("__PRIMARY_AXIS_MAX_POSITION_COUNTS__", str(_PRIMARY_AXIS_MAX_POSITION_COUNTS))
+HTML = HTML.replace("__PRIMARY_AXIS_MAX_POSITION_REVS__", str(_PRIMARY_AXIS_MAX_POSITION_REVS))
+HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__", str(_PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS))
+HTML = HTML.replace("__PRIMARY_AXIS_POSITION_STEP_COUNTS__", str(_PRIMARY_AXIS_POSITION_STEP_COUNTS))
+HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_SPEED_RPM__", str(_PRIMARY_AXIS_DEFAULT_SPEED_RPM))
+HTML = HTML.replace("__PRIMARY_AXIS_MAX_SPEED_RPM__", str(_PRIMARY_AXIS_MAX_SPEED_RPM))
+HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__", str(_PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S))
+HTML = HTML.replace("__PRIMARY_AXIS_MAX_ACCEL_RPM_S__", str(_PRIMARY_AXIS_MAX_ACCEL_RPM_S))
+HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__", str(_PRIMARY_AXIS_DEFAULT_VELOCITY_CPS))
+HTML = HTML.replace("__PRIMARY_AXIS_MAX_VELOCITY_CPS__", str(_PRIMARY_AXIS_MAX_VELOCITY_CPS))
 
 
 def motiond_command(payload, port=MOTIOND_PORT):
@@ -3383,7 +3446,7 @@ def motiond_command(payload, port=MOTIOND_PORT):
 
 
 def _default_ui_state():
-    return {"devices": {}}
+    return {"profile": _MODULE_RUNTIME.get("profile"), "devices": {}}
 
 
 def _finite_float(value):
@@ -3472,10 +3535,12 @@ def load_ui_state():
             return _default_ui_state()
         if not isinstance(data, dict):
             return _default_ui_state()
+        if _MODULE_RUNTIME.get("profile") == "axis-d-uservo" and data.get("profile") != "axis-d-uservo":
+            return _default_ui_state()
         devices = data.get("devices")
         if not isinstance(devices, dict):
             return _default_ui_state()
-        normalized = {"devices": {}}
+        normalized = {"profile": _MODULE_RUNTIME.get("profile"), "devices": {}}
         for device in ("mctivity", "fv3"):
             if device not in devices:
                 continue
@@ -3569,11 +3634,11 @@ def _invalidate_fv3_cache():
 
 
 def _rpm_to_counts_s(rpm):
-    return max(1, int(abs(float(rpm)) * 8388608.0 / 60.0))
+    return max(1, int(abs(float(rpm)) * float(_PRIMARY_AXIS_COUNTS_PER_REV) / 60.0))
 
 
 def _rpm_s_to_counts_s2(rpm_s):
-    return max(1, int(abs(float(rpm_s)) * 8388608.0 / 60.0))
+    return max(1, int(abs(float(rpm_s)) * float(_PRIMARY_AXIS_COUNTS_PER_REV) / 60.0))
 
 
 def _mode_name(mode):
