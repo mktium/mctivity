@@ -1,68 +1,172 @@
 # MKTLIN01 Axis D Deployment - 2026-08-18
 
-## Release
+## Scope and Safety State
 
-- implementation base commit: `dbb3a94` (`Add Uservo axis D commissioning profile`)
-- deployed release commit: `80a40de` (`Persist MKTLIN01 EtherCAT interface isolation`)
-- branch: `feature/v1.4.1-axis-d-uservo`
-- target: `MKTLIN01`
-- target release path: `/opt/mctivity-releases/v1.4.1-axis-d`
-- active path: `/opt/mctivity`
-- pre-deployment backup: `/opt/mctivity-backups/pre-axis-d-20260818T130934`
-- rollback directory retained on target: `/opt/mctivity.rollback.20260818T130934`
-
-The Git archive SHA-256 matched before extraction:
-
-```text
-9f980911d95edcf5834acf90ebbcbefd80af715ec0b8af3669fd3a70b9b0d53a
-```
-
-The target ran the repository release preflight and rebuilt `mctivity_motiond` against `/opt/etherlab`. The resulting binary resolved `libethercat.so.1` from `/opt/etherlab/lib`.
-
-## Installed Configuration
-
-`/etc/mctivity/axis.env`:
+This deployment adds the DS1-E4806N-4I/Uservo Axis D profile and hardens the
+1 ms EtherCAT loop. All live validation was performed with:
 
 ```text
 MCTIVITY_TOPOLOGY=axis-d-uservo
 MCTIVITY_PROFILE=axis-d-uservo
 MCTIVITY_COMMISSIONING_INHIBIT=1
+MCTIVITY_REQUIRE_REALTIME=1
 ```
 
-Environment-file drop-ins were installed for `mctivity-motiond.service` and `mctivity-hmi.service`. The existing target service user and the existing EtherCAT dependency drop-in were retained.
+No enable, position, velocity, torque, homing, or motion command was sent.
+The drive remained disabled with controlword `0` and the target position
+pinned to the actual position.
 
-## No-Motion Acceptance Evidence
+## Repository Release
 
-- `ethercat slaves`: `0  1:0  OP  +  Uservo`
-- EtherCAT link: up
-- lost frames: `0`
-- backend topology: `axis-d-uservo`
-- backend counts/rev: `10000`
-- backend commissioning inhibit: `true`
-- domain working counter: complete (`wc=3`)
-- statusword fault: false
-- controlword: `0`
-- enabled: false
-- servo request: false
-- moving: false
-- target position followed actual position
-- two final samples ten seconds apart both reported `pos_raw=1612`
-- the Axis D verifier used a non-energizing `set_mode(position)` request and confirmed it was rejected with `commissioning_inhibit`
-- `scripts/mctivity-axis-d-verify.sh` completed successfully against the deployed release
-- all four services were active: EtherCAT, motion daemon, HMI, and kiosk
+- repository: `mktium/mctivity`
+- branch: `feature/v1.4.1-axis-d-uservo`
+- implementation: `8c753ec` (`Harden Axis D EtherCAT realtime loop`)
+- reset-on-fork follow-up: `f940475`
+- deployed fix: `46b636a` (`Fix reset-on-fork policy detection on Linux`)
+- target release: `/opt/mctivity-releases/v1.4.1-axis-d-rt-46b636a`
+- active symlink: `/opt/mctivity`
+- pre-release backup: `/opt/mctivity-backups/pre-axis-d-rt-20260818T1527`
+- pre-native-driver backup: `/opt/mctivity-backups/pre-ec-r8169-20260818T1552`
 
-The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. The official XActant fault table identifies it as `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises the alarm. The default timeout is 100 ms and object `0x36B5` configures it. The original 300-cycle shutdown used a stale DC application time and exceeded this timeout; that shutdown behavior is a defect, not evidence that the official PDO map is wrong.
+The target verified archive SHA-256 before extraction:
 
-The target network configuration already declared `enp3s0` as an EtherCAT-only interface, but the kernel still had IPv6 autoconfiguration enabled and assigned a link-local address. `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` now persistently disables IPv6 on that interface only; Wi-Fi and Tailscale are unchanged. After applying it and issuing the safe fault reset, `0x603f` remained `0x0000` during the initial observation window and the position remained unchanged.
+```text
+c76a00812229022e90e43b2d3709854ad962f5e19df76aa86a7955a9fc75971b
+```
 
-Kernel logs still showed frequent domain working-counter changes, even though each reported sample returned to `3/3`; earlier logs also contained skipped/unmatched EtherCAT datagrams. The IPv6 correction improved the observed drive-fault behavior but does not resolve the EtherCAT timing instability. Treat this as a blocking commissioning risk: investigate it before removing inhibit or attempting the first motion.
+The target release preflight passed. `mctivity_motiond` also compiled on the
+target against `/opt/etherlab` with `-O2 -Wall -Wextra -Werror`. Its SHA-256 is:
 
-A controlled no-motion comparison isolated a strong load correlation: with the local Chromium kiosk stopped and only `motiond` plus the HMI server running, the working-counter changes almost disappeared during a 20-second sample; restarting the kiosk immediately restored changes every second. A temporary CPU-affinity/real-time-priority experiment reduced some bursts but did not eliminate them, so it was reverted rather than left as an undocumented runtime dependency. This host currently uses the generic EtherCAT module over the Linux `r8169` driver. The next investigation should prioritize a native EtherCAT NIC driver or a better-supported dedicated NIC, then repeat the loaded kiosk timing test.
+```text
+b75740f5473e8c29704db7ecfe7d9e2c09419f3357b1d71016326863f70c095f
+```
 
-No enable or motion command was sent during this deployment.
+The first realtime start correctly failed closed because Linux returned
+`SCHED_FIFO | SCHED_RESET_ON_FORK` from `sched_getscheduler()`. On this glibc
+version `SCHED_RESET_ON_FORK` is an enum, not a preprocessor macro, so the
+first guard did not compile into the binary. Commit `46b636a` masks the Linux
+ABI bit unconditionally. The changed target binary hash and the subsequent
+FIFO/memory-lock checks prove the fix is active. No EtherCAT or motor action
+occurred during that failed start.
 
-## Remaining Gate
+## Application Realtime Hardening
 
-This deployment authorizes EtherCAT OP and feedback observation only. Do not remove `MCTIVITY_COMMISSIONING_INHIBIT=1` until the separate onsite motion-readiness review covers E-stop/STO, drive-side limits, mechanical clearance, direction, and the first small move.
+The deployed loop now:
 
-The default Uservo TxPDO does not expose `0x603f`, so a statusword fault can be detected but the detailed drive error code remains unavailable in the HMI.
+- skips expired deadlines instead of sending catch-up bursts;
+- uses the actual scheduled deadline for DC application time;
+- refreshes DC application time during the bounded shutdown sequence;
+- limits TCP accepts, reads, bytes, and commands per PDO cycle;
+- fails closed if nonblocking sockets, `mlockall`, or FIFO scheduling fail;
+- reports deadline, runtime, WC, memory-lock, and scheduling telemetry;
+- requires 1000 consecutive OP/WC-complete cycles before arming;
+- latches a communication timing fault on OP/WC/deadline loss after arming;
+- clears servo and motion requests and holds `cw=0`, mode `0`, and
+  target=actual while inhibited or timing-faulted.
+
+MKTLIN01 runs the process with FIFO priority 70, locked memory, and CPU 2
+affinity. CPU affinity alone did not resolve the original WKC problem; it is
+retained as conservative host-specific isolation from the NIC IRQ on CPU 1.
+
+## WKC Root Cause and A/B Evidence
+
+Before the native-driver change, MKTLIN01 used `ec_generic` over the Linux
+`r8169` driver. The drive was already faulted with `0x603f=0x8100` before this
+deployment, and the pre-change kernel log contained 21,151 EtherCAT
+SKIPPED/UNMATCHED/WC-related records since 13:00.
+
+The official XActant fault table identifies `0x8100` as
+`Communication_DS_301`: PDO communication was lost after OP. The configured
+timeout read back as 100 ms at object `0x36B5`.
+
+No-motion A/B tests separated the causes:
+
+1. The hardened loop on `ec_generic+r8169` still changed WC from 3/3 to 0/3
+   and logged UNMATCHED/SKIPPED frames while application deadline miss and
+   skipped-period counters remained zero.
+2. Pinning motiond to CPU 2 did not stop the changes.
+3. Temporarily raising `EtherCAT-OP` to FIFO 60 did not stop the changes.
+4. Disabling EEE, GRO, checksumming, and VLAN offload did not stop the
+   changes; those settings were restored.
+5. NIC alignment/error counters did not increase when the WKC changes
+   occurred, so historical physical receive errors did not explain the
+   continuous event stream.
+6. Replacing the generic path with the EtherLab native `ec_r8169` driver
+   stopped the WKC changes under the same 1 ms PDO/DC configuration and full
+   kiosk load.
+
+The evidence therefore attributes the continuous WKC wave to the generic
+Realtek packet path on this host, not to the official Uservo PDO map and not
+to a missed application deadline. CPU/load tuning could change frequency but
+was not sufficient; the native EtherCAT NIC driver was the effective fix.
+
+## Native EtherCAT Driver
+
+The existing `/usr/local/src/ethercat` source tree includes the 6.12 native
+Realtek driver and matches the installed EtherLab 1.6.9 master. A clean copy
+was configured with `--enable-r8169 --with-r8169-kernel=6.12` and compiled
+against `6.12.74+deb13+1-rt-amd64` before any runtime change.
+
+Installed module:
+
+```text
+/usr/lib/modules/6.12.74+deb13+1-rt-amd64/ethercat/devices/ec_r8169.ko
+SHA-256 90e222cba0d02fcfede140751b9f0c9210d5ee700668fd73ebb54a3f6c1b7645
+```
+
+Persistent `/etc/sysconfig/ethercat` values:
+
+```text
+MASTER0_DEVICE="00:e0:67:1d:9b:c5"
+DEVICE_MODULES="r8169"
+UPDOWN_INTERFACES=""
+```
+
+Runtime verification showed `ec_r8169` bound directly to PCI device
+`10ec:8168` rev 07, with `ec_generic` and the standard `r8169` module absent.
+EtherCAT reported Link UP, one Uservo slave, OP, WC 3/3, and Lost frames 0.
+
+The native module is built for this exact kernel. A kernel upgrade must not be
+activated until `ec_r8169.ko` has been rebuilt and verified for the new kernel.
+If it is missing, keep commissioning inhibit enabled and do not fall back to
+`ec_generic` for motion.
+
+## No-Motion Acceptance
+
+- Axis D verifier: passed with EtherCAT, motiond, HMI, and kiosk active.
+- Backend: `axis-d-uservo`, 10000 counts/rev, inhibit true.
+- Realtime: FIFO 70, memory locked, application deadline miss/skip `0/0`.
+- Safety state: enabled false, servo request false, moving false, `cw=0`.
+- Feedback: position stayed at raw count 1611.
+- Native-driver 60-second comparison: WC 3/3 throughout, no kernel events.
+- Eight-client status/inhibited-set-mode load for more than five minutes:
+  Lost frames 0 and no SKIPPED, UNMATCHED, or WC0 events.
+- Full kiosk/HMI stability observation ran for 21 minutes 20 seconds before
+  the user approved shortening the planned 30-minute wait. During the actual
+  window, WC stayed 3/3, Lost frames stayed 0, the kernel added no SKIPPED,
+  UNMATCHED, or WC0 event, application deadline miss/skip stayed `0/0`, and
+  raw position stayed 1611.
+
+After the native link was stable and the timing guard was armed, one fault
+reset was sent while inhibit remained active. The only permitted pulse was
+`cw=0x0080`; after it completed, status returned `cw=0`, enabled false,
+position 1611, and SDO `0x603f=0x0000`.
+
+## Rollback
+
+1. Keep `MCTIVITY_COMMISSIONING_INHIBIT=1` and stop motiond and EtherCAT.
+2. Restore `/etc/sysconfig/ethercat` and the previous EtherCAT modules from
+   `/opt/mctivity-backups/pre-ec-r8169-20260818T1552`.
+3. Run `depmod -a`, start EtherCAT, and verify the intended driver before
+   starting motiond.
+4. To roll back the application, restore the active release and configuration
+   from `/opt/mctivity-backups/pre-axis-d-rt-20260818T1527`.
+5. Do not remove inhibit after a rollback; the generic driver is a known WKC
+   instability on this host.
+
+## Remaining Motion Gate
+
+This deployment authorizes only EtherCAT OP, feedback observation, and
+inhibited diagnostics. Before any enable or movement, obtain explicit user
+confirmation and complete the onsite E-stop/STO, mechanical clearance,
+direction, soft-limit, current-limit, and first-small-move checklist.
