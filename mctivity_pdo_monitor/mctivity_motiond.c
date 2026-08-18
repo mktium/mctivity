@@ -462,6 +462,11 @@ static int prepare_axis_d_realtime(void)
     }
 
     realtime_status.scheduler_policy = sched_getscheduler(0);
+#ifdef SCHED_RESET_ON_FORK
+    if (realtime_status.scheduler_policy >= 0) {
+        realtime_status.scheduler_policy &= ~SCHED_RESET_ON_FORK;
+    }
+#endif
     memset(&param, 0, sizeof(param));
     if (sched_getparam(0, &param) == 0) {
         realtime_status.scheduler_priority = param.sched_priority;
