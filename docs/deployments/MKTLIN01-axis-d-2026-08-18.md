@@ -23,7 +23,8 @@ pinned to the actual position.
 - implementation: `8c753ec` (`Harden Axis D EtherCAT realtime loop`)
 - reset-on-fork follow-up: `f940475`
 - deployed fix: `46b636a` (`Fix reset-on-fork policy detection on Linux`)
-- target release: `/opt/mctivity-releases/v1.4.1-axis-d-rt-46b636a`
+- active archival release: `/opt/mctivity-releases/v1.4.1-axis-d-rt-c537f82`
+  (same tested binary as `46b636a`, plus the deployment record)
 - active symlink: `/opt/mctivity`
 - pre-release backup: `/opt/mctivity-backups/pre-axis-d-rt-20260818T1527`
 - pre-native-driver backup: `/opt/mctivity-backups/pre-ec-r8169-20260818T1552`
@@ -31,7 +32,7 @@ pinned to the actual position.
 The target verified archive SHA-256 before extraction:
 
 ```text
-c76a00812229022e90e43b2d3709854ad962f5e19df76aa86a7955a9fc75971b
+305082e9e7ac548e74d303eb25f9a85302061848790a5e588c23ef4cad584fc4
 ```
 
 The target release preflight passed. `mctivity_motiond` also compiled on the
