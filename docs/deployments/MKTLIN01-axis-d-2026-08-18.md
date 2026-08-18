@@ -51,11 +51,13 @@ Environment-file drop-ins were installed for `mctivity-motiond.service` and `mct
 - `scripts/mctivity-axis-d-verify.sh` completed successfully against the deployed release
 - all four services were active: EtherCAT, motion daemon, HMI, and kiosk
 
-The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. This is a communication-class fault. The release therefore retains a commissioning-safe fault reset that can pulse only controlword `0x0080`; it cannot enter the enable sequence. Final acceptance requires the fault bit to be clear after this reset while inhibit remains active.
+The deliberate application restart latched drive error `0x8100` in SDO `0x603f`. Its timing and `0x81xx` range are consistent with a communication-class fault, but the available drive manual does not provide an exact `0x8100` fault-table entry. The release therefore retains a commissioning-safe fault reset that can pulse only controlword `0x0080`; it cannot enter the enable sequence. Final acceptance requires the fault bit to be clear after this reset while inhibit remains active.
 
 The target network configuration already declared `enp3s0` as an EtherCAT-only interface, but the kernel still had IPv6 autoconfiguration enabled and assigned a link-local address. `/etc/sysctl.d/90-mctivity-ethercat-enp3s0.conf` now persistently disables IPv6 on that interface only; Wi-Fi and Tailscale are unchanged. After applying it and issuing the safe fault reset, `0x603f` remained `0x0000` during the initial observation window and the position remained unchanged.
 
 Kernel logs still showed frequent domain working-counter changes, even though each reported sample returned to `3/3`; earlier logs also contained skipped/unmatched EtherCAT datagrams. The IPv6 correction improved the observed drive-fault behavior but does not resolve the EtherCAT timing instability. Treat this as a blocking commissioning risk: investigate it before removing inhibit or attempting the first motion.
+
+A controlled no-motion comparison isolated a strong load correlation: with the local Chromium kiosk stopped and only `motiond` plus the HMI server running, the working-counter changes almost disappeared during a 20-second sample; restarting the kiosk immediately restored changes every second. A temporary CPU-affinity/real-time-priority experiment reduced some bursts but did not eliminate them, so it was reverted rather than left as an undocumented runtime dependency. This host currently uses the generic EtherCAT module over the Linux `r8169` driver. The next investigation should prioritize a native EtherCAT NIC driver or a better-supported dedicated NIC, then repeat the loaded kiosk timing test.
 
 No enable or motion command was sent during this deployment.
 
