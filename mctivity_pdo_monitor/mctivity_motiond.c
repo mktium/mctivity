@@ -462,11 +462,14 @@ static int prepare_axis_d_realtime(void)
     }
 
     realtime_status.scheduler_policy = sched_getscheduler(0);
-#ifdef SCHED_RESET_ON_FORK
+    /*
+     * Linux/glibc may expose SCHED_RESET_ON_FORK as an enum rather than a
+     * preprocessor macro.  Use the kernel ABI bit explicitly so the flag is
+     * always removed before comparing the base scheduling policy.
+     */
     if (realtime_status.scheduler_policy >= 0) {
-        realtime_status.scheduler_policy &= ~SCHED_RESET_ON_FORK;
+        realtime_status.scheduler_policy &= ~0x40000000;
     }
-#endif
     memset(&param, 0, sizeof(param));
     if (sched_getparam(0, &param) == 0) {
         realtime_status.scheduler_priority = param.sched_priority;
