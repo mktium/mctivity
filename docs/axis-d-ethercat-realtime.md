@@ -27,7 +27,7 @@ RxPDO 0x1601: 6040:00/16, 6060:00/8, 60FF:00/32, 60FE:01/32
 TxPDO 0x1A01: 6041:00/16, 6061:00/8, 606C:00/32, 60FD:00/32
 ```
 
-PV is CiA 402 mode code `3`; target velocity is `0x60FF`, actual velocity is `0x606C`, and profile acceleration/deceleration are the drive objects `0x6083`/`0x6084`. The implementation does not claim CSV (`9`) or infer a velocity map from the old CSP profile.
+PV is CiA 402 mode code `3`; target velocity is `0x60FF`, actual velocity is `0x606C`, and profile acceleration/deceleration are the drive objects `0x6083`/`0x6084`. The Axis D PV startup writes 999 rpm (166500 cnt/s) to `0x607F`, 2222 rpm/s (370333 cnt/s²) to both `0x6083` and `0x6084`, and uses 222 rpm (37000 cnt/s) as the default target velocity. The implementation does not claim CSV (`9`) or infer a velocity map from the old CSP profile.
 
 Official fault `0x8100` is `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises a communication alarm. The default is 100 ms and the timeout is configured through object `0x36B5`. It is distinct from EtherCAT AL code `0x001B` (Sync Manager watchdog).
 

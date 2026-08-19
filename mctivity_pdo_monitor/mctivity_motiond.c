@@ -26,6 +26,10 @@
 #define USERVO_VENDOR_ID 0x00666999
 #define USERVO_PRODUCT_CODE 0x00004806
 #define USERVO_COUNTS_PER_REV 10000LL
+#define USERVO_PV_TARGET_SPEED_RPM 222U
+#define USERVO_PV_ACCEL_RPM_S 2222U
+#define USERVO_PV_DECEL_RPM_S 2222U
+#define USERVO_PV_MAX_SPEED_RPM 999U
 
 #define AXIS_MCTIVITY 0
 #define AXIS_FV3 1
@@ -735,6 +739,15 @@ static int8_t mode_code_for_name(const char *mode)
         return 10;
     }
     return 8;
+}
+
+static int8_t axis_mode_code(const char *mode)
+{
+    /* DS1-E4806N PV is CiA 402 mode 3; legacy velocity remains CSV (9). */
+    if (uservo_pv_topology && strcmp(mode, "velocity") == 0) {
+        return 3;
+    }
+    return mode_code_for_name(mode);
 }
 
 static int is_safe_mode_name(const char *mode)
@@ -1530,7 +1543,7 @@ static void handle_command(int fd, const char *line)
             s->target_user = s->pos_user;
         }
         set_control_mode(ax, mode);
-        ax->commanded_mode = mode_code_for_name(mode);
+        ax->commanded_mode = axis_mode_code(mode);
         strncpy(s->last_command, "set_mode", sizeof(s->last_command) - 1);
         if (strcmp(mode, "torque") == 0 || strcmp(mode, "gear_cam") == 0) {
             snprintf(s->message, sizeof(s->message), "%s %s selected; active output needs PDO validation", axis_label(axis), mode);
@@ -1784,7 +1797,7 @@ static void handle_command(int fd, const char *line)
             velocity = DEFAULT_JOG_VELOCITY;
         }
         set_control_mode(ax, "velocity");
-        ax->commanded_mode = mode_code_for_name("velocity");
+        ax->commanded_mode = axis_mode_code("velocity");
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
         clear_motion(ax);
@@ -2170,6 +2183,37 @@ static void update_axis_d_communication_guard(axis_runtime_t *axis)
     }
 }
 
+static int configure_uservo_pv_profile(ec_slave_config_t *slave_config)
+{
+    uint32_t max_velocity_cps;
+    uint32_t accel_cps2;
+    uint32_t decel_cps2;
+
+    if (!uservo_pv_topology) {
+        return 0;
+    }
+    max_velocity_cps = rpm_to_counts_s(USERVO_PV_MAX_SPEED_RPM);
+    accel_cps2 = rpm_s_to_counts_s2(USERVO_PV_ACCEL_RPM_S);
+    decel_cps2 = rpm_s_to_counts_s2(USERVO_PV_DECEL_RPM_S);
+    if (ecrt_slave_config_sdo32(slave_config, 0x607f, 0, max_velocity_cps) < 0 ||
+        ecrt_slave_config_sdo32(slave_config, 0x6083, 0, accel_cps2) < 0 ||
+        ecrt_slave_config_sdo32(slave_config, 0x6084, 0, decel_cps2) < 0) {
+        fprintf(stderr, "failed to configure Uservo PV 0x607f/0x6083/0x6084\n");
+        return -1;
+    }
+    fprintf(
+        stdout,
+        "Uservo PV profile: target=%u rpm, max=%u rpm (%u cnt/s), accel=%u rpm/s (%u cnt/s^2), decel=%u rpm/s (%u cnt/s^2)\n",
+        USERVO_PV_TARGET_SPEED_RPM,
+        USERVO_PV_MAX_SPEED_RPM,
+        max_velocity_cps,
+        USERVO_PV_ACCEL_RPM_S,
+        accel_cps2,
+        USERVO_PV_DECEL_RPM_S,
+        decel_cps2);
+    return 0;
+}
+
 static int run_uservo_axis_d(void)
 {
     ec_master_t *master;
@@ -2199,6 +2243,10 @@ static int run_uservo_axis_d(void)
 
     if (ecrt_slave_config_pdos(slave_config, EC_END, uservo_pv_topology ? uservo_pv_syncs : uservo_syncs)) {
         fprintf(stderr, "failed to configure Uservo axis D PDOs\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    if (configure_uservo_pv_profile(slave_config) < 0) {
         ecrt_release_master(master);
         return 1;
     }
@@ -2387,7 +2435,7 @@ int main(void)
     for (int axis = 0; axis < AXIS_COUNT; axis++) {
         memset(&axes[axis], 0, sizeof(axes[axis]));
         set_control_mode(&axes[axis], uservo_pv_topology && axis == AXIS_MCTIVITY ? "velocity" : "position");
-        axes[axis].commanded_mode = mode_code_for_name(
+        axes[axis].commanded_mode = axis_mode_code(
             uservo_pv_topology && axis == AXIS_MCTIVITY ? "velocity" : "position");
         axes[axis].gear_master_axis = axis == AXIS_FV3 ? AXIS_MCTIVITY : AXIS_FV3;
         axes[axis].gear_master_ratio = 1;

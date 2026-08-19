@@ -106,6 +106,20 @@ def main():
                     raise SystemExit("axis-d-uservo-pv must select CiA 402 PV mode code 3")
                 if device.get("rxpdo_profile") != "0x1601" or device.get("txpdo_profile") != "0x1A01":
                     raise SystemExit("axis-d-uservo-pv must select RxPDO 0x1601 and TxPDO 0x1A01")
+                expected_pv = {
+                    "default_speed_rpm": 222,
+                    "max_speed_rpm": 999,
+                    "default_velocity_counts_s": 37000,
+                    "max_velocity_counts_s": 166500,
+                    "default_accel_rpm_s": 2222,
+                    "max_accel_rpm_s": 2222,
+                    "default_decel_rpm_s": 2222,
+                    "max_decel_rpm_s": 2222,
+                    "pv_speed_limit_rpm": 999,
+                }
+                for key, expected in expected_pv.items():
+                    if device.get(key) != expected:
+                        raise SystemExit(f"axis-d-uservo-pv parameter mismatch for {key}: expected {expected!r}, got {device.get(key)!r}")
     if checked < 1:
         raise SystemExit("no axis_device module found")
     print(f"axis profile ok: {checked} device profile(s)")

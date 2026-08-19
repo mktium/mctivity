@@ -79,6 +79,24 @@ No velocity or enable command was sent. The PV TxPDO has no position actual
 entry, so the backend's position field is intentionally not a motion verdict
 in this profile.
 
+## PV profile acceleration limits
+
+The PV implementation now configures the drive SDOs at startup (still before
+any enable and while inhibit is required):
+
+```text
+target speed default: 222 rpm = 37000 cnt/s (PDO 0x60FF)
+max profile velocity: 999 rpm = 166500 cnt/s (0x607F)
+profile acceleration: 2222 rpm/s = 370333 cnt/s² (0x6083)
+profile deceleration: 2222 rpm/s = 370333 cnt/s² (0x6084)
+```
+
+The MotorHost USB connection is a separate service/configuration channel. It
+may remain open for read-only observation, but it must not download parameters,
+reset faults, change modes, enable, or command motion while EtherCAT is the
+active cyclic controller. For an actual EtherCAT run, close/disconnect
+MotorHost first so there is only one command source.
+
 ## Next gate
 
 After the existing fault is diagnosed/cleared under the approved no-motion
