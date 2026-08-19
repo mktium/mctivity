@@ -44,6 +44,8 @@ if profile == "axis-d-uservo":
     assert status.get("topology") == "axis-d-uservo", status
     assert status.get("counts_per_rev") == 10000, status
     assert status.get("commissioning_inhibit") is True, status
+    assert status.get("phase_search_confirmation_required") is True, status
+    assert status.get("phase_search_confirmed") is False, status
     assert status.get("operational") == 1, status
     assert status.get("wc_complete") is True, status
     assert status.get("enabled") is False, status
@@ -70,6 +72,19 @@ if profile == "axis-d-uservo":
     assert reply == {"ok": False, "error": "commissioning_inhibit"}, reply
 
     with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
+        # The acknowledgement itself is non-energizing, but deployment with
+        # inhibit active must not retain a phase-search confirmation either.
+        sock.sendall(b'{"cmd":"confirm_phase_search_complete","device":"mctivity"}\n')
+        response = b""
+        while not response.endswith(b"\n"):
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+    reply = json.loads(response.decode("utf-8"))
+    assert reply == {"ok": False, "error": "commissioning_inhibit"}, reply
+
+    with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
         sock.sendall(b'{"cmd":"status","device":"mctivity"}\n')
         response = b""
         while not response.endswith(b"\n"):
@@ -78,6 +93,8 @@ if profile == "axis-d-uservo":
                 break
             response += chunk
     post_status = json.loads(response.decode("utf-8")).get("status") or {}
+    assert post_status.get("phase_search_confirmation_required") is True, post_status
+    assert post_status.get("phase_search_confirmed") is False, post_status
     assert post_status.get("enabled") is False, post_status
     assert post_status.get("servo_request") is False, post_status
     assert post_status.get("fault") is False, post_status

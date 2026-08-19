@@ -171,3 +171,35 @@ This deployment authorizes only EtherCAT OP, feedback observation, and
 inhibited diagnostics. Before any enable or movement, obtain explicit user
 confirmation and complete the onsite E-stop/STO, mechanical clearance,
 direction, soft-limit, current-limit, and first-small-move checklist.
+
+## 2026-08-19 First-enable incident
+
+After the overnight power-off, the no-motion checks passed and the user
+confirmed the environment was clear. Commissioning inhibit was removed for a
+staged first-motion test. A restart-related `0x8100` fault was reset, the
+disabled position was set as software zero, and only an `enable` request was
+sent. The planned +100-count position command was never sent.
+
+During enable, the raw feedback changed by about 949 counts (about 34 degrees
+at 10000 counts/revolution) and the motor made a loud noise. The user removed
+drive power. The application configuration was immediately restored to
+`MCTIVITY_COMMISSIONING_INHIBIT=1`, and `mctivity-motiond.service` was stopped.
+
+The command trace shows that the daemon continuously pinned target position
+to current feedback during its enable-settling window; it did not issue the
+planned relative move. XActant's official MotorHost documentation states that
+incremental encoders perform electrical-angle search on the first enable after
+every power-on, and describes strong-pull phase search as actively pulling the
+rotor through an angle. The saved MotorHost commissioning screen used the
+strong-pull mode. This is the leading explanation for the observed first-enable
+movement, but the loud sound is not accepted as a successful phase search.
+Encoder resolution/direction, motor phase relationship, identification result,
+search current, automatic-search setting, and return-after-search setting must
+be checked before another EtherCAT enable.
+
+Corrective action adds a session-scoped phase-search confirmation gate. Axis D
+ordinary enable is rejected until the operator separately confirms that the
+current power cycle's phase search has completed. The latch resets on daemon
+start, EtherCAT communication loss,
+timing fault, or drive fault. Deployment and verification of this change remain
+strictly no-motion with commissioning inhibit enabled.

@@ -25,6 +25,8 @@ def assert_safe(status):
         "topology": "axis-d-uservo",
         "counts_per_rev": 10000,
         "commissioning_inhibit": True,
+        "phase_search_confirmation_required": True,
+        "phase_search_confirmed": False,
         "enabled": False,
         "servo_request": False,
         "moving": False,

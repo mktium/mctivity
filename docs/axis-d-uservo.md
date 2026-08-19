@@ -53,6 +53,37 @@ The first profile intentionally omits velocity mode because the drive's default 
 
 The default TxPDO does not contain `0x603f` (error code). The statusword fault bit is available, but the HMI error-code field remains zero until an error-code PDO or SDO diagnostic path is added.
 
+## Incremental-encoder phase-search gate
+
+The motor uses an incremental ABZ encoder. XActant's MotorHost manual states
+that every incremental encoder needs an electrical-angle search before the
+first enable after each power-on. The configured strong-pull search can move
+the shaft; enable must therefore never be treated as a non-moving operation.
+
+Axis D now starts every `motiond` communication session with
+`phase_search_confirmed=false`. A normal `enable` request is rejected with
+`phase_search_confirmation_required` until an operator has separately
+completed the current power cycle's phase-search procedure and sent the
+non-energizing command:
+
+```json
+{"cmd":"confirm_phase_search_complete","device":"mctivity"}
+```
+
+The confirmation command is accepted only while the drive is disabled,
+stationary, fault-free, OP/WC-complete, and protected by the armed realtime
+timing guard. It does not write a controlword or enable the drive. The latch is
+cleared on process start, EtherCAT OP/WC loss, communication-timing fault, or
+drive fault. Disable/re-enable within the same healthy communication session
+does not clear it.
+
+This latch is an operator safety acknowledgement, not proof that the drive's
+electrical-angle identification succeeded. Before acknowledging it, use
+MotorHost or a future read-only SDO diagnostic path to verify the current
+power cycle's identification result and review `0x3622` (automatic phase
+search), `0x3657` (return after search), `0x3638` (search mode), and `0x3008`
+(identification state). Motion permission remains a separate user decision.
+
 ## First Deployment Gate
 
 1. Back up `/opt/mctivity` and the installed service/config files.
@@ -62,6 +93,7 @@ The default TxPDO does not contain `0x603f` (error code). The statusword fault b
 5. Confirm the EtherCAT slave reaches OP and the domain working counter is complete.
 6. Confirm status reports `enabled=false`, `servo_request=false`, `cw=0`, and changing position feedback is plausible when the shaft is moved manually.
 7. Confirm a non-energizing `set_mode` request returns `commissioning_inhibit`, then read status again and confirm the axis remains disabled with controlword zero.
+8. Confirm status reports `phase_search_confirmation_required=true` and `phase_search_confirmed=false`.
 
 Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo`, checks the backend's own topology/scale/inhibit fields, and uses a non-energizing mode-selection request to prove command rejection. It deliberately does not send an enable command.
 
