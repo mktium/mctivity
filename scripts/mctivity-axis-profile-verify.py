@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 import json
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
 PROFILES = ROOT / "profiles"
 MODULES = ROOT / "modules"
+sys.path.insert(0, str(ROOT / "mctivity_hmi"))
+
+from profile_runtime import build_module_runtime  # noqa: E402
+
 REQUIRED_DEVICE_FIELDS = {
     "logical_axis",
     "transport_device",
@@ -20,8 +25,6 @@ REQUIRED_DEVICE_FIELDS = {
     "position_step_counts",
     "default_speed_rpm",
     "max_speed_rpm",
-    "default_velocity_counts_s",
-    "max_velocity_counts_s",
     "default_accel_rpm_s",
     "max_accel_rpm_s",
     "commissioning_inhibit_default",
@@ -42,6 +45,7 @@ def main():
     checked = 0
     for profile_path in sorted(PROFILES.glob("*.json")):
         profile = load_json(profile_path)
+        runtime = build_module_runtime(profile_path, MODULES, strict=True)
         axis_devices = []
         for module_id in profile.get("modules", []):
             path = manifest_path(module_id)
@@ -75,7 +79,8 @@ def main():
                 raise SystemExit("axis-d-uservo relative default exceeds its position envelope")
             if not (0 < int(device["default_speed_rpm"]) <= int(device["max_speed_rpm"])):
                 raise SystemExit("axis-d-uservo speed defaults invalid")
-            if not (0 < int(device["default_velocity_counts_s"]) <= int(device["max_velocity_counts_s"])):
+            resolved_device = runtime["axis_devices"][0]
+            if not (0 < int(resolved_device["default_velocity_counts_s"]) <= int(resolved_device["max_velocity_counts_s"])):
                 raise SystemExit("axis-d-uservo velocity-count defaults invalid")
             if not (0 < int(device["default_accel_rpm_s"]) <= int(device["max_accel_rpm_s"])):
                 raise SystemExit("axis-d-uservo acceleration defaults invalid")
@@ -102,24 +107,22 @@ def main():
             if device.get("rxpdo") != expected_rxpdo or device.get("txpdo") != expected_txpdo:
                 raise SystemExit(f"{profile.get('profile')} PDOs do not match XActant-E-XML-6120R Uservo defaults")
             if is_pv:
+                for key in ("default_decel_rpm_s", "max_decel_rpm_s"):
+                    if int(device.get(key, 0)) <= 0:
+                        raise SystemExit(f"axis-d-uservo-pv requires positive {key}")
                 if device.get("ethercat_mode") != "pv" or device.get("ethercat_mode_code") != 3:
                     raise SystemExit("axis-d-uservo-pv must select CiA 402 PV mode code 3")
                 if device.get("rxpdo_profile") != "0x1601" or device.get("txpdo_profile") != "0x1A01":
                     raise SystemExit("axis-d-uservo-pv must select RxPDO 0x1601 and TxPDO 0x1A01")
-                expected_pv = {
-                    "default_speed_rpm": 222,
-                    "max_speed_rpm": 999,
-                    "default_velocity_counts_s": 37000,
-                    "max_velocity_counts_s": 166500,
-                    "default_accel_rpm_s": 2222,
-                    "max_accel_rpm_s": 2222,
-                    "default_decel_rpm_s": 2222,
-                    "max_decel_rpm_s": 2222,
-                    "pv_speed_limit_rpm": 999,
-                }
-                for key, expected in expected_pv.items():
-                    if device.get(key) != expected:
-                        raise SystemExit(f"axis-d-uservo-pv parameter mismatch for {key}: expected {expected!r}, got {device.get(key)!r}")
+                for key in ("velocity_step_counts_s", "stop_decel_rpm_s"):
+                    if int(device.get(key, 0)) <= 0:
+                        raise SystemExit(f"axis-d-uservo-pv requires positive {key}")
+                if int(device["default_decel_rpm_s"]) != int(device["stop_decel_rpm_s"]):
+                    raise SystemExit("axis-d-uservo-pv 0x6084 deceleration and stop deceleration must match")
+                if resolved_device["default_accel_counts_s2"] <= 0 or resolved_device["stop_decel_counts_s2"] <= 0:
+                    raise SystemExit("axis-d-uservo-pv resolved acceleration/deceleration invalid")
+        if profile.get("profile") in {"minimal", "standard", "full"} and runtime.get("axis_devices"):
+            raise SystemExit(f"legacy profile polluted by axis device parameters: {profile.get('profile')}")
     if checked < 1:
         raise SystemExit("no axis_device module found")
     print(f"axis profile ok: {checked} device profile(s)")

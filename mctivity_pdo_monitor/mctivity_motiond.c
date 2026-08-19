@@ -25,11 +25,6 @@
 #define FV3_PRODUCT_CODE 0x00000010
 #define USERVO_VENDOR_ID 0x00666999
 #define USERVO_PRODUCT_CODE 0x00004806
-#define USERVO_COUNTS_PER_REV 10000LL
-#define USERVO_PV_TARGET_SPEED_RPM 222U
-#define USERVO_PV_ACCEL_RPM_S 2222U
-#define USERVO_PV_DECEL_RPM_S 2222U
-#define USERVO_PV_MAX_SPEED_RPM 999U
 
 #define AXIS_MCTIVITY 0
 #define AXIS_FV3 1
@@ -59,6 +54,16 @@ static int uservo_pv_topology = 0;
 static int commissioning_inhibit = 0;
 static int require_realtime = 0;
 static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
+static uint32_t pv_target_speed_rpm;
+static uint32_t pv_max_speed_rpm;
+static uint32_t pv_accel_rpm_s;
+static uint32_t pv_decel_rpm_s;
+static uint32_t pv_stop_decel_rpm_s;
+static uint32_t pv_target_velocity_cps;
+static uint32_t pv_max_velocity_cps;
+static uint32_t pv_accel_cps2;
+static uint32_t pv_decel_cps2;
+static uint32_t pv_stop_decel_cps2;
 
 typedef struct {
     uint64_t deadline_miss_count;
@@ -370,6 +375,25 @@ static int env_flag_default(const char *name, int fallback)
         return 0;
     }
     return 1;
+}
+
+static int env_u32_required(const char *name, uint32_t *result)
+{
+    const char *value = getenv(name);
+    char *end = NULL;
+    unsigned long parsed;
+    if (!value || !*value) {
+        fprintf(stderr, "required profile parameter is missing: %s\n", name);
+        return -1;
+    }
+    errno = 0;
+    parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed == 0 || parsed > UINT32_MAX) {
+        fprintf(stderr, "invalid positive profile parameter: %s=%s\n", name, value);
+        return -1;
+    }
+    *result = (uint32_t)parsed;
+    return 0;
 }
 
 static const char *axis_name(int axis)
@@ -882,6 +906,56 @@ static uint32_t rpm_s_to_counts_s2(uint32_t rpm_s)
     return (uint32_t)counts_s2;
 }
 
+static int load_axis_profile_parameters(void)
+{
+    uint32_t configured_counts_per_rev;
+    if (!uservo_axis_d_topology) {
+        counts_per_rev = LEGACY_COUNTS_PER_REV;
+        return 0;
+    }
+    if (env_u32_required("MCTIVITY_AXIS_COUNTS_PER_REV", &configured_counts_per_rev) < 0) {
+        return -1;
+    }
+    counts_per_rev = configured_counts_per_rev;
+    if (!uservo_pv_topology) {
+        return 0;
+    }
+    if (env_u32_required("MCTIVITY_PV_TARGET_SPEED_RPM", &pv_target_speed_rpm) < 0 ||
+        env_u32_required("MCTIVITY_PV_MAX_SPEED_RPM", &pv_max_speed_rpm) < 0 ||
+        env_u32_required("MCTIVITY_PV_ACCEL_RPM_S", &pv_accel_rpm_s) < 0 ||
+        env_u32_required("MCTIVITY_PV_DECEL_RPM_S", &pv_decel_rpm_s) < 0 ||
+        env_u32_required("MCTIVITY_PV_STOP_DECEL_RPM_S", &pv_stop_decel_rpm_s) < 0) {
+        return -1;
+    }
+    if (pv_target_speed_rpm > pv_max_speed_rpm) {
+        fprintf(stderr, "PV target speed exceeds maximum speed\n");
+        return -1;
+    }
+    if (pv_decel_rpm_s != pv_stop_decel_rpm_s) {
+        fprintf(stderr, "PV 0x6084 deceleration and stop deceleration must match\n");
+        return -1;
+    }
+    if ((uint64_t)pv_max_speed_rpm * (uint64_t)configured_counts_per_rev >
+            (uint64_t)INT32_MAX * 60ULL ||
+        (uint64_t)pv_accel_rpm_s * (uint64_t)configured_counts_per_rev >
+            (uint64_t)UINT32_MAX * 60ULL ||
+        (uint64_t)pv_decel_rpm_s * (uint64_t)configured_counts_per_rev >
+            (uint64_t)UINT32_MAX * 60ULL) {
+        fprintf(stderr, "resolved PV parameter exceeds PDO/SDO numeric range\n");
+        return -1;
+    }
+    pv_target_velocity_cps = rpm_to_counts_s(pv_target_speed_rpm);
+    pv_max_velocity_cps = rpm_to_counts_s(pv_max_speed_rpm);
+    pv_accel_cps2 = rpm_s_to_counts_s2(pv_accel_rpm_s);
+    pv_decel_cps2 = rpm_s_to_counts_s2(pv_decel_rpm_s);
+    pv_stop_decel_cps2 = rpm_s_to_counts_s2(pv_stop_decel_rpm_s);
+    if (pv_target_velocity_cps == 0 || pv_target_velocity_cps > pv_max_velocity_cps) {
+        fprintf(stderr, "invalid resolved PV target/max velocity\n");
+        return -1;
+    }
+    return 0;
+}
+
 static int64_t i64_abs_diff_i32(int32_t a, int32_t b)
 {
     int64_t d = (int64_t)a - (int64_t)b;
@@ -1372,6 +1446,28 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "stop") == 0) {
+        if (uservo_pv_topology) {
+            clear_motion(ax);
+            s->enable_settle_cycles = 0;
+            s->jog_velocity_cps = 0;
+            ax->stop_velocity_cps = 0;
+            ax->target_velocity_cps = 0;
+            ax->velocity_remainder = 0;
+            ax->gear_running = 0;
+            ax->gear_has_last_master_pos = 0;
+            s->target_raw = s->pos_raw;
+            s->target_user = s->pos_user;
+            strncpy(s->last_command, "stop", sizeof(s->last_command) - 1);
+            snprintf(
+                s->message,
+                sizeof(s->message),
+                "%s PV stop requested; target velocity cleared (profile 0x6084=%u rpm/s, %u cnt/s^2)",
+                axis_label(axis),
+                pv_stop_decel_rpm_s,
+                pv_stop_decel_cps2);
+            send_status_fd(fd, axis);
+            return;
+        }
         uint32_t decel_rpm_s = DEFAULT_STOP_DECEL_RPM_S;
         uint32_t decel = rpm_s_to_counts_s2(DEFAULT_STOP_DECEL_RPM_S);
         int32_t seed_velocity_cps;
@@ -1444,22 +1540,6 @@ static void handle_command(int fd, const char *line)
                 s->target_user = s->target_raw - s->soft_zero_raw;
                 snprintf(s->message, sizeof(s->message), "%s motion stopped; holding current target", axis_label(axis));
             }
-        }
-        if (uservo_pv_topology) {
-            clear_motion(ax);
-            s->enable_settle_cycles = 0;
-            s->jog_velocity_cps = 0;
-            ax->stop_velocity_cps = 0;
-            ax->target_velocity_cps = 0;
-            ax->velocity_remainder = 0;
-            ax->gear_running = 0;
-            ax->gear_has_last_master_pos = 0;
-            s->target_raw = s->pos_raw;
-            s->target_user = s->pos_user;
-            strncpy(s->last_command, "stop", sizeof(s->last_command) - 1);
-            snprintf(s->message, sizeof(s->message), "%s PV stop requested; target velocity cleared", axis_label(axis));
-            send_status_fd(fd, axis);
-            return;
         }
         strncpy(s->last_command, "stop", sizeof(s->last_command) - 1);
         send_status_fd(fd, axis);
@@ -1794,7 +1874,13 @@ static void handle_command(int fd, const char *line)
             return;
         }
         if (!find_i32(line, "velocity", &velocity)) {
-            velocity = DEFAULT_JOG_VELOCITY;
+            velocity = uservo_pv_topology ? (int32_t)pv_target_velocity_cps : DEFAULT_JOG_VELOCITY;
+        }
+        if (uservo_pv_topology &&
+            ((int64_t)velocity > (int64_t)pv_max_velocity_cps ||
+             (int64_t)velocity < -(int64_t)pv_max_velocity_cps)) {
+            send_error_fd(fd, "PV velocity exceeds profile maximum");
+            return;
         }
         set_control_mode(ax, "velocity");
         ax->commanded_mode = axis_mode_code("velocity");
@@ -2185,32 +2271,25 @@ static void update_axis_d_communication_guard(axis_runtime_t *axis)
 
 static int configure_uservo_pv_profile(ec_slave_config_t *slave_config)
 {
-    uint32_t max_velocity_cps;
-    uint32_t accel_cps2;
-    uint32_t decel_cps2;
-
     if (!uservo_pv_topology) {
         return 0;
     }
-    max_velocity_cps = rpm_to_counts_s(USERVO_PV_MAX_SPEED_RPM);
-    accel_cps2 = rpm_s_to_counts_s2(USERVO_PV_ACCEL_RPM_S);
-    decel_cps2 = rpm_s_to_counts_s2(USERVO_PV_DECEL_RPM_S);
-    if (ecrt_slave_config_sdo32(slave_config, 0x607f, 0, max_velocity_cps) < 0 ||
-        ecrt_slave_config_sdo32(slave_config, 0x6083, 0, accel_cps2) < 0 ||
-        ecrt_slave_config_sdo32(slave_config, 0x6084, 0, decel_cps2) < 0) {
+    if (ecrt_slave_config_sdo32(slave_config, 0x607f, 0, pv_max_velocity_cps) < 0 ||
+        ecrt_slave_config_sdo32(slave_config, 0x6083, 0, pv_accel_cps2) < 0 ||
+        ecrt_slave_config_sdo32(slave_config, 0x6084, 0, pv_stop_decel_cps2) < 0) {
         fprintf(stderr, "failed to configure Uservo PV 0x607f/0x6083/0x6084\n");
         return -1;
     }
     fprintf(
         stdout,
         "Uservo PV profile: target=%u rpm, max=%u rpm (%u cnt/s), accel=%u rpm/s (%u cnt/s^2), decel=%u rpm/s (%u cnt/s^2)\n",
-        USERVO_PV_TARGET_SPEED_RPM,
-        USERVO_PV_MAX_SPEED_RPM,
-        max_velocity_cps,
-        USERVO_PV_ACCEL_RPM_S,
-        accel_cps2,
-        USERVO_PV_DECEL_RPM_S,
-        decel_cps2);
+        pv_target_speed_rpm,
+        pv_max_speed_rpm,
+        pv_max_velocity_cps,
+        pv_accel_rpm_s,
+        pv_accel_cps2,
+        pv_decel_rpm_s,
+        pv_decel_cps2);
     return 0;
 }
 
@@ -2424,7 +2503,9 @@ int main(void)
     require_realtime = uservo_axis_d_topology
         ? env_flag_default("MCTIVITY_REQUIRE_REALTIME", 1)
         : 0;
-    counts_per_rev = uservo_axis_d_topology ? USERVO_COUNTS_PER_REV : LEGACY_COUNTS_PER_REV;
+    if (load_axis_profile_parameters() < 0) {
+        return 1;
+    }
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);

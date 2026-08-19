@@ -30,7 +30,7 @@ Default TxPDO `0x1a00`:
 
 ## Configuration
 
-Install `config/axis-d-uservo.env` as `/etc/mctivity/axis.env`. Both the HMI and motion-daemon systemd units load this file.
+Install `config/axis-d-uservo.env` as `/etc/mctivity/axis.env`. The motion daemon reads the selected profile from this file. The HMI reads `/etc/mctivity/axis.env` first and the required `/etc/mctivity/hmi.env` second, so the latter must explicitly contain the same `MCTIVITY_PROFILE`. The HMI unit has no compiled-in `full` fallback that can override the selected profile.
 
 The first deployment must retain:
 
@@ -51,7 +51,16 @@ The implementation retains a narrowly scoped commissioning fault-reset path, but
 
 The position profile intentionally omits velocity mode because the drive's default RxPDO has target position (`0x607a`) but not target velocity (`0x60ff`). Position-based modes use conservative UI defaults: 0.01 revolution relative move, a +/-1 revolution position range, 30 rpm default speed, and 222 rpm maximum speed.
 
-The vendor documentation also provides a native PV profile. `profiles/axis-d-uservo-pv.json` selects RxPDO `0x1601` (`6040`, `6060`, `60ff`, `60fe:01`) and TxPDO `0x1A01` (`6041`, `6061`, `606c`, `60fd`) with CiA 402 mode code `3` (PV). `jog_velocity` writes `0x60ff` in counts/s; the actual velocity is read from `0x606c`. On PV startup the daemon configures the vendor's `0x607F` max profile velocity to 999 rpm, `0x6083` profile acceleration to 2222 rpm/s, and `0x6084` profile deceleration to 2222 rpm/s; the drive units are counts/s and counts/s², so these become 166500 cnt/s and 370333 cnt/s² at 10000 counts/rev. The default target speed is 222 rpm (37000 cnt/s). This is not CSV and does not reuse the CSP target-position increment path. The PV profile is separate so the existing position configuration remains unchanged; it still requires the same no-motion commissioning gate and inhibit.
+The vendor documentation also provides a native PV profile. `profiles/axis-d-uservo-pv.json` selects RxPDO `0x1601` (`6040`, `6060`, `60ff`, `60fe:01`) and TxPDO `0x1A01` (`6041`, `6061`, `606c`, `60fd`) with CiA 402 mode code `3` (PV). `jog_velocity` writes `0x60ff` in counts/s; the actual velocity is read from `0x606c`. This is not CSV and does not reuse the CSP target-position increment path.
+
+`modules/axis/device/uservo/pv/module.json` is the single source for the PV motion and HMI values: counts/revolution, target and maximum speed in rpm, acceleration/deceleration/stop-deceleration in rpm/s, and the HMI velocity step in counts/s. `mctivity_hmi/profile_runtime.py` validates the manifest and derives counts/s or counts/s² by integer conversion:
+
+```text
+counts/s  = rpm   * counts/rev / 60
+counts/s² = rpm/s * counts/rev / 60
+```
+
+At 10000 counts/rev, 222 rpm becomes 37000 cnt/s, 999 rpm becomes 166500 cnt/s, and 2222 rpm/s becomes 370333 cnt/s². The motiond launcher resolves the same selected profile and passes only validated rpm and counts/rev values to the C process; C repeats the conversion and fails closed if a required PV value is absent or invalid. It writes the derived maximum to `0x607F`, acceleration to `0x6083`, and deceleration to `0x6084`. The drive uses `0x6084` for the PV stop ramp as well as profile deceleration, so the verifier requires normal and stop deceleration to be equal. The HMI exposes the derived target, maximum, step, and stop deceleration without independent numeric defaults. The separate CSP, legacy, standard, and full profiles do not receive these PV parameters.
 
 The default TxPDO does not contain `0x603f` (error code). The statusword fault bit is available, but the HMI error-code field remains zero until an error-code PDO or SDO diagnostic path is added.
 
@@ -94,12 +103,12 @@ search), `0x3657` (return after search), `0x3638` (search mode), and `0x3008`
 4. Restart `mctivity-motiond.service`, then `mctivity-hmi.service` and `mctivity-kiosk.service` if needed.
 5. Confirm the EtherCAT slave reaches OP and the domain working counter is complete.
 6. Confirm status reports `enabled=false`, `servo_request=false`, `cw=0`, and changing position feedback is plausible when the shaft is moved manually.
-7. Confirm a non-energizing `set_mode` request returns `commissioning_inhibit`, then read status again and confirm the axis remains disabled with controlword zero.
-8. Confirm status reports `phase_search_confirmation_required=true` and `phase_search_confirmed=false`.
+7. Confirm status reports `phase_search_confirmation_required=true` and `phase_search_confirmed=false`.
+8. Read `0x603F` with `ethercat upload`; do not prove the gate by sending a rejected control request.
 
-Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo`, checks the backend's own topology/scale/inhibit fields, and uses a non-energizing mode-selection request to prove command rejection. It deliberately does not send an enable command.
+Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo` and checks topology, scale, inhibit, disabled/stationary state, OP/WC, realtime counters, and command-routing metadata using GET/status operations only. It sends no mode, acknowledgement, reset, enable, stop, or motion request.
 
-For the native PV profile, run `scripts/mctivity-axis-d-pv-verify.sh`; it pins the expected profile to `axis-d-uservo-pv` and performs the same no-motion checks. For the longer read-only stability window, set `MCTIVITY_EXPECT_PROFILE=axis-d-uservo-pv` before `scripts/mctivity-axis-d-stability.py`. Do not switch profiles or remove inhibit as part of this verification.
+For the native PV profile, run `scripts/mctivity-axis-d-pv-verify.sh`; it pins the expected profile to `axis-d-uservo-pv`, additionally checks Axis D, the velocity feature/capability/route, and the resolved PV values, and performs the same no-motion checks. Read `0x603F` separately with `ethercat upload -p 0 0x603f 0`. For the longer read-only stability window, set `MCTIVITY_EXPECT_PROFILE=axis-d-uservo-pv` before `scripts/mctivity-axis-d-stability.py`. Do not switch profiles or remove inhibit as part of this verification.
 
 Then run `scripts/mctivity-axis-d-stability.py --duration 1800 --max-position-span 0` under normal kiosk load. The stability gate requires no position change and no increase in deadline misses, skipped periods, WC transitions, or incomplete-WC cycles. See [Axis D EtherCAT Realtime Contract](axis-d-ethercat-realtime.md) for the official-source baseline and complete no-motion gate.
 
@@ -109,4 +118,8 @@ This gate does not include motor enable or motion. Removing commissioning inhibi
 
 ## Rollback
 
-Stop the kiosk, HMI, and motion daemon; restore the timestamped `/opt/mctivity` backup and prior `/etc/mctivity/axis.env`/systemd configuration; reload systemd; then start the prior motion daemon and HMI. Verify the expected legacy topology before any enable request.
+`scripts/mctivity-set-profile.sh` and `scripts/mctivity-kiosk-install.sh` create timestamped backups under `/var/backups/mctivity`, including the previous axis/HMI environments, installed units/drop-in, and active-release target. To roll back, keep the axis inhibited, stop kiosk/HMI/motiond, restore the recorded files and prior release symlink, run `systemctl daemon-reload`, and start the prior motion daemon and HMI. Verify profile/topology and the disabled controlword-zero state before any enable request.
+
+## Known restart risk
+
+Axis D has previously raised drive fault `0x8100` (`Communication_DS_301`) during motiond restart/shutdown transitions. The incident is recorded in the MKTLIN01 deployment history and must not be hidden by an automatic reset. A new occurrence blocks acceptance: leave inhibit set, do not reset or enable, preserve logs and `0x603F`, then investigate the PDO communication gap before proceeding.

@@ -41,6 +41,7 @@ KIOSK_DISABLE_OTHER_OUTPUTS="${MCTIVITY_KIOSK_DISABLE_OTHER_OUTPUTS:-1}"
 KIOSK_MAP_TOUCH="${MCTIVITY_KIOSK_MAP_TOUCH:-1}"
 KIOSK_TOUCH_NAME="${MCTIVITY_KIOSK_TOUCH_NAME:-G2Touch}"
 KIOSK_SCALE_FACTOR="${MCTIVITY_KIOSK_SCALE_FACTOR:-1.5}"
+BACKUP_ROOT="${MCTIVITY_BACKUP_ROOT:-/var/backups/mctivity}"
 
 packages=(
   chromium
@@ -66,6 +67,45 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 /etc/mctivity
+
+backup_dir="${BACKUP_ROOT}/kiosk-install-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+install -d -m 0755 "${backup_dir}"
+: >"${backup_dir}/manifest.tsv"
+for path in \
+  /etc/mctivity/axis.env \
+  /etc/mctivity/hmi.env \
+  /etc/mctivity/poweroff.env \
+  /etc/mctivity/kiosk.env \
+  /etc/systemd/system/mctivity-motiond.service \
+  /etc/systemd/system/mctivity-hmi.service \
+  /etc/systemd/system/mctivity-kiosk.service \
+  /etc/systemd/system/mctivity-poweroff.service \
+  /etc/systemd/system/mctivity-motiond.service.d/10-axis-d-realtime.conf; do
+  if [ -e "$path" ]; then
+    saved="$(printf '%s' "$path" | tr '/' '_')"
+    cp -a "$path" "${backup_dir}/${saved}"
+    printf 'present\t%s\t%s\n' "$path" "$saved" >>"${backup_dir}/manifest.tsv"
+  else
+    printf 'absent\t%s\t-\n' "$path" >>"${backup_dir}/manifest.tsv"
+  fi
+done
+readlink -f "$ROOT" >"${backup_dir}/active-release.txt" 2>/dev/null || true
+cat >"${backup_dir}/rollback.sh" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+backup_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+tab="$(printf '\t')"
+while IFS="$tab" read -r state target saved; do
+  if [ "$state" = present ]; then
+    cp -a "${backup_dir}/${saved}" "$target"
+  else
+    rm -f "$target"
+  fi
+done <"${backup_dir}/manifest.tsv"
+systemctl daemon-reload
+echo "configuration restored; repoint the active release and restart only after the inhibited read-only gate is ready"
+EOF
+chmod 0755 "${backup_dir}/rollback.sh"
 
 {
   printf 'MCTIVITY_TOPOLOGY=%s\n' "$TOPOLOGY"
@@ -154,6 +194,7 @@ chmod 0755 \
   "${ROOT}/scripts/mctivity-axis-d-pv-verify.sh" \
   "${ROOT}/scripts/mctivity-axis-d-stability.py" \
   "${ROOT}/scripts/mctivity-kiosk-verify.sh" \
+  "${ROOT}/scripts/mctivity-motiond-launch.py" \
   "${ROOT}/scripts/mctivity-poweroff.sh"
 
 if [ "$ENABLE_POWEROFF" = "1" ]; then
@@ -184,3 +225,5 @@ systemctl daemon-reload
 systemctl enable mctivity-motiond.service mctivity-hmi.service mctivity-kiosk.service
 
 echo "mctivity kiosk install complete"
+echo "backup: ${backup_dir}"
+echo "rollback config: ${backup_dir}/rollback.sh; active release before this installer is recorded in active-release.txt"

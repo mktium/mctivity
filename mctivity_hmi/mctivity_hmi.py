@@ -20,6 +20,7 @@ from feature_registry import (
     get_feature_registry_warnings,
     resolve_enabled_feature_keys,
 )
+from profile_runtime import build_module_runtime
 
 
 def _env_int(name, default):
@@ -301,94 +302,11 @@ _DEFAULT_CAPABILITIES = [
 ]
 
 
-def _load_profile(path):
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    modules = data.get("modules")
-    if not isinstance(modules, list):
-        return None
-    data["modules"] = [str(m) for m in modules if isinstance(m, str) and m.strip()]
-    data["domains"] = [str(d) for d in data.get("domains", []) if isinstance(d, str)]
-    return data
-
-
-def _module_manifest_path(module_id):
-    return Path(MODULES_ROOT) / module_id.replace("-", "/") / "module.json"
-
-
-def _load_manifest(module_id):
-    path = _module_manifest_path(module_id)
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    data.setdefault("id", module_id)
-    data.setdefault("requires", [])
-    data.setdefault("conflicts", [])
-    data.setdefault("capabilities", [])
-    return data
-
-
-def _build_module_runtime():
-    profile = _load_profile(PROFILE_PATH)
-    if not profile:
-        return {
-            "profile": "fallback-safe",
-            "domains": [],
-            "modules": [],
-            "active_features": [],
-            "axis_devices": [],
-            "capabilities": [],
-            "warnings": [f"profile_load_failed:{PROFILE_PATH}"],
-        }
-    capabilities = set()
-    active_features = []
-    warnings = []
-    manifests = {}
-    axis_devices = []
-    for module_id in profile["modules"]:
-        manifest = _load_manifest(module_id)
-        if not manifest:
-            warnings.append(f"module_manifest_missing:{module_id}")
-            continue
-        manifests[module_id] = manifest
-        active_features.append(module_id)
-        if manifest.get("type") == "axis_device" and isinstance(manifest.get("device"), dict):
-            axis_devices.append(dict(manifest["device"]))
-        for cap in manifest.get("capabilities", []):
-            if isinstance(cap, str):
-                capabilities.add(cap)
-    # Dependency/conflict validation as warnings for v1 phase.
-    loaded = set(active_features)
-    for module_id, manifest in manifests.items():
-        for req in manifest.get("requires", []):
-            if isinstance(req, str) and req not in loaded:
-                warnings.append(f"module_missing_requirement:{module_id}:{req}")
-        for conf in manifest.get("conflicts", []):
-            if isinstance(conf, str) and conf in loaded:
-                warnings.append(f"module_conflict:{module_id}:{conf}")
-    if "axis.state.persist" not in capabilities:
-        warnings.append("ui_state_persist_disabled")
-    return {
-        "profile": str(profile.get("profile", PROFILE_NAME)),
-        "domains": profile.get("domains", []),
-        "modules": profile["modules"],
-        "active_features": active_features,
-        "axis_devices": axis_devices,
-        "capabilities": sorted(capabilities),
-        "warnings": warnings,
-    }
-
-
-_MODULE_RUNTIME = _build_module_runtime()
+_MODULE_RUNTIME = build_module_runtime(
+    PROFILE_PATH,
+    MODULES_ROOT,
+    strict=PROFILE_NAME.startswith("axis-d-uservo"),
+)
 _MODULE_RUNTIME["warnings"] = list(_MODULE_RUNTIME.get("warnings", [])) + get_feature_registry_warnings()
 _CAPABILITY_SET = set(_MODULE_RUNTIME.get("capabilities", []))
 _ENABLED_FEATURE_KEYS = resolve_enabled_feature_keys(_MODULE_RUNTIME.get("active_features", []))
@@ -419,6 +337,11 @@ _PRIMARY_AXIS_DEFAULT_VELOCITY_CPS = min(
 _PRIMARY_AXIS_MAX_VELOCITY_CPS = min(
     MAX_JOG_VELOCITY_CPS,
     max(1, int(_PRIMARY_AXIS_DEVICE.get("max_velocity_counts_s", MAX_JOG_VELOCITY_CPS))),
+)
+_PRIMARY_AXIS_VELOCITY_STEP_CPS = max(1, int(_PRIMARY_AXIS_DEVICE.get("velocity_step_counts_s", 1)))
+_PRIMARY_AXIS_STOP_DECEL_RPM_S = max(
+    1,
+    int(_PRIMARY_AXIS_DEVICE.get("stop_decel_rpm_s", _PRIMARY_AXIS_DEVICE.get("default_decel_rpm_s", 300))),
 )
 _PRIMARY_AXIS_MAX_ACCEL_COUNTS_S2 = max(1, (_PRIMARY_AXIS_MAX_ACCEL_RPM_S * _PRIMARY_AXIS_COUNTS_PER_REV) // 60)
 
@@ -1018,7 +941,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         <div id="panel-velocity" class="mode-panel">
           <div class="slider-card">
             <div class="slider-head"><span class="slider-title">速度点动</span><span id="velText" class="slider-number">--</span></div>
-            <input id="velCps" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" oninput="updateSliders()">
+            <input id="velCps" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_VELOCITY_STEP_CPS__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" oninput="updateSliders()">
             <div class="control-row three">
               <button class="blue" onclick="jogVelocity(-Number(velCps.value))">反转</button>
               <button class="stop" onclick="stopMotion()">停止</button>
@@ -1097,7 +1020,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         </div>
         <div class="param-card">
           <h3>速度/转矩</h3>
-          <label>默认速度 cnt/s<input id="cfgVel" type="number" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" onchange="applyConfig()"></label>
+          <label>默认速度 cnt/s<input id="cfgVel" type="number" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_VELOCITY_STEP_CPS__" onchange="applyConfig()"></label>
           <label>转矩上限 %<input id="cfgTorqueLimit" type="number" value="100" min="1" max="100" step="1" onchange="applyConfig()"></label>
         </div>
         <div class="param-card">
@@ -1487,7 +1410,7 @@ const motionStateByDevice = {
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
 };
 const deviceProfiles = {
-  mctivity: {mode:'__PRIMARY_AXIS_DEFAULT_MODE__', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velCps:__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
+  mctivity: {mode:'__PRIMARY_AXIS_DEFAULT_MODE__', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, stopDecelRpmS:__PRIMARY_AXIS_STOP_DECEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velCps:__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
   fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
 let uiStateSaveTimer = 0;
@@ -2215,6 +2138,9 @@ function saveUiState(device = activeDevice) {
 }
 function loadUiState(device = activeDevice) {
   const profile = currentProfile(device);
+  if (device === 'mctivity') {
+    profile.velCps = Math.max(1, Math.min(__PRIMARY_AXIS_MAX_VELOCITY_CPS__, Number(profile.velCps) || __PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__));
+  }
   profile.transmission = normalizedTransmission(profile);
   profile.incrementalCurve = storeIncrementalCurveState(device, profile.incrementalCurve, false);
   absPos.value = profile.absPos;
@@ -3200,7 +3126,7 @@ function stopMotion() {
         return false;
       });
   }
-  return api({cmd:'stop', deceleration_rpm_s:Number(absAccel.value || 0)})
+  return api({cmd:'stop', deceleration_rpm_s:Number(currentProfile().stopDecelRpmS || __PRIMARY_AXIS_STOP_DECEL_RPM_S__)})
     .then(data => {
       const moving = Boolean(data && data.status && data.status.moving);
       if (!moving) {
@@ -3254,6 +3180,16 @@ async function startSinglePointMotion() {
     }
     motionState.gearEngaged = false;
     setGearPanelLocked(false);
+    if (modeSelect && modeSelect.value === 'velocity') {
+      syncModePanels('velocity');
+      const modeResult = await api({cmd:'set_mode', mode:'velocity'});
+      if (!modeResult.ok) throw new Error(modeResult.error || 'set_mode velocity failed');
+      if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
+      const velocity = __PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__;
+      const startResult = await jogVelocity(velocity);
+      if (!startResult.ok) throw new Error(startResult.error || 'jog_velocity failed');
+      return startResult;
+    }
     if (modeSelect && modeSelect.value === 'incremental') {
       syncIncrementalEditor(false);
       const curveProfile = currentIncrementalCommandProfile();
@@ -3323,7 +3259,7 @@ function tryFullscreen() {
   const el = document.documentElement;
   if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
 }
-syncModePanels('position');
+syncModePanels('__PRIMARY_AXIS_DEFAULT_MODE__');
 lockViewport();
 document.addEventListener('pointerdown', tryFullscreen, {once:true});
 const langToggleBtn = document.getElementById('langToggleBtn');
@@ -3434,6 +3370,8 @@ HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__", str(_PRIMARY_AXIS_DE
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_ACCEL_RPM_S__", str(_PRIMARY_AXIS_MAX_ACCEL_RPM_S))
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__", str(_PRIMARY_AXIS_DEFAULT_VELOCITY_CPS))
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_VELOCITY_CPS__", str(_PRIMARY_AXIS_MAX_VELOCITY_CPS))
+HTML = HTML.replace("__PRIMARY_AXIS_VELOCITY_STEP_CPS__", str(_PRIMARY_AXIS_VELOCITY_STEP_CPS))
+HTML = HTML.replace("__PRIMARY_AXIS_STOP_DECEL_RPM_S__", str(_PRIMARY_AXIS_STOP_DECEL_RPM_S))
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_MODE__", _PRIMARY_AXIS_DEFAULT_MODE)
 
 
@@ -3542,7 +3480,8 @@ def load_ui_state():
             return _default_ui_state()
         if not isinstance(data, dict):
             return _default_ui_state()
-        if _MODULE_RUNTIME.get("profile") == "axis-d-uservo" and data.get("profile") != "axis-d-uservo":
+        active_profile = str(_MODULE_RUNTIME.get("profile", ""))
+        if active_profile.startswith("axis-d-uservo") and data.get("profile") != active_profile:
             return _default_ui_state()
         devices = data.get("devices")
         if not isinstance(devices, dict):

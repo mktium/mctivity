@@ -27,9 +27,11 @@ RxPDO 0x1601: 6040:00/16, 6060:00/8, 60FF:00/32, 60FE:01/32
 TxPDO 0x1A01: 6041:00/16, 6061:00/8, 606C:00/32, 60FD:00/32
 ```
 
-PV is CiA 402 mode code `3`; target velocity is `0x60FF`, actual velocity is `0x606C`, and profile acceleration/deceleration are the drive objects `0x6083`/`0x6084`. The Axis D PV startup writes 999 rpm (166500 cnt/s) to `0x607F`, 2222 rpm/s (370333 cnt/s²) to both `0x6083` and `0x6084`, and uses 222 rpm (37000 cnt/s) as the default target velocity. The implementation does not claim CSV (`9`) or infer a velocity map from the old CSP profile.
+PV is CiA 402 mode code `3`; target velocity is `0x60FF`, actual velocity is `0x606C`, and profile acceleration/deceleration are the drive objects `0x6083`/`0x6084`. The canonical rpm, rpm/s, HMI step, and counts/revolution values live only in `modules/axis/device/uservo/pv/module.json`. The shared profile resolver derives counts/s and counts/s² with integer division, and the motiond launcher validates profile/topology before starting C. For the current manifest, startup writes 166500 cnt/s to `0x607F` and 370333 cnt/s² to both `0x6083` and `0x6084`, while the default target is 37000 cnt/s. Because `0x6084` is also the PV stop ramp, normal and stop deceleration must match. The implementation does not claim CSV (`9`) or infer a velocity map from the old CSP profile.
 
 Official fault `0x8100` is `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises a communication alarm. The default is 100 ms and the timeout is configured through object `0x36B5`. It is distinct from EtherCAT AL code `0x001B` (Sync Manager watchdog).
+
+MKTLIN01 has already produced `0x8100` during restart/shutdown switching when the PDO exchange gap exceeded the drive tolerance. This is a known unresolved acceptance risk, not a cosmetic alarm. Deployment must never auto-reset it: keep inhibit active, retain the fault and timing evidence, and stop acceptance until the transition is understood.
 
 ## Host realtime invariants
 
@@ -50,7 +52,7 @@ After 1000 consecutive OP/WC-complete cycles, the timing guard arms. Any later m
 
 Every test in this section is read-only at the drive command layer. Do not send enable, drive fault reset, target position, target velocity, or target torque.
 
-1. Run `scripts/mctivity-axis-d-verify.sh` after the timing guard has armed.
+1. Run `scripts/mctivity-axis-d-pv-verify.sh` after the timing guard has armed. It uses HMI GET/status paths only and sends no control command.
 2. Record read-only SDO `0x603F`, AL state, WC, link/lost-frame counters, scheduler policy, priority, and `VmLck`.
 3. Run `scripts/mctivity-axis-d-stability.py --duration 1800 --max-position-span 0` with kiosk and HMI at normal load.
 4. Compare kernel EtherCAT logs across the same interval and require no new `TIMED OUT`, `skipped`, `unmatched`, or WC-change event.

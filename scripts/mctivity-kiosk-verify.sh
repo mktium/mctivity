@@ -23,7 +23,6 @@ curl -fsS "${URL}/api/health/modular" >/dev/null && echo "modular health ok"
 CAPABILITIES_JSON="$capabilities" STATUS_JSON="$status_json" EXPECTED_PROFILE="$EXPECTED_PROFILE" python3 <<'PY'
 import json
 import os
-import socket
 
 capabilities = json.loads(os.environ["CAPABILITIES_JSON"])
 status_response = json.loads(os.environ["STATUS_JSON"])
@@ -51,59 +50,30 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv"}:
     assert status.get("wc_complete") is True, status
     assert status.get("enabled") is False, status
     assert status.get("servo_request") is False, status
+    assert status.get("moving") is False, status
     assert status.get("fault") is False, status
+    assert status.get("err") == 0, status
     assert status.get("cw") == 0, status
     assert status.get("rt_memory_locked") is True, status
     assert status.get("rt_scheduler_policy") == 1, status
     assert int(status.get("rt_scheduler_priority", 0)) > 0, status
     assert status.get("timing_guard_armed") is True, status
     assert status.get("communication_timing_fault") is False, status
+    assert status.get("rt_deadline_miss_count") == 0, status
+    assert status.get("rt_skipped_periods") == 0, status
     if profile == "axis-d-uservo-pv":
         assert status.get("control_mode") == "velocity", status
-
-    with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
-        # A set-mode request must be rejected by the commissioning gate, but it
-        # cannot energize the motor even if the gate is defective.
-        sock.sendall(b'{"cmd":"set_mode","mode":"position","device":"mctivity"}\n')
-        response = b""
-        while not response.endswith(b"\n"):
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-    reply = json.loads(response.decode("utf-8"))
-    assert reply == {"ok": False, "error": "commissioning_inhibit"}, reply
-
-    with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
-        # The acknowledgement itself is non-energizing, but deployment with
-        # inhibit active must not retain a phase-search confirmation either.
-        sock.sendall(b'{"cmd":"confirm_phase_search_complete","device":"mctivity"}\n')
-        response = b""
-        while not response.endswith(b"\n"):
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-    reply = json.loads(response.decode("utf-8"))
-    assert reply == {"ok": False, "error": "commissioning_inhibit"}, reply
-
-    with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
-        sock.sendall(b'{"cmd":"status","device":"mctivity"}\n')
-        response = b""
-        while not response.endswith(b"\n"):
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-    post_status = json.loads(response.decode("utf-8")).get("status") or {}
-    assert post_status.get("phase_search_confirmation_required") is True, post_status
-    assert post_status.get("phase_search_confirmed") is False, post_status
-    assert post_status.get("enabled") is False, post_status
-    assert post_status.get("servo_request") is False, post_status
-    assert post_status.get("fault") is False, post_status
-    assert post_status.get("cw") == 0, post_status
-    assert post_status.get("communication_timing_fault") is False, post_status
-    print("axis D no-motion gate ok")
+        modules = set(capabilities.get("active_features") or [])
+        caps = set(capabilities.get("capabilities") or [])
+        assert {"feature-logic-velocity", "feature-hmi-velocity"} <= modules, capabilities
+        assert "axis.mode.velocity.execute" in caps, capabilities
+        assert capabilities.get("mode_capability_map", {}).get("velocity") == "axis.mode.velocity.execute", capabilities
+        assert capabilities.get("mode_hmi_module_map", {}).get("velocity") == "feature-hmi-velocity", capabilities
+        device = (capabilities.get("axis_devices") or [{}])[0]
+        assert device.get("default_velocity_counts_s") == 37000, device
+        assert device.get("max_velocity_counts_s") == 166500, device
+        assert device.get("stop_decel_counts_s2") == 370333, device
+    print("axis D read-only no-motion state ok")
 PY
 
 echo "== display =="

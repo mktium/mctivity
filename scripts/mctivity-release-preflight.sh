@@ -4,6 +4,13 @@ set -euo pipefail
 python3 -m py_compile mctivity_hmi/*.py
 python3 -m py_compile scripts/mctivity-axis-d-stability.py
 python3 scripts/mctivity-axis-profile-verify.py
+python3 mctivity_hmi/test_profile_runtime.py
+python3 mctivity_hmi/test_velocity_profile.py
+python3 scripts/test_motiond_launch.py
+python3 scripts/mctivity-motiond-launch.py --profile axis-d-uservo-pv --dump >/dev/null
+for profile in minimal standard full axis-d-uservo; do
+  python3 scripts/mctivity-motiond-launch.py --profile "$profile" --dump >/dev/null
+done
 make -C mctivity_pdo_monitor test
 
 python3 - <<'PY'
@@ -20,6 +27,10 @@ PY
 for script in scripts/*.sh; do
   bash -n "$script"
 done
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  systemd-analyze verify systemd/*.service
+fi
 
 if command -v node >/dev/null 2>&1; then
   node --check mctivity_hmi/motion_curve_editor_block.js
