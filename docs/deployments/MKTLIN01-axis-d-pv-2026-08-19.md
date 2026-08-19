@@ -58,6 +58,27 @@ Because the drive fault bit is currently set, this is a communication/profile
 deployment only, not a motion-readiness approval. Do not issue a fault reset or
 remove inhibit without a separate operator decision.
 
+## PV profile staged (2026-08-19 15:48 CST)
+
+At the operator's request, `/etc/mctivity/axis.env` was switched to:
+
+```text
+MCTIVITY_TOPOLOGY=axis-d-uservo-pv
+MCTIVITY_PROFILE=axis-d-uservo-pv
+MCTIVITY_COMMISSIONING_INHIBIT=1
+MCTIVITY_REQUIRE_REALTIME=1
+```
+
+The previous file was backed up as
+`/etc/mctivity/axis.env.pre-pv-20260819T154836`. Only
+`mctivity-motiond.service` was restarted; EtherCAT was not restarted. The
+post-switch read-only status was OP/WC `3/3`, `control_mode=velocity`,
+`enabled=false`, `servo_request=false`, `moving=false`, `cw=0`,
+`velocity_actual_cps=0`, `fault=false`, and `communication_timing_fault=false`.
+No velocity or enable command was sent. The PV TxPDO has no position actual
+entry, so the backend's position field is intentionally not a motion verdict
+in this profile.
+
 ## Next gate
 
 After the existing fault is diagnosed/cleared under the approved no-motion
