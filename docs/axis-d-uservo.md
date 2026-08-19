@@ -49,7 +49,9 @@ With inhibit active:
 
 The implementation retains a narrowly scoped commissioning fault-reset path, but it is not part of ordinary deployment or no-motion acceptance. Do not use it merely to make a failed timing test pass. The corrected shutdown path reduces its contribution to a planned restart from 300 stale-time cycles to 20 fresh-time cycles. The complete stop/re-exec/master-activation gap must still be measured against the drive's default 100 ms PDO-loss timeout.
 
-The first profile intentionally omits velocity mode because the drive's default RxPDO has target position (`0x607a`) but not target velocity (`0x60ff`). Position-based modes use conservative UI defaults: 0.01 revolution relative move, a +/-1 revolution position range, 30 rpm default speed, and 222 rpm maximum speed. These values are preparation for a later onsite motion gate; inhibit remains authoritative until that separate gate is approved.
+The position profile intentionally omits velocity mode because the drive's default RxPDO has target position (`0x607a`) but not target velocity (`0x60ff`). Position-based modes use conservative UI defaults: 0.01 revolution relative move, a +/-1 revolution position range, 30 rpm default speed, and 222 rpm maximum speed.
+
+The vendor documentation also provides a native PV profile. `profiles/axis-d-uservo-pv.json` selects RxPDO `0x1601` (`6040`, `6060`, `60ff`, `60fe:01`) and TxPDO `0x1A01` (`6041`, `6061`, `606c`, `60fd`) with CiA 402 mode code `3` (PV). `jog_velocity` writes `0x60ff` in counts/s; the actual velocity is read from `0x606c`. This is not CSV and does not reuse the CSP target-position increment path. The PV profile is separate so the existing position configuration remains unchanged; it still requires the same no-motion commissioning gate and inhibit.
 
 The default TxPDO does not contain `0x603f` (error code). The statusword fault bit is available, but the HMI error-code field remains zero until an error-code PDO or SDO diagnostic path is added.
 
@@ -96,6 +98,8 @@ search), `0x3657` (return after search), `0x3638` (search mode), and `0x3008`
 8. Confirm status reports `phase_search_confirmation_required=true` and `phase_search_confirmed=false`.
 
 Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo`, checks the backend's own topology/scale/inhibit fields, and uses a non-energizing mode-selection request to prove command rejection. It deliberately does not send an enable command.
+
+For the native PV profile, run `scripts/mctivity-axis-d-pv-verify.sh`; it pins the expected profile to `axis-d-uservo-pv` and performs the same no-motion checks. For the longer read-only stability window, set `MCTIVITY_EXPECT_PROFILE=axis-d-uservo-pv` before `scripts/mctivity-axis-d-stability.py`. Do not switch profiles or remove inhibit as part of this verification.
 
 Then run `scripts/mctivity-axis-d-stability.py --duration 1800 --max-position-span 0` under normal kiosk load. The stability gate requires no position change and no increase in deadline misses, skipped periods, WC transitions, or incomplete-WC cycles. See [Axis D EtherCAT Realtime Contract](axis-d-ethercat-realtime.md) for the official-source baseline and complete no-motion gate.
 

@@ -8,20 +8,20 @@ AXIS_ENV_DIR="/etc/mctivity"
 AXIS_ENV_FILE="${AXIS_ENV_DIR}/axis.env"
 
 case "${PROFILE_NAME}" in
-  minimal|standard|full|axis-d-uservo)
+  minimal|standard|full|axis-d-uservo|axis-d-uservo-pv)
     ;;
   *)
     echo "invalid profile: ${PROFILE_NAME}" >&2
-    echo "usage: $0 {minimal|standard|full|axis-d-uservo}" >&2
+    echo "usage: $0 {minimal|standard|full|axis-d-uservo|axis-d-uservo-pv}" >&2
     exit 2
     ;;
 esac
 
 mkdir -p "${AXIS_ENV_DIR}"
-if [ "${PROFILE_NAME}" = "axis-d-uservo" ]; then
+if [ "${PROFILE_NAME}" = "axis-d-uservo" ] || [ "${PROFILE_NAME}" = "axis-d-uservo-pv" ]; then
   cat > "${AXIS_ENV_FILE}" <<EOF
-MCTIVITY_TOPOLOGY=axis-d-uservo
-MCTIVITY_PROFILE=axis-d-uservo
+MCTIVITY_TOPOLOGY=${PROFILE_NAME}
+MCTIVITY_PROFILE=${PROFILE_NAME}
 MCTIVITY_COMMISSIONING_INHIBIT=1
 MCTIVITY_REQUIRE_REALTIME=1
 EOF

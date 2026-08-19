@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import socket
 import time
 
@@ -21,8 +22,9 @@ def read_status():
 
 
 def assert_safe(status):
+    expected_topology = os.environ.get("MCTIVITY_EXPECT_PROFILE", "axis-d-uservo").strip() or "axis-d-uservo"
     expected = {
-        "topology": "axis-d-uservo",
+        "topology": expected_topology,
         "counts_per_rev": 10000,
         "commissioning_inhibit": True,
         "phase_search_confirmation_required": True,
@@ -42,6 +44,8 @@ def assert_safe(status):
     for key, value in expected.items():
         if status.get(key) != value:
             raise RuntimeError(f"unsafe or unstable {key}: expected {value!r}, got {status.get(key)!r}")
+    if expected_topology == "axis-d-uservo-pv" and status.get("control_mode") != "velocity":
+        raise RuntimeError(f"unsafe or unstable control_mode: expected 'velocity', got {status.get('control_mode')!r}")
     if int(status.get("rt_scheduler_priority", 0)) <= 0:
         raise RuntimeError(f"invalid RT priority: {status.get('rt_scheduler_priority')!r}")
 

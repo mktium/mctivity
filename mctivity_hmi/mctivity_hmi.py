@@ -406,6 +406,7 @@ _PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS = max(
 _PRIMARY_AXIS_POSITION_STEP_COUNTS = max(1, int(_PRIMARY_AXIS_DEVICE.get("position_step_counts", 1024)))
 _PRIMARY_AXIS_DEFAULT_SPEED_RPM = max(1, int(_PRIMARY_AXIS_DEVICE.get("default_speed_rpm", 120)))
 _PRIMARY_AXIS_MAX_SPEED_RPM = min(MAX_SPEED_RPM, max(1, int(_PRIMARY_AXIS_DEVICE.get("max_speed_rpm", MAX_SPEED_RPM))))
+_PRIMARY_AXIS_DEFAULT_MODE = str(_PRIMARY_AXIS_DEVICE.get("default_control_mode", "position")).strip().lower() or "position"
 _PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S = max(1, int(_PRIMARY_AXIS_DEVICE.get("default_accel_rpm_s", 300)))
 _PRIMARY_AXIS_MAX_ACCEL_RPM_S = min(
     MAX_ACCEL_RPM_S,
@@ -1486,7 +1487,7 @@ const motionStateByDevice = {
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
 };
 const deviceProfiles = {
-  mctivity: {mode:'position', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velCps:__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
+  mctivity: {mode:'__PRIMARY_AXIS_DEFAULT_MODE__', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velCps:__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
   fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
 let uiStateSaveTimer = 0;
@@ -1755,6 +1756,10 @@ function supportsHmiModule(moduleId) {
 function modeIsAssembled(mode) {
   return supportsCapability(modeRequiredCapability(mode)) && supportsHmiModule(modeRequiredHmiModule(mode));
 }
+function firstAssembledMode() {
+  const option = Array.from(modeSelect.options || []).find(opt => modeIsAssembled(opt.value));
+  return option ? option.value : 'position';
+}
 function applyCapabilityModeAvailability(device = activeDevice) {
   let changed = false;
   for (const opt of Array.from(modeSelect.options || [])) {
@@ -1772,9 +1777,10 @@ function applyCapabilityModeAvailability(device = activeDevice) {
   }
   const requested = modeSelect.value || 'position';
   if (!modeIsAssembled(requested)) {
-    modeSelect.value = 'position';
-    currentProfile(device).mode = 'position';
-    syncModePanels('position', true);
+    const fallback = firstAssembledMode();
+    modeSelect.value = fallback;
+    currentProfile(device).mode = fallback;
+    syncModePanels(fallback, true);
     changed = true;
   }
   return changed;
@@ -2987,7 +2993,7 @@ function render(s) {
   setText('wc', s.wc + (s.wc_complete ? ' complete' : ''));
   setText('mode', s.mode);
   setText('controlModeView', modeLabel(s.control_mode) || s.control_mode || '--');
-  setText('velocityView', fmt(s.jog_velocity_cps || 0));
+  setText('velocityView', fmt(s.velocity_actual_cps || s.jog_velocity_cps || 0));
   setText('torqueView', String(s.torque_cmd || 0) + '%');
   const modeUi = currentModeUi(device);
   if (!modeUi.interacting) {
@@ -3428,6 +3434,7 @@ HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__", str(_PRIMARY_AXIS_DE
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_ACCEL_RPM_S__", str(_PRIMARY_AXIS_MAX_ACCEL_RPM_S))
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__", str(_PRIMARY_AXIS_DEFAULT_VELOCITY_CPS))
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_VELOCITY_CPS__", str(_PRIMARY_AXIS_MAX_VELOCITY_CPS))
+HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_MODE__", _PRIMARY_AXIS_DEFAULT_MODE)
 
 
 def motiond_command(payload, port=MOTIOND_PORT):

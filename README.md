@@ -25,7 +25,7 @@ Core updates:
 - axis D uses the drive-reported `10000` counts/rev and its default 4-entry Rx/Tx PDO maps
 - commissioning inhibit is enabled by default and enforced inside `motiond`
 - the initial axis D UI uses a +/-1 revolution envelope, 0.01 revolution default move, 30 rpm default speed, and 222 rpm cap
-- velocity mode is excluded until a compatible target-velocity PDO path is configured and tested
+- the position profile keeps CSP-only operation; the separate `axis-d-uservo-pv` profile uses the vendor's native PV target-velocity PDO
 - the Axis D 1 ms loop skips expired deadlines instead of sending catch-up bursts and exposes realtime/WC counters
 - Axis D refuses cyclic startup unless memory locking and `SCHED_FIFO` are actually active
 - communication timing failures latch a zero-controlword hold instead of automatically re-enabling after WC recovery
@@ -97,6 +97,8 @@ The axis D commissioning inhibit is enforced in `motiond`, so it also blocks low
 `mctivity_motiond` in v1.2.0 is built for the current two-slave EtherCAT topology: MCTIVITY axis at slave position 0 and FV3 axis at slave position 1. `minimal` and `standard` profiles hide or reject FV3 at the HMI/API layer, but they do not change the EtherCAT topology expected by `motiond`.
 
 `v1.4.1` keeps that legacy topology as the default. Setting `MCTIVITY_TOPOLOGY=axis-d-uservo` selects the single-slave Uservo axis D path instead; the legacy A/B slave configuration is not requested in that mode.
+
+`axis-d-uservo-pv` selects the same Uservo slave with the official RxPDO `0x1601`/TxPDO `0x1A01` map and CiA 402 PV mode (`0x6060=3`). It is a separate velocity-control profile; commissioning inhibit remains enabled by default and no run is authorized by installation alone.
 
 Motion safety limits can be tightened or relaxed with environment variables:
 

@@ -61,12 +61,15 @@ def main():
             if not device["rxpdo"] or not device["txpdo"]:
                 raise SystemExit(f"axis device PDO list empty in {profile_path.name}")
             checked += 1
-        if profile.get("profile") == "axis-d-uservo" and len(axis_devices) != 1:
-            raise SystemExit("axis-d-uservo profile must contain exactly one axis device")
-        if profile.get("profile") == "axis-d-uservo":
+        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv"} and len(axis_devices) != 1:
+            raise SystemExit(f"{profile.get('profile')} profile must contain exactly one axis device")
+        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv"}:
             modules = set(profile.get("modules", []))
-            if {"feature-logic-velocity", "feature-hmi-velocity"} & modules:
+            is_pv = profile.get("profile") == "axis-d-uservo-pv"
+            if not is_pv and {"feature-logic-velocity", "feature-hmi-velocity"} & modules:
                 raise SystemExit("axis-d-uservo must not expose velocity mode without a 0x60ff target-velocity PDO")
+            if is_pv and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
+                raise SystemExit("axis-d-uservo-pv must expose velocity logic and HMI modules")
             device = axis_devices[0]
             if not (0 < float(device["default_relative_revolutions"]) <= float(device["max_position_revolutions"])):
                 raise SystemExit("axis-d-uservo relative default exceeds its position envelope")
@@ -90,10 +93,19 @@ def main():
                         f"axis-d-uservo official identity/timing mismatch for {key}: "
                         f"expected {expected!r}, got {device.get(key)!r}"
                     )
-            expected_rxpdo = ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"]
-            expected_txpdo = ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"]
+            expected_rxpdo = (["0x6040:00/16", "0x6060:00/8", "0x60ff:00/32", "0x60fe:01/32"]
+                              if is_pv else
+                              ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"])
+            expected_txpdo = (["0x6041:00/16", "0x6061:00/8", "0x606c:00/32", "0x60fd:00/32"]
+                              if is_pv else
+                              ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"])
             if device.get("rxpdo") != expected_rxpdo or device.get("txpdo") != expected_txpdo:
-                raise SystemExit("axis-d-uservo PDOs do not match XActant-E-XML-6120R Uservo defaults")
+                raise SystemExit(f"{profile.get('profile')} PDOs do not match XActant-E-XML-6120R Uservo defaults")
+            if is_pv:
+                if device.get("ethercat_mode") != "pv" or device.get("ethercat_mode_code") != 3:
+                    raise SystemExit("axis-d-uservo-pv must select CiA 402 PV mode code 3")
+                if device.get("rxpdo_profile") != "0x1601" or device.get("txpdo_profile") != "0x1A01":
+                    raise SystemExit("axis-d-uservo-pv must select RxPDO 0x1601 and TxPDO 0x1A01")
     if checked < 1:
         raise SystemExit("no axis_device module found")
     print(f"axis profile ok: {checked} device profile(s)")

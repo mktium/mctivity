@@ -33,15 +33,16 @@ profile = capabilities.get("profile")
 if expected_profile and profile != expected_profile:
     raise SystemExit(f"profile mismatch: expected {expected_profile}, got {profile}")
 
-if profile == "axis-d-uservo":
+if profile in {"axis-d-uservo", "axis-d-uservo-pv"}:
+    expected_topology = profile
     assert capabilities.get("primary_axis_label") == "D", capabilities
     assert capabilities.get("counts_per_rev") == 10000, capabilities
     assert capabilities.get("commissioning_inhibit") is True, capabilities
     axis_devices = capabilities.get("axis_devices") or []
-    assert axis_devices and axis_devices[0].get("topology") == "axis-d-uservo", capabilities
+    assert axis_devices and axis_devices[0].get("topology") == expected_topology, capabilities
 
     status = status_response.get("status") or {}
-    assert status.get("topology") == "axis-d-uservo", status
+    assert status.get("topology") == expected_topology, status
     assert status.get("counts_per_rev") == 10000, status
     assert status.get("commissioning_inhibit") is True, status
     assert status.get("phase_search_confirmation_required") is True, status
@@ -57,6 +58,8 @@ if profile == "axis-d-uservo":
     assert int(status.get("rt_scheduler_priority", 0)) > 0, status
     assert status.get("timing_guard_armed") is True, status
     assert status.get("communication_timing_fault") is False, status
+    if profile == "axis-d-uservo-pv":
+        assert status.get("control_mode") == "velocity", status
 
     with socket.create_connection(("127.0.0.1", 10001), timeout=1.0) as sock:
         # A set-mode request must be rejected by the commissioning gate, but it

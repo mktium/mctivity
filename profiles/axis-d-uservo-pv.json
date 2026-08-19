@@ -1,0 +1,16 @@
+{
+  "profile": "axis-d-uservo-pv",
+  "domains": [
+    "axis_control_domain",
+    "device_application_domain"
+  ],
+  "modules": [
+    "axis-feedback-panel",
+    "axis-control-panel",
+    "axis-device-uservo-pv",
+    "feature-logic-velocity",
+    "feature-hmi-velocity",
+    "ui-state-persist",
+    "ui-touchscreen"
+  ]
+}

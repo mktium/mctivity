@@ -20,6 +20,15 @@ TxPDO 0x1A00: 6041:00/16, 6061:00/8, 6064:00/32, 60FD:00/32
 
 SM2 output watchdog behavior remains enabled as declared by the ESI. The implementation must not disable the watchdog to hide host timing defects. The DS1 product-level mode list is PP, PV, PT, HM, and CSP; this profile uses CSP (`0x6060=8`) only after the separate motion gate. It does not claim CSV or CST support from the generic CiA 402 mode list.
 
+The separate native PV profile uses the same DC period and watchdog contract with the ESI's alternative maps:
+
+```text
+RxPDO 0x1601: 6040:00/16, 6060:00/8, 60FF:00/32, 60FE:01/32
+TxPDO 0x1A01: 6041:00/16, 6061:00/8, 606C:00/32, 60FD:00/32
+```
+
+PV is CiA 402 mode code `3`; target velocity is `0x60FF`, actual velocity is `0x606C`, and profile acceleration/deceleration are the drive objects `0x6083`/`0x6084`. The implementation does not claim CSV (`9`) or infer a velocity map from the old CSP profile.
+
 Official fault `0x8100` is `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises a communication alarm. The default is 100 ms and the timeout is configured through object `0x36B5`. It is distinct from EtherCAT AL code `0x001B` (Sync Manager watchdog).
 
 ## Host realtime invariants

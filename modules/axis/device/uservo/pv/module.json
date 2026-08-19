@@ -1,0 +1,54 @@
+{
+  "id": "axis-device-uservo-pv",
+  "type": "axis_device",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [
+    "axis-control-panel"
+  ],
+  "conflicts": [
+    "feature-logic-dual-axis-fv3"
+  ],
+  "capabilities": [
+    "axis.device.uservo.access"
+  ],
+  "apiVersion": "v1",
+  "device": {
+    "logical_axis": "D",
+    "transport_device": "mctivity",
+    "topology": "axis-d-uservo-pv",
+    "vendor_id": "0x00666999",
+    "product_code": "0x00004806",
+    "revision": "0x00000001",
+    "physical_position": 0,
+    "cycle_ns": 1000000,
+    "counts_per_rev": 10000,
+    "max_position_revolutions": 1,
+    "default_relative_revolutions": 0.01,
+    "position_step_counts": 10,
+    "default_speed_rpm": 30,
+    "max_speed_rpm": 222,
+    "default_velocity_counts_s": 5000,
+    "max_velocity_counts_s": 37000,
+    "default_accel_rpm_s": 100,
+    "max_accel_rpm_s": 500,
+    "default_control_mode": "velocity",
+    "ethercat_mode": "pv",
+    "ethercat_mode_code": 3,
+    "rxpdo_profile": "0x1601",
+    "txpdo_profile": "0x1A01",
+    "commissioning_inhibit_default": true,
+    "rxpdo": [
+      "0x6040:00/16",
+      "0x6060:00/8",
+      "0x60ff:00/32",
+      "0x60fe:01/32"
+    ],
+    "txpdo": [
+      "0x6041:00/16",
+      "0x6061:00/8",
+      "0x606c:00/32",
+      "0x60fd:00/32"
+    ]
+  }
+}
