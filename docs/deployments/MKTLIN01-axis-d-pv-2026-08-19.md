@@ -124,6 +124,24 @@ realtime deadline miss/skip `0/0`. No mode, target, enable, or motion command
 was sent. This clears the present latch but is not approval to remove inhibit
 or start a velocity test.
 
+## EtherCAT 222 rpm continuous run
+
+After the operator authorized motion, the test sequence registered the
+already-completed MotorHost phase search, selected PV (`0x6060=3`), waited for
+the 300-cycle enable settle window, and wrote `0x60FF=37000 cnt/s` (222 rpm).
+The first three-second run was stopped normally; actual velocity was
+`36700..37400 cnt/s`, with no fault, no WC loss, and zero realtime deadline
+miss/skip counters.
+
+The operator then requested continuous operation. A second start left the
+servo running at the same target. The first five-second observation reported
+`36650..37350 cnt/s` (approximately 220..224 rpm), `fault=false`, OP/WC `1/3`,
+`cw=0x000F`, `enabled=true`, and realtime deadline miss/skip `0/0`. No stop
+command has been sent after this second start; the motor remains under the
+EtherCAT PV controller until the operator requests a stop. Do not restore
+commissioning inhibit or restart `mctivity-motiond.service` while this run is
+active.
+
 ## Next gate
 
 After the existing fault is diagnosed/cleared under the approved no-motion
