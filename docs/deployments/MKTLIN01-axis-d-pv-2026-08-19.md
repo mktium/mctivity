@@ -142,6 +142,25 @@ EtherCAT PV controller until the operator requests a stop. Do not restore
 commissioning inhibit or restart `mctivity-motiond.service` while this run is
 active.
 
+## Continuous run stop and HMI inspection
+
+The operator then requested a stop. The daemon issued a PV stop with
+`2222 rpm/s` deceleration, observed velocity `0 cnt/s`, and disabled the
+servo. The target was returned to `commissioning_inhibit=1`; the final
+read-only state was `fault=false`, `cw=0`, `enabled=false`, `moving=false`,
+OP/WC `1/3`, and realtime deadline miss/skip `0/0`.
+
+The Axis D PV profile and HMI source do support velocity control: the profile
+loads `feature-hmi-velocity`, maps the primary logical axis to `D`, and the UI
+has the velocity-mode enable, forward/reverse jog, and stop commands. However,
+on this target `mctivity-hmi.service` is currently inactive and port `2015` is
+not listening. Its systemd unit defaults to `MCTIVITY_PROFILE=full`, while the
+separate `/etc/mctivity/hmi.env` file says `axis-d-uservo`; neither is the
+active `axis-d-uservo-pv` HMI profile. Therefore the current App cannot yet be
+treated as a ready D-axis PV start/stop console. Launching it for D-axis PV
+control requires an explicit HMI profile deployment and a no-motion check
+first.
+
 ## Next gate
 
 After the existing fault is diagnosed/cleared under the approved no-motion
