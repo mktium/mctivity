@@ -97,6 +97,23 @@ reset faults, change modes, enable, or command motion while EtherCAT is the
 active cyclic controller. For an actual EtherCAT run, close/disconnect
 MotorHost first so there is only one command source.
 
+## Post-ramp read-only check
+
+After the ramp-parameter release was activated, the target remained in OP with
+domain WC `3/3`, `commissioning_inhibit=true`, `enabled=false`,
+`servo_request=false`, `moving=false`, `cw=0`, and zero realtime deadline
+misses/skips. A read-only SDO upload reported drive error code `0x8100` and
+statusword `0x1218`; the daemon therefore kept the servo request cleared. No
+fault reset, enable, velocity, or motion command was sent. This latched drive
+fault must be diagnosed/cleared under the no-motion procedure before any
+EtherCAT run.
+
+The MotorHost UI's communication error is therefore not evidence that the PV
+parameters failed to apply: EtherCAT is the active cyclic command owner, while
+the drive also reports the latched `0x8100` fault. Use only one command source
+at a time—stop/disconnect MotorHost before EtherCAT control, or stop the motion
+daemon before returning control to MotorHost.
+
 ## Next gate
 
 After the existing fault is diagnosed/cleared under the approved no-motion
