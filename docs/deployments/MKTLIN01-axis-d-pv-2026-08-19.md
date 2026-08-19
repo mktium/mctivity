@@ -114,6 +114,16 @@ the drive also reports the latched `0x8100` fault. Use only one command source
 at a time—stop/disconnect MotorHost before EtherCAT control, or stop the motion
 daemon before returning control to MotorHost.
 
+## No-motion fault reset result
+
+After the operator confirmed a fault-only reset, the daemon issued its scoped
+reset pulse while all motion gates remained closed. The subsequent read-only
+check reported `0x603F=0x0000`, statusword `0x1250`, `cw=0`,
+`enabled=false`, `servo_request=false`, `moving=false`, OP/WC `1/3`, and
+realtime deadline miss/skip `0/0`. No mode, target, enable, or motion command
+was sent. This clears the present latch but is not approval to remove inhibit
+or start a velocity test.
+
 ## Next gate
 
 After the existing fault is diagnosed/cleared under the approved no-motion
