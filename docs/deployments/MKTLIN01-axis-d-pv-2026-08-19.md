@@ -19,8 +19,8 @@ profile is selected only by `MCTIVITY_PROFILE=axis-d-uservo-pv` and
 
 - repository: `mktium/mctivity`
 - branch: `feature/v1.4.1-axis-d-uservo`
-- commit: `ab61cba` (`Add vendor-supported Axis D PV profile`)
-- target release: `/opt/mctivity-releases/v1.4.1-axis-d-pv-ab61cba`
+- commit: `9334312` (`Document Axis D PV deployment gate`), including the PV implementation from `ab61cba`
+- target release: `/opt/mctivity-releases/v1.4.1-axis-d-pv-9334312`
 - active symlink after deployment: `/opt/mctivity` -> the target release above
 - target-built `mctivity_motiond` SHA-256:
   `8f365d11ecbc0acd35f744a51940eae483efae9f631832adc1c7e6e1e2043e39`
@@ -52,6 +52,7 @@ Post-deployment read-only status at 2026-08-19:
 - realtime: FIFO priority 70; memory locked; deadline misses/skips `0/0`
 - timing guard: armed; communication-timing fault: false
 - existing drive fault bit: true (`sw=0x0218`), not cleared by this deployment
+- post-restart history counters: `wc_change_count=3`, `wc_incomplete_cycles=1095`; these are not a clean motion-readiness result
 
 Because the drive fault bit is currently set, this is a communication/profile
 deployment only, not a motion-readiness approval. Do not issue a fault reset or
