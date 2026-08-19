@@ -203,3 +203,29 @@ current power cycle's phase search has completed. The latch resets on daemon
 start, EtherCAT communication loss,
 timing fault, or drive fault. Deployment and verification of this change remain
 strictly no-motion with commissioning inhibit enabled.
+
+### Phase-search gate deployment
+
+- source commit: `3dab970` (`Gate Axis D enable on phase-search confirmation`)
+- pushed repository/branch: `mktium/mctivity`,
+  `feature/v1.4.1-axis-d-uservo`
+- staged target release: `/opt/mctivity-releases/v1.4.1-axis-d-phase-3dab970`
+- pre-deployment backup:
+  `/opt/mctivity-backups/pre-phase-gate-20260819T103753`
+- source archive SHA-256:
+  `6f98c0f9e8674faf1057b6754c785e7cd26ddacc00ec60027f6b4c05e045af73`
+- target-built `mctivity_motiond` SHA-256:
+  `9558f1769b9ef2c0072c96a581269e59769b8ef66089e6adac589a26f0cea423`
+
+The release preflight and complete target Linux/EtherLab build passed with
+`-O2 -Wall -Wextra -Werror`. The installer was run with the host's existing
+`iiru:iiru` service identity, Axis D profile, realtime requirement, CPU 2, and
+`MCTIVITY_COMMISSIONING_INHIBIT=1`. The first installer invocation used its
+nonexistent default `mctivity` service user and stopped before writing service
+configuration; rerunning with the existing service identity completed.
+
+`mctivity-motiond.service` intentionally remained inactive after deployment so
+it could not compete with the user's independent MotorHost test. No runtime
+phase-gate acceptance and no motion test are claimed at this point. Runtime
+verification must wait until MotorHost is disconnected and control is returned
+to EtherCAT; it must begin with inhibit enabled and must not send enable.
