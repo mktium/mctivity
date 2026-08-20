@@ -17,3 +17,8 @@ No enable, mode, jog, stop, fault reset, or other motion command is part of this
 change. Deployment must retain `MCTIVITY_COMMISSIONING_INHIBIT=1` and use the
 existing GET-only verification. The known restart-transition `0x8100` risk and
 the timing-fault latch procedure remain unchanged.
+
+The later APP-direct run request changes the PV configuration to
+`MCTIVITY_COMMISSIONING_INHIBIT=0` and removes only the PV session
+phase-search-confirmation gate. That activation is performed separately from
+the no-motion deployment; no enable or movement is issued by deployment.

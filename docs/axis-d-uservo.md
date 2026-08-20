@@ -71,22 +71,19 @@ that every incremental encoder needs an electrical-angle search before the
 first enable after each power-on. The configured strong-pull search can move
 the shaft; enable must therefore never be treated as a non-moving operation.
 
-Axis D now starts every `motiond` communication session with
-`phase_search_confirmed=false`. A normal `enable` request is rejected with
-`phase_search_confirmation_required` until an operator has separately
-completed the current power cycle's phase-search procedure and sent the
-non-energizing command:
+The original guarded commissioning flow started every `motiond` communication
+session with `phase_search_confirmed=false`. The APP-direct PV flow no longer
+uses that session gate; a normal `enable` request is governed by the explicit
+commissioning-inhibit configuration and the realtime/fault gates. No automatic
+phase-search command is issued:
 
 ```json
 {"cmd":"confirm_phase_search_complete","device":"mctivity"}
 ```
 
-The confirmation command is accepted only while the drive is disabled,
-stationary, fault-free, OP/WC-complete, and protected by the armed realtime
-timing guard. It does not write a controlword or enable the drive. The latch is
-cleared on process start, EtherCAT OP/WC loss, communication-timing fault, or
-drive fault. Disable/re-enable within the same healthy communication session
-does not clear it.
+The legacy confirmation command remains available for diagnostics but is not
+required by the Axis D PV enable path. EtherCAT OP/WC, realtime timing, fault,
+and stop gates remain enforced.
 
 This latch is an operator safety acknowledgement, not proof that the drive's
 electrical-angle identification succeeded. Before acknowledging it, use

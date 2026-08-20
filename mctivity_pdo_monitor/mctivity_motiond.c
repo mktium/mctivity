@@ -1289,7 +1289,7 @@ static void send_status_fd(int fd, int axis)
         axis_name(axis), uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual"),
         (long long)counts_per_rev, commissioning_inhibit ? "true" : "false",
         s->enabled ? "true" : "false", s->servo_request ? "true" : "false",
-        uservo_axis_d_topology && !s->phase_search_confirmed ? "true" : "false",
+        uservo_axis_d_topology && !uservo_pv_topology && !s->phase_search_confirmed ? "true" : "false",
         s->phase_search_confirmed ? "true" : "false",
         s->moving ? "true" : "false", ax->gear_running ? "true" : "false", s->fault ? "true" : "false",
         s->enable_settle_cycles, s->al_state,
@@ -1360,7 +1360,7 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strcmp(cmd, "enable") == 0 &&
+    if (strcmp(cmd, "enable") == 0 && !uservo_pv_topology &&
         !mctivity_phase_search_enable_allowed(uservo_axis_d_topology, s->phase_search_confirmed)) {
         send_error_fd(fd, "phase_search_confirmation_required");
         return;
