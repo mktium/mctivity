@@ -305,13 +305,18 @@ _DEFAULT_CAPABILITIES = [
 _MODULE_RUNTIME = build_module_runtime(
     PROFILE_PATH,
     MODULES_ROOT,
-    strict=PROFILE_NAME.startswith("axis-d-uservo"),
+    strict=PROFILE_NAME.startswith(("axis-d-uservo", "axis-de-uservo")),
 )
 _MODULE_RUNTIME["warnings"] = list(_MODULE_RUNTIME.get("warnings", [])) + get_feature_registry_warnings()
 _CAPABILITY_SET = set(_MODULE_RUNTIME.get("capabilities", []))
 _ENABLED_FEATURE_KEYS = resolve_enabled_feature_keys(_MODULE_RUNTIME.get("active_features", []))
 _FEATURE_ASSEMBLY = describe_feature_assembly(_MODULE_RUNTIME.get("active_features", []))
 _AXIS_DEVICES = list(_MODULE_RUNTIME.get("axis_devices", []))
+_AXIS_DEVICE_BY_KEY = {
+    str(device.get("transport_device", "")).strip().lower(): device
+    for device in _AXIS_DEVICES
+    if str(device.get("transport_device", "")).strip()
+}
 _PRIMARY_AXIS_DEVICE = _AXIS_DEVICES[0] if _AXIS_DEVICES else {}
 _PRIMARY_AXIS_LABEL = str(_PRIMARY_AXIS_DEVICE.get("logical_axis", "A")).strip().upper() or "A"
 _PRIMARY_AXIS_COUNTS_PER_REV = max(1, int(_PRIMARY_AXIS_DEVICE.get("counts_per_rev", 8388608)))
@@ -348,6 +353,44 @@ _PRIMARY_AXIS_STOP_DECEL_RPM_S = max(
 )
 _PRIMARY_AXIS_MAX_ACCEL_COUNTS_S2 = max(1, (_PRIMARY_AXIS_MAX_ACCEL_RPM_S * _PRIMARY_AXIS_COUNTS_PER_REV) // 60)
 
+if _AXIS_DEVICE_BY_KEY:
+    _HMI_DEVICE_ORDER = list(_AXIS_DEVICE_BY_KEY)
+else:
+    _HMI_DEVICE_ORDER = ["mctivity"]
+    if _DEVICE_CAPABILITY.get("fv3") in _CAPABILITY_SET:
+        _HMI_DEVICE_ORDER.append("fv3")
+_ALLOWED_DEVICE_SET = set(_HMI_DEVICE_ORDER)
+
+
+def _hmi_axis_config(device_key):
+    device = _AXIS_DEVICE_BY_KEY.get(device_key, {})
+    is_fv3 = device_key == "fv3"
+    logical_axis = str(device.get("logical_axis", "B" if is_fv3 else _PRIMARY_AXIS_LABEL)).strip().upper()
+    counts_per_rev = max(1, int(device.get("counts_per_rev", _PRIMARY_AXIS_COUNTS_PER_REV)))
+    default_speed_rpm = max(1, int(device.get("default_speed_rpm", 120 if is_fv3 else _PRIMARY_AXIS_DEFAULT_SPEED_RPM)))
+    max_speed_rpm = max(1, int(device.get("max_speed_rpm", MAX_SPEED_RPM if is_fv3 else _PRIMARY_AXIS_MAX_SPEED_RPM)))
+    default_accel_rpm_s = max(1, int(device.get("default_accel_rpm_s", 300 if is_fv3 else _PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S)))
+    max_accel_rpm_s = max(1, int(device.get("max_accel_rpm_s", MAX_ACCEL_RPM_S if is_fv3 else _PRIMARY_AXIS_MAX_ACCEL_RPM_S)))
+    return {
+        "device_key": device_key,
+        "logical_axis": logical_axis or ("B" if is_fv3 else "A"),
+        "counts_per_rev": counts_per_rev,
+        "default_mode": str(device.get("default_control_mode", "position")),
+        "default_speed_rpm": default_speed_rpm,
+        "max_speed_rpm": max_speed_rpm,
+        "velocity_step_rpm": max(1, int(device.get("velocity_step_rpm", 1))),
+        "default_accel_rpm_s": default_accel_rpm_s,
+        "max_accel_rpm_s": max_accel_rpm_s,
+        "stop_decel_rpm_s": max(1, int(device.get("stop_decel_rpm_s", device.get("default_decel_rpm_s", default_accel_rpm_s)))),
+        "default_relative_counts": max(
+            1,
+            int(round(counts_per_rev * float(device.get("default_relative_revolutions", 0.5)))),
+        ),
+    }
+
+
+_HMI_AXIS_CONFIG_BY_DEVICE = {key: _hmi_axis_config(key) for key in _HMI_DEVICE_ORDER}
+
 
 def capability_manifest():
     return {
@@ -356,6 +399,10 @@ def capability_manifest():
         "domains": _MODULE_RUNTIME.get("domains", []),
         "active_features": _MODULE_RUNTIME.get("active_features", []),
         "axis_devices": _AXIS_DEVICES,
+        "device_order": _HMI_DEVICE_ORDER,
+        "device_axis_map": {
+            key: config["logical_axis"] for key, config in _HMI_AXIS_CONFIG_BY_DEVICE.items()
+        },
         "primary_axis_label": _PRIMARY_AXIS_LABEL,
         "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV,
         "commissioning_inhibit": COMMISSIONING_INHIBIT,
@@ -413,7 +460,22 @@ def _strict_int(value, min_value=_INT32_MIN, max_value=_INT32_MAX):
     return number
 
 
-def _validate_command_numbers(cmd, clean):
+def _validate_command_numbers(cmd, clean, device):
+    axis = _AXIS_DEVICE_BY_KEY.get(device, _PRIMARY_AXIS_DEVICE)
+    max_velocity_cps = min(
+        MAX_JOG_VELOCITY_CPS,
+        max(1, int(axis.get("max_velocity_counts_s", _PRIMARY_AXIS_MAX_VELOCITY_CPS))),
+    )
+    max_speed_rpm = min(
+        MAX_SPEED_RPM,
+        max(1, int(axis.get("max_speed_rpm", _PRIMARY_AXIS_MAX_SPEED_RPM))),
+    )
+    max_accel_rpm_s = min(
+        MAX_ACCEL_RPM_S,
+        max(1, int(axis.get("max_accel_rpm_s", _PRIMARY_AXIS_MAX_ACCEL_RPM_S))),
+    )
+    counts_per_rev = max(1, int(axis.get("counts_per_rev", _PRIMARY_AXIS_COUNTS_PER_REV)))
+    max_accel_counts_s2 = max(1, max_accel_rpm_s * counts_per_rev // 60)
     try:
         for key in _REQUIRED_INT_FIELDS.get(cmd, []):
             if key not in clean:
@@ -432,17 +494,17 @@ def _validate_command_numbers(cmd, clean):
             return False
     if "min_pos" in clean and "max_pos" in clean and clean["min_pos"] > clean["max_pos"]:
         return False
-    if "velocity" in clean and abs(clean["velocity"]) > min(MAX_JOG_VELOCITY_CPS, _PRIMARY_AXIS_MAX_VELOCITY_CPS):
+    if "velocity" in clean and abs(clean["velocity"]) > max_velocity_cps:
         return False
-    if "vmax_counts_s" in clean and clean["vmax_counts_s"] > min(MAX_CURVE_VELOCITY_CPS, _PRIMARY_AXIS_MAX_VELOCITY_CPS):
+    if "vmax_counts_s" in clean and clean["vmax_counts_s"] > min(MAX_CURVE_VELOCITY_CPS, max_velocity_cps):
         return False
     for key in ("accel_counts_s2", "decel_counts_s2", "deceleration_counts_s2"):
-        if key in clean and clean[key] > min(MAX_CURVE_ACCEL_COUNTS_S2, _PRIMARY_AXIS_MAX_ACCEL_COUNTS_S2):
+        if key in clean and clean[key] > min(MAX_CURVE_ACCEL_COUNTS_S2, max_accel_counts_s2):
             return False
-    if "speed_rpm" in clean and clean["speed_rpm"] > _PRIMARY_AXIS_MAX_SPEED_RPM:
+    if "speed_rpm" in clean and clean["speed_rpm"] > max_speed_rpm:
         return False
     for key in ("acceleration_rpm_s", "deceleration_rpm_s", "deceleration"):
-        if key in clean and clean[key] > _PRIMARY_AXIS_MAX_ACCEL_RPM_S:
+        if key in clean and clean[key] > max_accel_rpm_s:
             return False
     if "move_ms" in clean and clean["move_ms"] > MAX_MOVE_MS:
         return False
@@ -488,14 +550,14 @@ def _sanitize_command_payload(payload, device):
             return None
         if master_axis:
             clean["master_axis"] = master_axis
-    if not _validate_command_numbers(cmd, clean):
+    if not _validate_command_numbers(cmd, clean, device):
         return None
     return clean
 
 
 def _normalize_device(raw):
     device = str(raw or "mctivity").strip().lower()
-    if device not in ("mctivity", "fv3"):
+    if device not in _ALLOWED_DEVICE_SET:
         return None
     required = _DEVICE_CAPABILITY.get(device)
     if required and required not in _CAPABILITY_SET:
@@ -1147,13 +1209,28 @@ const PRIMARY_AXIS_MAX_VELOCITY_RPM = __PRIMARY_AXIS_MAX_VELOCITY_RPM__;
 const PRIMARY_AXIS_VELOCITY_STEP_RPM = __PRIMARY_AXIS_VELOCITY_STEP_RPM__;
 const PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S = __PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__;
 const PRIMARY_AXIS_MAX_ACCEL_RPM_S = __PRIMARY_AXIS_MAX_ACCEL_RPM_S__;
+const AXIS_CONFIG_BY_DEVICE = __AXIS_CONFIG_BY_DEVICE__;
+const ASSEMBLED_DEVICE_ORDER = __ASSEMBLED_DEVICE_ORDER__;
 const AXIS_DIR = -1;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
-function rpmToCountsS(value) { return Math.trunc(Number(value) * REV / 60); }
-function countsSToRpm(value) { return Number(value) * 60 / REV; }
-function clampVelocityRpm(value) {
-  return clamp(Number(value) || PRIMARY_AXIS_DEFAULT_VELOCITY_RPM, 1, PRIMARY_AXIS_MAX_VELOCITY_RPM);
+function axisConfig(device = activeDevice) {
+  return AXIS_CONFIG_BY_DEVICE[device] || AXIS_CONFIG_BY_DEVICE.mctivity || {
+    logical_axis:PRIMARY_AXIS_LABEL, counts_per_rev:REV,
+    default_speed_rpm:PRIMARY_AXIS_DEFAULT_VELOCITY_RPM,
+    max_speed_rpm:PRIMARY_AXIS_MAX_VELOCITY_RPM,
+    velocity_step_rpm:PRIMARY_AXIS_VELOCITY_STEP_RPM,
+    default_accel_rpm_s:PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S,
+    max_accel_rpm_s:PRIMARY_AXIS_MAX_ACCEL_RPM_S,
+    stop_decel_rpm_s:PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S,
+    default_mode:'position', default_relative_counts:Math.max(1, Math.round(REV / 2))
+  };
+}
+function rpmToCountsS(value, device = activeDevice) { return Math.trunc(Number(value) * axisConfig(device).counts_per_rev / 60); }
+function countsSToRpm(value, device = activeDevice) { return Number(value) * 60 / axisConfig(device).counts_per_rev; }
+function clampVelocityRpm(value, device = activeDevice) {
+  const config = axisConfig(device);
+  return clamp(Number(value) || config.default_speed_rpm, 1, config.max_speed_rpm);
 }
 const MODE_LABELS = {
   zh: {position:'单点定位', incremental:'增量位移', jog:'点动', point:'点位表', homing:'回零/置零', velocity:'速度控制', torque:'转矩控制', gear_cam:'电子齿轮'},
@@ -1424,33 +1501,47 @@ const transmissionUnitSets = {
     {value:'m', label:'m'}
   ]
 };
-let activeDevice = 'mctivity';
+let activeDevice = ASSEMBLED_DEVICE_ORDER[0] || 'mctivity';
 let currentLang = localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'zh';
-const statusByDevice = {mctivity:null, fv3:null};
-const feedbackByDevice = {mctivity:null, fv3:null};
-const incrementalCurveSnapshots = {mctivity:'', fv3:''};
-const motionStateByDevice = {
-  mctivity: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0},
-  fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
-};
-const deviceProfiles = {
-  mctivity: {mode:'__PRIMARY_AXIS_DEFAULT_MODE__', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, velocityAccelRpmS:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, stopDecelRpmS:__PRIMARY_AXIS_STOP_DECEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velRpm:__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
-  fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
-};
-let uiStateSaveTimer = 0;
-let velocitySliderCommandTimer = 0;
-const lastUiStateSnapshot = {mctivity:'', fv3:''};
+function newMotionState() {
+  return {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0};
+}
+function newDeviceProfile(device) {
+  const config = axisConfig(device);
+  const counts = config.counts_per_rev;
+  const defaultGearMaster = device === 'fv3' ? 'mctivity' : (ASSEMBLED_DEVICE_ORDER.includes('fv3') ? 'fv3' : 'virtual');
+  return {mode:config.default_mode, absPos:0, absSpeedRpm:config.default_speed_rpm,
+    absAccel:config.default_accel_rpm_s, velocityAccelRpmS:config.default_accel_rpm_s,
+    stopDecelRpmS:config.stop_decel_rpm_s, relDelta:config.default_relative_counts,
+    moveMs:3000, velRpm:config.default_speed_rpm, velCps:rpmToCountsS(config.default_speed_rpm, device),
+    torqueCmd:0, gearMaster:defaultGearMaster, gearMasterRatio:1, gearSlaveRatio:1,
+    incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'},
+    transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360},
+    points:{1:0, 2:counts/2, 3:counts}};
+}
+const statusByDevice = {};
+const feedbackByDevice = {};
+const incrementalCurveSnapshots = {};
+const motionStateByDevice = {};
+const deviceProfiles = {};
+const lastUiStateSnapshot = {};
+const velocitySliderCommandTimerByDevice = {};
+const uiStateSaveTimerByDevice = {};
+for (const device of ASSEMBLED_DEVICE_ORDER) {
+  statusByDevice[device] = null;
+  feedbackByDevice[device] = null;
+  incrementalCurveSnapshots[device] = '';
+  motionStateByDevice[device] = newMotionState();
+  deviceProfiles[device] = newDeviceProfile(device);
+  lastUiStateSnapshot[device] = '';
+  velocitySliderCommandTimerByDevice[device] = 0;
+  uiStateSaveTimerByDevice[device] = 0;
+}
 let transmissionDraft = null;
 const POWEROFF_HOLD_MS = 2000;
 const poweroffHoldState = {active:false, startedAt:0, raf:0, pointerId:null, done:false};
-const modeUiStateByDevice = {
-  mctivity: {pending:null, interacting:false},
-  fv3: {pending:null, interacting:false}
-};
-const modePanelStateByDevice = {
-  mctivity: null,
-  fv3: null
-};
+const modeUiStateByDevice = Object.fromEntries(ASSEMBLED_DEVICE_ORDER.map(device => [device, {pending:null, interacting:false}]));
+const modePanelStateByDevice = Object.fromEntries(ASSEMBLED_DEVICE_ORDER.map(device => [device, null]));
 const capabilityState = {
   loaded:false,
   profile:'unknown',
@@ -1474,20 +1565,16 @@ function syncModeSelectDisabled(device = activeDevice) {
   modeSelect.disabled = false;
 }
 function axisDisplayName(device) {
-  const text = UI_TEXT[currentLang];
-  if (device === 'fv3') return text.axisB;
-  if (device === 'mctivity') return PRIMARY_AXIS_LABEL === 'D' ? text.axisD : text.axisA;
-  return text.virtualAxis;
+  if (device === 'virtual') return UI_TEXT[currentLang].virtualAxis;
+  const label = String(axisConfig(device).logical_axis || '').toUpperCase();
+  if (label) return (currentLang === 'zh' ? '轴 ' : 'Axis ') + label;
+  return device;
 }
 function supportsDevice(device) {
-  if (device === 'mctivity') return true;
-  if (device === 'fv3') {
-    return capabilityState.loaded && capabilityState.capabilities.has('axis.device.fv3.access');
-  }
-  return false;
+  return ASSEMBLED_DEVICE_ORDER.includes(device);
 }
 function axisDevices() {
-  return Object.keys(deviceProfiles).filter(supportsDevice);
+  return ASSEMBLED_DEVICE_ORDER.filter(supportsDevice);
 }
 function preferredGearMaster(device) {
   if (device === 'fv3') return 'mctivity';
@@ -2136,9 +2223,9 @@ async function persistUiState(device = activeDevice) {
   }
 }
 function scheduleUiStateSave(device = activeDevice) {
-  if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
-  uiStateSaveTimer = setTimeout(() => {
-    uiStateSaveTimer = 0;
+  if (uiStateSaveTimerByDevice[device]) clearTimeout(uiStateSaveTimerByDevice[device]);
+  uiStateSaveTimerByDevice[device] = setTimeout(() => {
+    uiStateSaveTimerByDevice[device] = 0;
     persistUiState(device);
   }, 180);
 }
@@ -2152,7 +2239,7 @@ function saveUiState(device = activeDevice) {
   profile.relDelta = Number(relDelta.value);
   profile.moveMs = Number(moveMs.value);
   profile.velRpm = Number(velRpm.value);
-  profile.velCps = rpmToCountsS(profile.velRpm);
+  profile.velCps = rpmToCountsS(profile.velRpm, device);
   profile.torqueCmd = Number(torqueCmd.value);
   profile.gearMaster = gearMasterSelect.value;
   profile.gearMasterRatio = Number(gearMasterRatio.value);
@@ -2167,12 +2254,12 @@ function saveUiState(device = activeDevice) {
 }
 function loadUiState(device = activeDevice) {
   const profile = currentProfile(device);
-  if (device === 'mctivity') {
-    const legacyVelocity = countsSToRpm(Number(profile.velCps));
-    profile.velRpm = clampVelocityRpm(Number(profile.velRpm) || legacyVelocity);
-    profile.velCps = rpmToCountsS(profile.velRpm);
-    profile.velocityAccelRpmS = clamp(Number(profile.velocityAccelRpmS) || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S, 1, PRIMARY_AXIS_MAX_ACCEL_RPM_S);
-  }
+  const config = axisConfig(device);
+  const legacyVelocity = countsSToRpm(Number(profile.velCps), device);
+  profile.velRpm = clampVelocityRpm(Number(profile.velRpm) || legacyVelocity, device);
+  profile.velCps = rpmToCountsS(profile.velRpm, device);
+  profile.velocityAccelRpmS = clamp(Number(profile.velocityAccelRpmS) || config.default_accel_rpm_s, 1, config.max_accel_rpm_s);
+  profile.stopDecelRpmS = config.stop_decel_rpm_s;
   profile.transmission = normalizedTransmission(profile);
   profile.incrementalCurve = storeIncrementalCurveState(device, profile.incrementalCurve, false);
   absPos.value = profile.absPos;
@@ -2180,9 +2267,14 @@ function loadUiState(device = activeDevice) {
   absAccel.value = profile.absAccel;
   relDelta.value = profile.relDelta;
   moveMs.value = profile.moveMs;
-  velRpm.value = profile.velRpm || PRIMARY_AXIS_DEFAULT_VELOCITY_RPM;
+  velRpm.max = String(config.max_speed_rpm);
+  velRpm.step = String(config.velocity_step_rpm);
+  velRpm.value = profile.velRpm || config.default_speed_rpm;
+  cfgVel.max = String(config.max_speed_rpm);
+  cfgVel.step = String(config.velocity_step_rpm);
   cfgVel.value = velRpm.value;
-  cfgAccel.value = profile.velocityAccelRpmS || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S;
+  cfgAccel.max = String(config.max_accel_rpm_s);
+  cfgAccel.value = profile.velocityAccelRpmS || config.default_accel_rpm_s;
   torqueCmd.value = profile.torqueCmd;
   gearMasterRatio.value = profile.gearMasterRatio || 1;
   gearSlaveRatio.value = profile.gearSlaveRatio || 1;
@@ -2436,8 +2528,8 @@ function refreshStaticText() {
   document.body.classList.toggle('lang-zh', currentLang === 'zh');
   document.title = text.pageTitle;
   setText('pageTitle', text.pageTitle);
-  setText('tabMonitorBtn', axisDisplayName('mctivity'));
-  setText('tabConfigBtn', text.axisB);
+  setText('tabMonitorBtn', axisDisplayName(ASSEMBLED_DEVICE_ORDER[0]));
+  setText('tabConfigBtn', ASSEMBLED_DEVICE_ORDER[1] ? axisDisplayName(ASSEMBLED_DEVICE_ORDER[1]) : '');
   setText('protocolChip', 'EtherCAT');
   setText('profileLabel', text.profile);
   setText('featureCountLabel', text.features);
@@ -2770,7 +2862,8 @@ function faultName(err, sw) {
   return names[code] || ((Number(sw) & 0x0008) ? text.faultServo : text.faultCode);
 }
 function showTab(name) {
-  switchAxis(name === 'config' ? 'fv3' : 'mctivity');
+  const index = name === 'config' ? 1 : 0;
+  switchAxis(ASSEMBLED_DEVICE_ORDER[index] || ASSEMBLED_DEVICE_ORDER[0]);
 }
 function switchAxis(deviceName) {
   try {
@@ -2782,12 +2875,13 @@ function switchAxis(deviceName) {
   const configPanel = document.getElementById('tabConfig');
   const monitorBtn = document.getElementById('tabMonitorBtn');
   const configBtn = document.getElementById('tabConfigBtn');
-  activeDevice = supportsDevice(deviceName) && deviceName === 'fv3' ? 'fv3' : 'mctivity';
+  activeDevice = supportsDevice(deviceName) ? deviceName : (ASSEMBLED_DEVICE_ORDER[0] || 'mctivity');
   if (monitorPanel) monitorPanel.classList.add('active');
   if (configPanel) configPanel.classList.remove('active');
-  if (monitorBtn) monitorBtn.classList.toggle('active', activeDevice === 'mctivity');
-  if (configBtn) configBtn.classList.toggle('active', activeDevice === 'fv3');
+  if (monitorBtn) monitorBtn.classList.toggle('active', activeDevice === ASSEMBLED_DEVICE_ORDER[0]);
+  if (configBtn) configBtn.classList.toggle('active', activeDevice === ASSEMBLED_DEVICE_ORDER[1]);
   loadUiState();
+  applyCapabilityModeAvailability(activeDevice);
   enforceGearConstraints();
   feedbackByDevice[activeDevice] = null;
   syncModePanels(modeSelect.value || 'position', true);
@@ -2802,8 +2896,8 @@ function switchAxis(deviceName) {
 }
 function bindAxisSwitchButtons() {
   const bindings = [
-    ['tabMonitorBtn', 'mctivity'],
-    ['tabConfigBtn', 'fv3'],
+    ['tabMonitorBtn', ASSEMBLED_DEVICE_ORDER[0]],
+    ['tabConfigBtn', ASSEMBLED_DEVICE_ORDER[1]],
   ];
   bindings.forEach(([id, device]) => {
     const button = document.getElementById(id);
@@ -2821,15 +2915,23 @@ function bindAxisSwitchButtons() {
   });
 }
 function refreshDeviceTabs() {
+  const monitorBtn = document.getElementById('tabMonitorBtn');
   const configBtn = document.getElementById('tabConfigBtn');
-  const fv3Enabled = supportsDevice('fv3');
-  if (configBtn) {
-    configBtn.hidden = !fv3Enabled;
-    configBtn.disabled = !fv3Enabled;
-    configBtn.setAttribute('aria-hidden', fv3Enabled ? 'false' : 'true');
+  const firstDevice = ASSEMBLED_DEVICE_ORDER[0];
+  const secondDevice = ASSEMBLED_DEVICE_ORDER[1];
+  if (monitorBtn && firstDevice) {
+    monitorBtn.hidden = false;
+    monitorBtn.disabled = false;
+    monitorBtn.textContent = axisDisplayName(firstDevice);
   }
-  if (!fv3Enabled && activeDevice === 'fv3') {
-    activeDevice = 'mctivity';
+  if (configBtn) {
+    configBtn.hidden = !secondDevice;
+    configBtn.disabled = !secondDevice;
+    configBtn.textContent = secondDevice ? axisDisplayName(secondDevice) : '';
+    configBtn.setAttribute('aria-hidden', secondDevice ? 'false' : 'true');
+  }
+  if (!supportsDevice(activeDevice)) {
+    activeDevice = firstDevice || 'mctivity';
   }
 }
 function renderMotionToggle(active, activeText) {
@@ -2876,7 +2978,8 @@ function updateGearMaster() {
 }
 function render(s) {
   const text = UI_TEXT[currentLang];
-  const device = s && s.device === 'fv3' ? 'fv3' : 'mctivity';
+  const reportedDevice = String(s && s.device || activeDevice).toLowerCase();
+  const device = supportsDevice(reportedDevice) ? reportedDevice : activeDevice;
   statusByDevice[device] = s;
   if (device !== activeDevice) return;
   const motionState = currentMotion(device);
@@ -2884,7 +2987,7 @@ function render(s) {
   let speedFeedback = 0;
   const feedbackSample = feedbackByDevice[device];
   if (feedbackSample && now > feedbackSample.t) {
-    speedFeedback = axisCounts(Number(s.pos) - feedbackSample.pos) / REV / ((now - feedbackSample.t) / 1000) * 60;
+    speedFeedback = axisCounts(Number(s.pos) - feedbackSample.pos) / axisConfig(device).counts_per_rev / ((now - feedbackSample.t) / 1000) * 60;
   }
   feedbackByDevice[device] = {pos:Number(s.pos) || 0, t:now};
   updateFeedbackDial('speedHand', 'speedGaugeValue', speedFeedback / 1000, 3, 1, 'krpm');
@@ -2973,7 +3076,7 @@ function render(s) {
   setText('wc', s.wc + (s.wc_complete ? ' complete' : ''));
   setText('mode', s.mode);
   setText('controlModeView', modeLabel(s.control_mode) || s.control_mode || '--');
-  setText('velocityView', countsSToRpm(s.velocity_actual_cps || s.jog_velocity_cps || 0).toFixed(1));
+  setText('velocityView', countsSToRpm(s.velocity_actual_cps || s.jog_velocity_cps || 0, device).toFixed(1));
   setText('torqueView', String(s.torque_cmd || 0) + '%');
   const modeUi = currentModeUi(device);
   if (!modeUi.interacting) {
@@ -3052,7 +3155,7 @@ function updateSliders() {
   setText('gearSlaveName', gearSlaveName);
   setText('msText', fmt(ms) + ' ms');
   setText('velText', fmt(vel) + ' rpm');
-  setText('velocityAccelText', fmt(Number(profile.velocityAccelRpmS || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S)) + ' rpm/s');
+  setText('velocityAccelText', fmt(Number(profile.velocityAccelRpmS || axisConfig().default_accel_rpm_s)) + ' rpm/s');
   setText('torqueText', tq + '%');
   const points = profile.points;
   for (const k of [1,2,3]) {
@@ -3063,28 +3166,29 @@ function updateSliders() {
 }
 function handleVelocitySliderInput() {
   updateSliders();
-  if (velocitySliderCommandTimer) {
-    clearTimeout(velocitySliderCommandTimer);
-    velocitySliderCommandTimer = 0;
-  }
   const device = activeDevice;
+  if (velocitySliderCommandTimerByDevice[device]) {
+    clearTimeout(velocitySliderCommandTimerByDevice[device]);
+    velocitySliderCommandTimerByDevice[device] = 0;
+  }
   const status = currentStatus(device);
   const targetCps = Number(status && status.jog_velocity_cps || 0);
   if (!(status && status.enabled && status.control_mode === 'velocity' && targetCps !== 0)) return;
-  const requestedRpm = clampVelocityRpm(Number(velRpm.value));
-  velocitySliderCommandTimer = setTimeout(() => {
-    velocitySliderCommandTimer = 0;
+  const requestedRpm = clampVelocityRpm(Number(velRpm.value), device);
+  velocitySliderCommandTimerByDevice[device] = setTimeout(() => {
+    velocitySliderCommandTimerByDevice[device] = 0;
     const liveStatus = currentStatus(device);
     const liveTargetCps = Number(liveStatus && liveStatus.jog_velocity_cps || 0);
     if (!(activeDevice === device && liveStatus && liveStatus.enabled && liveStatus.control_mode === 'velocity' && liveTargetCps !== 0)) return;
     const direction = liveTargetCps < 0 ? -1 : 1;
-    apiForDevice(device, {cmd:'jog_velocity', velocity:rpmToCountsS(direction * requestedRpm)}).catch(err => console.error(err));
+    apiForDevice(device, {cmd:'jog_velocity', velocity:rpmToCountsS(direction * requestedRpm, device)}).catch(err => console.error(err));
   }, 150);
 }
 function applyConfig() {
-  relDelta.value = cfgRel.value; absPos.value = cfgAbs.value; moveMs.value = cfgMs.value; velRpm.value = clampVelocityRpm(cfgVel.value);
+  const config = axisConfig();
+  relDelta.value = cfgRel.value; absPos.value = cfgAbs.value; moveMs.value = cfgMs.value; velRpm.value = clampVelocityRpm(cfgVel.value, activeDevice);
   absSpeedRpm.value = Math.max(1, Math.min(3000, Math.round(Number(cfgVel.value))));
-  currentProfile().velocityAccelRpmS = clamp(Number(cfgAccel.value) || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S, 1, PRIMARY_AXIS_MAX_ACCEL_RPM_S);
+  currentProfile().velocityAccelRpmS = clamp(Number(cfgAccel.value) || config.default_accel_rpm_s, 1, config.max_accel_rpm_s);
   torqueCmd.min = -Number(cfgTorqueLimit.value); torqueCmd.max = Number(cfgTorqueLimit.value);
   updateSliders();
 }
@@ -3317,7 +3421,7 @@ function moveRel() {
     acceleration_rpm_s:Number(absAccel.value || 0)
   }, currentMotionBoundsPayload()));
 }
-function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v)}); }
+function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)}); }
 function sendTorque() { return api({cmd:'torque_cmd', torque:Number(torqueCmd.value)}); }
 function savePoint(n) { if (currentStatus()) { currentProfile().points[n] = axisCounts(Number(currentStatus().pos)); updateSliders(); } }
 function gotoPoint(n) { absPos.value = currentProfile().points[n]; updateSliders(); return api(motionPayload(Number(absPos.value))); }
@@ -3419,11 +3523,11 @@ async function bootstrapUi() {
   const enableToggle = document.getElementById('enableToggle');
   if (enableToggle && capabilityState.commissioningInhibit) {
     enableToggle.disabled = true;
-    enableToggle.title = currentLang === 'zh' ? '轴 D 调试锁定中' : 'Axis D commissioning inhibit is active';
+    enableToggle.title = currentLang === 'zh' ? axisDisplayName(activeDevice) + ' 调试锁定中' : axisDisplayName(activeDevice) + ' commissioning inhibit is active';
   }
   await hydrateUiStateFromServer();
-  loadUiState('mctivity');
-  applyCapabilityModeAvailability('mctivity');
+  loadUiState(activeDevice);
+  applyCapabilityModeAvailability(activeDevice);
   enforceGearConstraints();
   applyLanguage();
   setInterval(() => api({cmd:'status'}).catch(() => {}), 300);
@@ -3453,6 +3557,14 @@ HTML = HTML.replace("__PRIMARY_AXIS_MAX_VELOCITY_RPM__", str(_PRIMARY_AXIS_MAX_V
 HTML = HTML.replace("__PRIMARY_AXIS_VELOCITY_STEP_RPM__", str(_PRIMARY_AXIS_VELOCITY_STEP_RPM))
 HTML = HTML.replace("__PRIMARY_AXIS_STOP_DECEL_RPM_S__", str(_PRIMARY_AXIS_STOP_DECEL_RPM_S))
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_MODE__", _PRIMARY_AXIS_DEFAULT_MODE)
+HTML = HTML.replace(
+    "__AXIS_CONFIG_BY_DEVICE__",
+    json.dumps(_HMI_AXIS_CONFIG_BY_DEVICE, ensure_ascii=False, separators=(",", ":")),
+)
+HTML = HTML.replace(
+    "__ASSEMBLED_DEVICE_ORDER__",
+    json.dumps(_HMI_DEVICE_ORDER, ensure_ascii=False, separators=(",", ":")),
+)
 
 
 def motiond_command(payload, port=MOTIOND_PORT):
@@ -3563,13 +3675,13 @@ def load_ui_state():
         if not isinstance(data, dict):
             return _default_ui_state()
         active_profile = str(_MODULE_RUNTIME.get("profile", ""))
-        if active_profile.startswith("axis-d-uservo") and data.get("profile") != active_profile:
+        if _AXIS_DEVICES and data.get("profile") != active_profile:
             return _default_ui_state()
         devices = data.get("devices")
         if not isinstance(devices, dict):
             return _default_ui_state()
         normalized = {"profile": _MODULE_RUNTIME.get("profile"), "devices": {}}
-        for device in ("mctivity", "fv3"):
+        for device in _HMI_DEVICE_ORDER:
             if device not in devices:
                 continue
             device_state = _normalize_ui_device_state(devices[device])
@@ -3580,7 +3692,7 @@ def load_ui_state():
 
 def save_ui_state(device, state):
     normalized_state = _normalize_ui_device_state(state)
-    if device not in ("mctivity", "fv3") or normalized_state is None:
+    if device not in _ALLOWED_DEVICE_SET or normalized_state is None:
         raise ValueError("invalid ui state payload")
     with _ui_state_lock:
         merged = load_ui_state()
@@ -3745,12 +3857,13 @@ def _transport_command(device, payload):
     Transport layer for axis commands.
     Keeps protocol behavior unchanged while dispatching by logical feature.
     """
-    if device not in ("mctivity", "fv3"):
+    if device not in _ALLOWED_DEVICE_SET:
         return {"ok": False, "error": "unsupported_device"}
     payload2 = dict(payload)
-    payload2.pop("device", None)
     if device == "fv3":
+        payload2.pop("device", None)
         return fv3_command(payload2)
+    payload2["device"] = device
     return motiond_command(payload2)
 
 
@@ -3828,14 +3941,12 @@ def _run_poweroff_permission_checks(commands):
 
 
 def _read_poweroff_device_statuses():
-    devices = ["mctivity"]
-    if _DEVICE_CAPABILITY.get("fv3") in _CAPABILITY_SET:
-        devices.append("fv3")
+    devices = list(_HMI_DEVICE_ORDER)
     statuses = []
     active = []
     for device in devices:
         try:
-            rsp = fv3_status() if device == "fv3" else motiond_command({"cmd": "status"})
+            rsp = fv3_status() if device == "fv3" else motiond_command({"cmd": "status", "device": device})
         except Exception as exc:
             return None, {"device": device, "error": str(exc)}
         if not isinstance(rsp, dict) or not rsp.get("ok"):
@@ -4030,7 +4141,7 @@ class Handler(BaseHTTPRequestHandler):
                 if device == "fv3":
                     self.send_json(fv3_status())
                 else:
-                    self.send_json(motiond_command({"cmd": "status"}))
+                    self.send_json(motiond_command({"cmd": "status", "device": device}))
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 503)
         elif path == "/api/capabilities":

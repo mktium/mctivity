@@ -19,7 +19,7 @@ class VelocityProfileHmiTests(unittest.TestCase):
         self.assertIn('id="cfgAccel" type="number" value="2222"', html)
         self.assertIn('加速度 <strong id="velocityAccelText">2222 rpm/s</strong>', html)
         self.assertIn('id="communicationAlarm"', html)
-        self.assertIn("stopDecelRpmS:2222", html)
+        self.assertIn('"stop_decel_rpm_s":2222', html)
         self.assertIn("syncModePanels('velocity');", html)
 
     def test_velocity_start_precedes_position_fallback(self):
@@ -34,9 +34,9 @@ class VelocityProfileHmiTests(unittest.TestCase):
         self.assertIn("status.enabled && status.control_mode === 'velocity' && targetCps !== 0", source)
         self.assertIn("liveStatus.enabled && liveStatus.control_mode === 'velocity' && liveTargetCps !== 0", source)
         self.assertIn("const direction = liveTargetCps < 0 ? -1 : 1;", source)
-        self.assertIn("rpmToCountsS(direction * requestedRpm)", source)
+        self.assertIn("rpmToCountsS(direction * requestedRpm, device)", source)
         self.assertIn("}, 150);", source)
-        self.assertIn("function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v)}); }", source)
+        self.assertIn("function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)}); }", source)
         self.assertIn("const timingFault = Boolean(s.communication_timing_fault);", source)
         self.assertIn("timingFault ? text.timingFault", source)
         self.assertIn("const visibleWarningCount = warningList.length + (timingFault ? 1 : 0);", source)

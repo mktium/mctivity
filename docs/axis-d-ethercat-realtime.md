@@ -29,6 +29,13 @@ TxPDO 0x1A01: 6041:00/16, 6061:00/8, 606C:00/32, 60FD:00/32
 
 PV is CiA 402 mode code `3`; target velocity is `0x60FF`, actual velocity is `0x606C`, and profile acceleration/deceleration are the drive objects `0x6083`/`0x6084`. The canonical rpm, rpm/s, HMI step, and counts/revolution values live only in `modules/axis/device/uservo/pv/module.json`. The shared profile resolver derives counts/s and counts/s² with integer division, and the motiond launcher validates profile/topology before starting C. For the current manifest, startup writes 166500 cnt/s to `0x607F` and 370333 cnt/s² to both `0x6083` and `0x6084`, while the default target is 37000 cnt/s (222 rpm). The HMI presents target and live velocity in rpm, converts to counts/s only at the API boundary, and presents the fixed profile acceleration as 2222 rpm/s. Because `0x6084` is also the PV stop ramp, normal and stop deceleration must match. The implementation does not claim CSV (`9`) or infer a velocity map from the old CSP profile.
 
+The dual `axis-de-uservo-pv` profile reuses this same module as two restricted
+instances: physical position 0/logical D and physical position 1/logical E.
+See `docs/axis-de-uservo-pv.md`. The two axes have independent runtime state,
+PDO offsets, commands, and HMI persistence. Their shared 1 ms domain and timing
+guard intentionally fail closed for both axes if either slave or the combined
+working counter becomes unhealthy.
+
 Official fault `0x8100` is `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises a communication alarm. The default is 100 ms and the timeout is configured through object `0x36B5`. It is distinct from EtherCAT AL code `0x001B` (Sync Manager watchdog).
 
 MKTLIN01 has already produced `0x8100` during restart/shutdown switching when the PDO exchange gap exceeded the drive tolerance. This is a known unresolved acceptance risk, not a cosmetic alarm. Deployment must never auto-reset it: keep inhibit active, retain the fault and timing evidence, and stop acceptance until the transition is understood.

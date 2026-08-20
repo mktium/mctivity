@@ -1,0 +1,31 @@
+{
+  "profile": "axis-de-uservo-pv",
+  "topology": "axis-de-uservo-pv",
+  "domains": [
+    "axis_control_domain",
+    "device_application_domain"
+  ],
+  "modules": [
+    "axis-feedback-panel",
+    "axis-control-panel",
+    "axis-device-uservo-pv",
+    "feature-logic-velocity",
+    "feature-hmi-velocity",
+    "ui-state-persist",
+    "ui-touchscreen"
+  ],
+  "axis_instances": [
+    {
+      "module": "axis-device-uservo-pv",
+      "logical_axis": "D",
+      "transport_device": "mctivity",
+      "physical_position": 0
+    },
+    {
+      "module": "axis-device-uservo-pv",
+      "logical_axis": "E",
+      "transport_device": "mctivity_e",
+      "physical_position": 1
+    }
+  ]
+}

@@ -25,6 +25,8 @@ def load_profile(path):
     data = dict(data)
     data["modules"] = [str(item) for item in data["modules"] if isinstance(item, str) and item.strip()]
     data["domains"] = [str(item) for item in data.get("domains", []) if isinstance(item, str)]
+    if "axis_instances" in data and not isinstance(data["axis_instances"], list):
+        raise ProfileRuntimeError(f"axis_instances must be a list: {path}")
     return data
 
 
@@ -137,6 +139,7 @@ def build_module_runtime(profile_path, modules_root, strict=False):
     warnings = []
     manifests = {}
     axis_devices = []
+    axis_instances = profile.get("axis_instances", [])
     for module_id in profile["modules"]:
         try:
             manifest = load_manifest(modules_root, module_id)
@@ -147,7 +150,7 @@ def build_module_runtime(profile_path, modules_root, strict=False):
             continue
         manifests[module_id] = manifest
         active_features.append(module_id)
-        if manifest.get("type") == "axis_device":
+        if manifest.get("type") == "axis_device" and not axis_instances:
             try:
                 axis_devices.append(normalize_axis_device(manifest.get("device")))
             except Exception as exc:
@@ -157,6 +160,48 @@ def build_module_runtime(profile_path, modules_root, strict=False):
         for capability in manifest.get("capabilities", []):
             if isinstance(capability, str):
                 capabilities.add(capability)
+
+    if axis_instances:
+        allowed_instance_keys = {"module", "logical_axis", "transport_device", "physical_position"}
+        seen_axes = set()
+        seen_transports = set()
+        seen_positions = set()
+        profile_topology = str(profile.get("topology", "")).strip()
+        if not profile_topology:
+            raise ProfileRuntimeError("profile topology is required with axis_instances")
+        for index, instance in enumerate(axis_instances):
+            if not isinstance(instance, dict):
+                raise ProfileRuntimeError(f"axis instance {index} must be an object")
+            unknown = set(instance) - allowed_instance_keys
+            if unknown:
+                raise ProfileRuntimeError(f"axis instance {index} has unsupported overrides: {sorted(unknown)}")
+            module_id = str(instance.get("module", "")).strip()
+            manifest = manifests.get(module_id)
+            if not manifest or manifest.get("type") != "axis_device":
+                raise ProfileRuntimeError(f"axis instance {index} references invalid axis module: {module_id!r}")
+            device = dict(manifest.get("device") or {})
+            for key in ("logical_axis", "transport_device", "physical_position"):
+                if key not in instance:
+                    raise ProfileRuntimeError(f"axis instance {index} missing {key}")
+                device[key] = instance[key]
+            device["topology"] = profile_topology
+            normalized = normalize_axis_device(device)
+            logical_axis = str(normalized["logical_axis"]).strip().upper()
+            transport = str(normalized["transport_device"]).strip()
+            position = int(normalized["physical_position"])
+            if not logical_axis or logical_axis in seen_axes:
+                raise ProfileRuntimeError(f"duplicate/invalid logical axis: {logical_axis!r}")
+            if not transport or transport in seen_transports:
+                raise ProfileRuntimeError(f"duplicate/invalid transport device: {transport!r}")
+            if position < 0 or position in seen_positions:
+                raise ProfileRuntimeError(f"duplicate/invalid physical position: {position}")
+            seen_axes.add(logical_axis)
+            seen_transports.add(transport)
+            seen_positions.add(position)
+            normalized["logical_axis"] = logical_axis
+            normalized["transport_device"] = transport
+            normalized["physical_position"] = position
+            axis_devices.append(normalized)
 
     loaded = set(active_features)
     for module_id, manifest in manifests.items():

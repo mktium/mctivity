@@ -28,14 +28,16 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
             f"profile name mismatch: selected {profile_name!r}, file declares {runtime['profile']!r}"
         )
     axis_devices = runtime.get("axis_devices", [])
-    if len(axis_devices) > 1:
-        raise ProfileRuntimeError("motiond launcher supports at most one assembled axis_device")
+    if len(axis_devices) > 2:
+        raise ProfileRuntimeError("motiond launcher supports at most two assembled axis_devices")
 
     launch_env = dict(source_env)
     device = axis_devices[0] if axis_devices else None
     expected_topology = str(device.get("topology")) if device else "legacy-dual"
-    if expected_topology not in {"legacy-dual", "axis-d-uservo", "axis-d-uservo-pv"}:
+    if expected_topology not in {"legacy-dual", "axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv"}:
         raise ProfileRuntimeError(f"unsupported motiond topology: {expected_topology!r}")
+    if any(str(item.get("topology")) != expected_topology for item in axis_devices):
+        raise ProfileRuntimeError("all assembled axes must declare the same topology")
     selected_topology = source_env.get("MCTIVITY_TOPOLOGY", expected_topology)
     if selected_topology != expected_topology:
         raise ProfileRuntimeError(
@@ -51,41 +53,68 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
             "1" if device.get("commissioning_inhibit_default", False) else "0",
         )
         launch_env.setdefault("MCTIVITY_REQUIRE_REALTIME", "1")
-    if expected_topology == "axis-d-uservo-pv":
+    if expected_topology in {"axis-d-uservo-pv", "axis-de-uservo-pv"}:
         expected_contract = {
-            "topology": "axis-d-uservo-pv",
             "vendor_id": "0x00666999",
             "product_code": "0x00004806",
             "revision": "0x00000001",
-            "physical_position": 0,
             "cycle_ns": 1_000_000,
             "rxpdo_profile": "0x1601",
             "txpdo_profile": "0x1A01",
             "rxpdo": ["0x6040:00/16", "0x6060:00/8", "0x60ff:00/32", "0x60fe:01/32"],
             "txpdo": ["0x6041:00/16", "0x6061:00/8", "0x606c:00/32", "0x60fd:00/32"],
         }
-        for key, expected in expected_contract.items():
-            if device.get(key) != expected:
+        for item in axis_devices:
+            for key, expected in expected_contract.items():
+                if item.get(key) != expected:
+                    raise ProfileRuntimeError(
+                        f"Uservo PV runtime contract mismatch for {key}: expected {expected!r}, got {item.get(key)!r}"
+                    )
+            if item.get("ethercat_mode") != "pv":
+                raise ProfileRuntimeError("Uservo PV profile must declare native PV mode")
+            if int(item.get("ethercat_mode_code", 0)) != 3:
+                raise ProfileRuntimeError("Uservo PV profile must use CiA 402 mode 3")
+            if int(item["default_decel_rpm_s"]) != int(item["stop_decel_rpm_s"]):
                 raise ProfileRuntimeError(
-                    f"Uservo PV runtime contract mismatch for {key}: expected {expected!r}, got {device.get(key)!r}"
+                    "Uservo PV uses 0x6084 for both deceleration and stop; profile values must match"
                 )
-        if device.get("ethercat_mode") != "pv":
-            raise ProfileRuntimeError("Uservo PV profile must declare native PV mode")
-        if int(device.get("ethercat_mode_code", 0)) != 3:
-            raise ProfileRuntimeError("Uservo PV profile must use CiA 402 mode 3")
-        if int(device["default_decel_rpm_s"]) != int(device["stop_decel_rpm_s"]):
+        if expected_topology == "axis-d-uservo-pv":
+            expected_instances = [("D", "mctivity", 0)]
+        else:
+            expected_instances = [("D", "mctivity", 0), ("E", "mctivity_e", 1)]
+        actual_instances = [
+            (str(item.get("logical_axis")), str(item.get("transport_device")), int(item.get("physical_position", -1)))
+            for item in axis_devices
+        ]
+        if actual_instances != expected_instances:
             raise ProfileRuntimeError(
-                "Uservo PV uses 0x6084 for both deceleration and stop; profile values must match"
+                f"Uservo PV axis instances mismatch: expected {expected_instances!r}, got {actual_instances!r}"
             )
-        launch_env.update(
-            {
-                "MCTIVITY_PV_TARGET_SPEED_RPM": str(device["default_speed_rpm"]),
-                "MCTIVITY_PV_MAX_SPEED_RPM": str(device["max_speed_rpm"]),
-                "MCTIVITY_PV_ACCEL_RPM_S": str(device["default_accel_rpm_s"]),
-                "MCTIVITY_PV_DECEL_RPM_S": str(device["default_decel_rpm_s"]),
-                "MCTIVITY_PV_STOP_DECEL_RPM_S": str(device["stop_decel_rpm_s"]),
-            }
-        )
+        if expected_topology == "axis-d-uservo-pv":
+            launch_env.update(
+                {
+                    "MCTIVITY_PV_TARGET_SPEED_RPM": str(device["default_speed_rpm"]),
+                    "MCTIVITY_PV_MAX_SPEED_RPM": str(device["max_speed_rpm"]),
+                    "MCTIVITY_PV_ACCEL_RPM_S": str(device["default_accel_rpm_s"]),
+                    "MCTIVITY_PV_DECEL_RPM_S": str(device["default_decel_rpm_s"]),
+                    "MCTIVITY_PV_STOP_DECEL_RPM_S": str(device["stop_decel_rpm_s"]),
+                }
+            )
+        else:
+            launch_env["MCTIVITY_USERVO_AXIS_COUNT"] = "2"
+            for item in axis_devices:
+                axis_name = str(item["logical_axis"]).upper()
+                prefix = f"MCTIVITY_AXIS_{axis_name}"
+                launch_env.update(
+                    {
+                        f"{prefix}_COUNTS_PER_REV": str(item["counts_per_rev"]),
+                        f"{prefix}_PV_TARGET_SPEED_RPM": str(item["default_speed_rpm"]),
+                        f"{prefix}_PV_MAX_SPEED_RPM": str(item["max_speed_rpm"]),
+                        f"{prefix}_PV_ACCEL_RPM_S": str(item["default_accel_rpm_s"]),
+                        f"{prefix}_PV_DECEL_RPM_S": str(item["default_decel_rpm_s"]),
+                        f"{prefix}_PV_STOP_DECEL_RPM_S": str(item["stop_decel_rpm_s"]),
+                    }
+                )
     return runtime, device, launch_env
 
 
@@ -101,10 +130,23 @@ def public_dump(runtime, device, launch_env):
         "MCTIVITY_PV_ACCEL_RPM_S",
         "MCTIVITY_PV_DECEL_RPM_S",
         "MCTIVITY_PV_STOP_DECEL_RPM_S",
+        "MCTIVITY_USERVO_AXIS_COUNT",
     ]
+    for axis_name in ("D", "E"):
+        keys.extend(
+            [
+                f"MCTIVITY_AXIS_{axis_name}_COUNTS_PER_REV",
+                f"MCTIVITY_AXIS_{axis_name}_PV_TARGET_SPEED_RPM",
+                f"MCTIVITY_AXIS_{axis_name}_PV_MAX_SPEED_RPM",
+                f"MCTIVITY_AXIS_{axis_name}_PV_ACCEL_RPM_S",
+                f"MCTIVITY_AXIS_{axis_name}_PV_DECEL_RPM_S",
+                f"MCTIVITY_AXIS_{axis_name}_PV_STOP_DECEL_RPM_S",
+            ]
+        )
     return {
         "profile": runtime["profile"],
         "device": device,
+        "devices": runtime.get("axis_devices", []),
         "environment": {key: launch_env[key] for key in keys if key in launch_env},
     }
 

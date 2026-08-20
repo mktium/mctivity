@@ -42,6 +42,21 @@ class ProfileRuntimeTest(unittest.TestCase):
         self.assertNotIn("feature-hmi-velocity", runtime["active_features"])
         self.assertEqual(runtime["axis_devices"][0]["topology"], "axis-d-uservo")
 
+    def test_dual_pv_profile_expands_one_template_into_independent_d_e_instances(self):
+        runtime = self.runtime("axis-de-uservo-pv")
+        devices = runtime["axis_devices"]
+        self.assertEqual(
+            [(item["logical_axis"], item["transport_device"], item["physical_position"]) for item in devices],
+            [("D", "mctivity", 0), ("E", "mctivity_e", 1)],
+        )
+        self.assertIsNot(devices[0], devices[1])
+        for device in devices:
+            self.assertEqual(device["topology"], "axis-de-uservo-pv")
+            self.assertEqual(device["counts_per_rev"], 10000)
+            self.assertEqual(device["default_velocity_counts_s"], 37000)
+            self.assertEqual(device["max_velocity_counts_s"], 166500)
+            self.assertEqual(device["default_accel_counts_s2"], 370333)
+
     def test_legacy_profiles_have_no_axis_device_parameters(self):
         for name in ("minimal", "standard", "full"):
             with self.subTest(profile=name):
