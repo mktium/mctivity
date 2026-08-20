@@ -28,8 +28,16 @@ for script in scripts/*.sh; do
   bash -n "$script"
 done
 
-if command -v systemd-analyze >/dev/null 2>&1; then
-  systemd-analyze verify systemd/*.service
+if command -v systemd-analyze >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+  ethercat_unit="$(systemctl show -p FragmentPath --value ethercat.service 2>/dev/null || true)"
+  if [ -n "$ethercat_unit" ] && [ -f "$ethercat_unit" ]; then
+    systemd-analyze verify \
+      "$ethercat_unit" \
+      systemd/mctivity-motiond.service \
+      systemd/mctivity-hmi.service
+  else
+    echo "systemd verify skipped: ethercat.service fragment is unavailable"
+  fi
 fi
 
 if command -v node >/dev/null 2>&1; then
