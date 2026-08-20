@@ -1,4 +1,4 @@
-# MKTLIN01 Axis D native PV profile deployment — 2026-08-19
+# MKTLIN01 Axis D native PV profile deployment — 2026-08-20
 
 ## Scope and safety gate
 
@@ -32,22 +32,25 @@ Rollback keeps inhibit active: stop kiosk/HMI/motiond, restore the recorded envi
 
 ## Deployment evidence
 
-This section is completed from the target after the pushed implementation commit is built and the read-only acceptance finishes.
+The release was installed without restarting motiond because the physical EtherCAT link was already down at the deployment gate. The pre-existing motiond process remains inhibited and latched safe; the new HMI was started against it for GET-only profile and routing checks.
 
-- implementation commit: pending
+- implementation commits: `22f8887fb52dfc4405ddd1ff9890942b0ba4a3e0`, `e596331ce521699c6224f814d40c6ac51155deda`
 - final documentation commit: pending
-- active release: pending
-- source archive SHA-256: pending
-- motiond SHA-256: pending
-- backup directory: pending
-- target EtherLab build: pending
-- `systemd-analyze verify`: pending
-- HMI listener `127.0.0.1:2015`: pending
-- profile/topology/Axis D/velocity routing: pending
-- OP and WC complete: pending
-- `fault=false`, SDO `0x603F=0`: pending
-- `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`: pending
-- deadline miss/skip zero: pending
+- active release symlink: `/opt/mctivity-releases/v1.4.1-axis-d-pv-e596331`
+- source archive SHA-256: `17fa7b40ec3527fe2cedb60d3d96a3d8130e5e3e47f225689b1644abebd395b4`
+- target-built motiond SHA-256: `661f9fec271d5159e2530d2c76698db4b47f63ec379fb2519a3d7b1d248bfcf1`
+- backup directory: `/var/backups/mctivity/pre-axis-d-pv-20260820T011432Z`
+- target EtherLab `-Werror` build and release preflight: pass
+- `systemd-analyze verify` for EtherCAT/motiond/HMI: pass
+- HMI listener `127.0.0.1:2015`: pass
+- effective HMI profile/topology/Axis D/velocity capability and route: pass
+- profile values `37000`/`166500` cnt/s and `370333` cnt/s²: pass
+- `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`, deadline miss/skip zero: pass on the inhibited pre-existing process
+- OP and WC complete: blocked — physical link reports `DOWN`, zero slaves, WC `0/3`
+- `fault=false`: pass in backend status; SDO `0x603F=0`: blocked because no slave is present
+- new motiond launcher activation: pending hardware link restoration and a serial restart/read-only gate
+
+No control request was issued. The HMI start did not restart motiond (PID remained `286137`). Acceptance remains incomplete until the slave is online, the new motiond process is activated, and OP/WC/`0x603F` pass.
 
 ## Known risk
 
