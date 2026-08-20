@@ -32,7 +32,7 @@ Rollback keeps inhibit active: stop kiosk/HMI/motiond, restore the recorded envi
 
 ## Deployment evidence
 
-The release was installed without restarting motiond because the physical EtherCAT link was already down at the deployment gate. The pre-existing motiond process remains inhibited and latched safe; the new HMI was started against it for GET-only profile and routing checks.
+The release was first installed without restarting motiond because the physical EtherCAT link was down at the deployment gate. After the link returned, the new motiond was restarted once with inhibit still set. No enable or motion request was sent. The restart reproduced the known drive communication fault `0x8100`, so acceptance is stopped and no reset is attempted.
 
 - implementation commits: `22f8887fb52dfc4405ddd1ff9890942b0ba4a3e0`, `e596331ce521699c6224f814d40c6ac51155deda`
 - final documentation commit: pending
@@ -46,11 +46,12 @@ The release was installed without restarting motiond because the physical EtherC
 - effective HMI profile/topology/Axis D/velocity capability and route: pass
 - profile values `37000`/`166500` cnt/s and `370333` cnt/s²: pass
 - `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`, deadline miss/skip zero: pass on the inhibited pre-existing process
-- OP and WC complete: blocked — physical link reports `DOWN`, zero slaves, WC `0/3`
-- `fault=false`: pass in backend status; SDO `0x603F=0`: blocked because no slave is present
-- new motiond launcher activation: pending hardware link restoration and a serial restart/read-only gate
+- OP and WC complete: pass after link restoration (`OP`, WC `3/3`)
+- `fault=true`, backend `err=0`; SDO `0x603F=0x8100` (`Communication_DS_301`): acceptance blocked
+- new motiond launcher activation: pass; systemd `ExecStart` uses the launcher and target binary hash matches
+- post-restart state: `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`, inhibit true; no control request was sent
 
-No control request was issued. The HMI start did not restart motiond (PID remained `286137`). Acceptance remains incomplete until the slave is online, the new motiond process is activated, and OP/WC/`0x603F` pass.
+The HMI GET-only profile/capability/status check passed, but the `0x8100` fault means the no-motion acceptance is incomplete. Keep commissioning inhibit set, do not issue `fault_reset`, enable, mode, jog, stop, or phase-search commands, and preserve the target journal/SDO evidence for the restart-transition investigation.
 
 ## Known risk
 
