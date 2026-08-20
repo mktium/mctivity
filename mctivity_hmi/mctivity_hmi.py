@@ -2576,7 +2576,12 @@ function showApiError(data) {
   if (data.error === 'unsupported_command') {
     const required = data.required_capability || '--';
     openDiagModal(text.unsupportedCommand, text.requiredCapability + ': ' + required);
+    return;
   }
+  openDiagModal(
+    currentLang === 'zh' ? '命令未执行' : 'Command not executed',
+    String(data.error || (currentLang === 'zh' ? '未知错误' : 'unknown error'))
+  );
 }
 async function api(payload) {
   if ((payload && payload.cmd) === 'status') {
@@ -3080,6 +3085,9 @@ function render(s) {
   const reportedDevice = String(s && s.device || activeDevice).toLowerCase();
   const device = supportsDevice(reportedDevice) ? reportedDevice : activeDevice;
   statusByDevice[device] = s;
+  if (typeof s.commissioning_inhibit === 'boolean') {
+    capabilityState.commissioningInhibit = Boolean(s.commissioning_inhibit);
+  }
   renderSyncVelocityStatus();
   if (device !== activeDevice) return;
   const motionState = currentMotion(device);
@@ -3112,6 +3120,10 @@ function render(s) {
   if (toggle && toggleText) {
     toggle.classList.toggle('on', enableVisualOn);
     toggleText.textContent = enableVisualOn ? text.on : text.off;
+    toggle.disabled = capabilityState.commissioningInhibit;
+    toggle.title = capabilityState.commissioningInhibit
+      ? (currentLang === 'zh' ? axisDisplayName(activeDevice) + ' 调试锁定中' : axisDisplayName(activeDevice) + ' commissioning inhibit is active')
+      : '';
   }
   if (s.moving) {
     motionState.seenMoving = true;
@@ -4311,6 +4323,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps({"ok": False, "error": "invalid_json_response"}, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -4404,6 +4417,7 @@ class Handler(BaseHTTPRequestHandler):
             body = HTML.replace("__MOTION_CURVE_EDITOR_BLOCK__", curve_block).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

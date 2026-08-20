@@ -53,7 +53,16 @@ The Axis D scheduler never sends catch-up cycles. If a deadline has expired, eve
 
 The command socket has fixed per-cycle budgets: at most one newly accepted connection, one read per client, and two commands total. A nonblocking setup failure closes the client instead of allowing the realtime loop to block.
 
-After 1000 consecutive OP/WC-complete cycles, the timing guard arms. Any later missed deadline, non-OP state, or incomplete working counter latches `communication_timing_fault`, clears motion and servo requests, writes controlword and mode zero, and pins target position to actual position. The latch cannot be cleared through a motion or fault-reset command; the daemon must be restarted under a verified stable and inhibited configuration.
+After 1000 consecutive OP/WC-complete cycles, the timing guard arms. A missed
+host deadline still latches `communication_timing_fault`. In the dual-Uservo
+topology, a non-OP state or incomplete working counter while both axes are
+disabled and stationary instead disarms the enable gate and requires another
+1000 healthy cycles; no restart is needed. If either dual axis has an enable
+request, enabled feedback, motion, or an active synchronized session, the same
+communication loss immediately latches the fault and clears both axes. The
+latch cannot be cleared through a motion or fault-reset command; the daemon
+must be restarted under a verified stable configuration. Single-axis Uservo
+profiles retain their existing fail-closed latch behavior.
 
 ## No-motion acceptance
 

@@ -112,3 +112,24 @@ and E once each through the HMI. Read-only status then confirmed both
 group session/motion/safety-latch flags false. The GET/status-only kiosk verifier
 passed completely. No enable, mode selection, velocity, stop, or motion command
 was sent during acceptance.
+
+## Idle communication-recovery follow-up
+
+After the operator power-cycled both drives, D and E recovered to OP and the
+combined domain returned to WC `6/6`. At 18:52:14 CST, while both axes were
+disabled and stationary, D briefly reported EtherCAT AL `0x001A`
+(`Synchronization error`) and the combined WC changed to `4/6`; the bus
+recovered to two OP slaves and WC `6/6` approximately one second later. The
+original one-bad-cycle guard nevertheless retained
+`communication_timing_fault=true`, which blocked the subsequent HMI enable
+request and misleadingly appeared to the operator as an unresponsive button.
+
+The follow-up changes only idle recovery policy. With no enable request,
+enabled feedback, motion, or synchronized session, a communication loss now
+disarms the enable gate and requires another 1000 consecutive healthy cycles;
+it does not latch a restart requirement. During any active control state the
+first unhealthy sample still clears and disables both axes before PDO output
+and latches the communication safety fault. EtherCAT watchdog settings, the
+1 ms cycle, DC configuration, and active-motion fail-closed behavior are not
+relaxed. The HMI also consumes live commissioning-inhibit state, reports generic
+command rejection reasons, and disables caching of HTML/API responses.

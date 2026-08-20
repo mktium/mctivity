@@ -163,6 +163,13 @@ class DualUservoHmiTests(unittest.TestCase):
         self.assertIn("const gate = requireEnabled ? syncJogGate() : syncCommunicationGate();", html)
         self.assertIn("modeSelect.disabled = syncVelocityEnabled;", html)
 
+    def test_live_safety_state_and_command_errors_are_visible(self):
+        html = mctivity_hmi.HTML
+        self.assertIn("typeof s.commissioning_inhibit === 'boolean'", html)
+        self.assertIn("toggle.disabled = capabilityState.commissioningInhibit;", html)
+        self.assertIn("currentLang === 'zh' ? '命令未执行'", html)
+        self.assertIn('self.send_header("Cache-Control", "no-store")', Path(mctivity_hmi.__file__).read_text())
+
     def test_full_profile_keeps_legacy_devices(self):
         code = """
 import json, sys

@@ -16,6 +16,7 @@
 
 #include <ecrt.h>
 
+#include "communication_guard.h"
 #include "phase_search_guard.h"
 #include "realtime_schedule.h"
 
@@ -2606,6 +2607,10 @@ static void update_dual_uservo_communication_guard(
 {
     int healthy = wc_complete && slaves_responding == AXIS_COUNT && master_link_up &&
         axes[AXIS_MCTIVITY].st.operational && axes[AXIS_FV3].st.operational;
+    int control_active = sync_group_session_active || sync_group_motion_active ||
+        axes[AXIS_MCTIVITY].st.servo_request || axes[AXIS_MCTIVITY].st.enabled ||
+        axes[AXIS_MCTIVITY].st.moving || axes[AXIS_FV3].st.servo_request ||
+        axes[AXIS_FV3].st.enabled || axes[AXIS_FV3].st.moving;
     if (realtime_status.have_previous_wc && realtime_status.previous_wc != wc) {
         realtime_status.wc_change_count++;
     }
@@ -2621,10 +2626,15 @@ static void update_dual_uservo_communication_guard(
     } else {
         realtime_status.wc_incomplete_cycles++;
         realtime_status.consecutive_good_cycles = 0;
+        /* A stopped, disabled machine can recover from a transient DC/WC loss
+         * without a daemon restart.  Disarm the enable gate and require a full
+         * healthy window again.  Once control is active, retain the original
+         * fail-closed behavior and latch immediately for both axes. */
+        realtime_status.timing_guard_armed = 0;
         for (int axis = 0; axis < AXIS_COUNT; axis++) {
             axes[axis].st.phase_search_confirmed = 0;
         }
-        if (realtime_status.timing_guard_armed) {
+        if (mctivity_dual_comm_loss_latches(control_active)) {
             realtime_status.communication_timing_fault = 1;
         }
     }

@@ -33,8 +33,12 @@ cycle, and motion values remain in the single module template:
 The launcher resolves and validates two separate D/E environment parameter
 groups. Motiond keeps independent PDO offsets, state, target velocity, command
 routing, fault state, and stop state for each axis. The communication timing
-guard is shared deliberately: loss of either configured slave or an incomplete
-combined domain locks out both axes and clears both target velocities.
+guard is shared deliberately. While both axes are stopped and disabled, a
+transient non-OP/incomplete-WC sample disarms the enable gate; the gate rearms
+only after 1000 consecutive healthy 1 ms cycles and does not require a daemon
+restart. If either axis has an active enable request, enabled feedback, motion,
+or a synchronized group session, the same loss immediately clears both target
+velocities and latches the fail-closed communication fault for both axes.
 
 The dual topology additionally provides an atomic PV speed group:
 `sync_enable`, `sync_disable`, `sync_jog_velocity`, and `sync_stop`. A group
@@ -59,7 +63,10 @@ Commissioning inhibit permits only the CiA 402 fault-reset controlword pulse
 to zero. Communication or synchronized-group safety latches also block the
 reset pulse. The HMI refreshes the selected axis after a reset request and
 reports whether the pulse failed, was accepted but left the fault active, or
-cleared the fault.
+cleared the fault. It also refreshes commissioning-inhibit state from live axis
+status, displays command rejection reasons, and serves control pages and JSON
+with `Cache-Control: no-store` so a workstation cannot retain a stale
+commissioning gate after the server configuration changes.
 
 MKTLIN01's reproducible HMI settings are in
 `config/axis-de-uservo-pv-hmi.env`. The server binds `0.0.0.0:2015` so the
