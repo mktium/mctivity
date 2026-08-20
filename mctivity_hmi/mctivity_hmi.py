@@ -3241,7 +3241,7 @@ async function startSinglePointMotion() {
       const modeResult = await api({cmd:'set_mode', mode:'velocity'});
       if (!modeResult.ok) throw new Error(modeResult.error || 'set_mode velocity failed');
       if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
-      const velocity = PRIMARY_AXIS_DEFAULT_VELOCITY_RPM;
+      const velocity = Number(velRpm.value);
       const startResult = await jogVelocity(velocity);
       if (!startResult.ok) throw new Error(startResult.error || 'jog_velocity failed');
       return startResult;

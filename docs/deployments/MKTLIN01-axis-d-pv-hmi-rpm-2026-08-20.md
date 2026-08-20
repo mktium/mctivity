@@ -10,6 +10,9 @@ the Axis D HMI presentation:
 - profile acceleration is displayed as 2222 rpm/s and is read-only. Native PV
   acceleration is object `0x6083`, configured at motiond startup, so changing it
   requires editing the module profile and a controlled no-motion restart.
+- the velocity-mode large start/stop control uses the current rpm slider value
+  instead of always sending the 222 rpm profile default; it starts in the
+  positive direction and its second press uses the profile stop deceleration.
 - a latched `communication_timing_fault` is shown as a red alarm with
   “motiond restart required”; the HMI does not auto-reset it.
 
