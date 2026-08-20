@@ -89,6 +89,18 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv"}:
             assert device.get("default_velocity_counts_s") == 37000, device
             assert device.get("max_velocity_counts_s") == 166500, device
             assert device.get("stop_decel_counts_s2") == 370333, device
+    if profile == "axis-de-uservo-pv":
+        sync = capabilities.get("sync_velocity_control") or {}
+        assert "axis.group.velocity.sync" in caps, capabilities
+        assert sync.get("available") is True, sync
+        assert sync.get("atomic_velocity_group") is True, sync
+        assert sync.get("devices") == ["mctivity", "mctivity_e"], sync
+        assert set(sync.get("commands") or []) == {
+            "sync_enable", "sync_disable", "sync_jog_velocity", "sync_stop"
+        }, sync
+        assert all(status.get("sync_group_session_active") is False for status in statuses), statuses
+        assert all(status.get("sync_group_motion_active") is False for status in statuses), statuses
+        assert all(status.get("sync_group_safety_latched") is False for status in statuses), statuses
     print("Uservo axis read-only no-motion state ok")
 PY
 

@@ -148,6 +148,10 @@ _COMMAND_CAPABILITY = {
     "gear_config": "axis.mode.gear_cam.execute",
     "gear_start": "axis.mode.gear_cam.execute",
     "gear_stop": "axis.mode.gear_cam.execute",
+    "sync_enable": "axis.group.velocity.sync",
+    "sync_disable": "axis.group.velocity.sync",
+    "sync_jog_velocity": "axis.group.velocity.sync",
+    "sync_stop": "axis.group.velocity.sync",
 }
 _VALID_COMMANDS = set(_COMMAND_CAPABILITY) | {"status"}
 _MODE_CAPABILITY = {
@@ -233,6 +237,10 @@ _COMMAND_FIELD_ORDER = {
         "gear_slave_ratio",
     ],
     "gear_stop": ["cmd", "device"],
+    "sync_enable": ["cmd"],
+    "sync_disable": ["cmd"],
+    "sync_jog_velocity": ["cmd", "velocity", "acceleration_rpm_s"],
+    "sync_stop": ["cmd", "deceleration_rpm_s"],
 }
 _INT32_MIN = -(2**31)
 _INT32_MAX = 2**31 - 1
@@ -241,6 +249,7 @@ _REQUIRED_INT_FIELDS = {
     "move_rel": ["delta"],
     "move_curve_rel": ["target_delta_counts", "vmax_counts_s", "accel_counts_s2", "decel_counts_s2"],
     "jog_velocity": ["velocity"],
+    "sync_jog_velocity": ["velocity"],
     "torque_cmd": ["torque"],
 }
 _OPTIONAL_INT_FIELDS = {
@@ -250,6 +259,8 @@ _OPTIONAL_INT_FIELDS = {
     "move_curve_rel": ["dwell_ms", "min_pos", "max_pos"],
     "gear_config": ["master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"],
     "gear_start": ["master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"],
+    "sync_jog_velocity": ["acceleration_rpm_s"],
+    "sync_stop": ["deceleration_rpm_s"],
 }
 _NONNEGATIVE_INT_FIELDS = {
     "deceleration_rpm_s",
@@ -360,6 +371,18 @@ else:
     if _DEVICE_CAPABILITY.get("fv3") in _CAPABILITY_SET:
         _HMI_DEVICE_ORDER.append("fv3")
 _ALLOWED_DEVICE_SET = set(_HMI_DEVICE_ORDER)
+_SYNC_VELOCITY_COMMANDS = {
+    "sync_enable", "sync_disable", "sync_jog_velocity", "sync_stop"
+}
+_SYNC_VELOCITY_PROFILE = (
+    len(_AXIS_DEVICES) == 2
+    and _HMI_DEVICE_ORDER == ["mctivity", "mctivity_e"]
+    and {str(device.get("logical_axis", "")).upper() for device in _AXIS_DEVICES} == {"D", "E"}
+    and all(device.get("topology") == "axis-de-uservo-pv" for device in _AXIS_DEVICES)
+)
+_EXPOSED_CAPABILITY_SET = set(_CAPABILITY_SET)
+if _SYNC_VELOCITY_PROFILE:
+    _EXPOSED_CAPABILITY_SET.add("axis.group.velocity.sync")
 
 
 def _hmi_axis_config(device_key):
@@ -406,7 +429,13 @@ def capability_manifest():
         "primary_axis_label": _PRIMARY_AXIS_LABEL,
         "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV,
         "commissioning_inhibit": COMMISSIONING_INHIBIT,
-        "capabilities": _MODULE_RUNTIME.get("capabilities", []),
+        "capabilities": sorted(_EXPOSED_CAPABILITY_SET),
+        "sync_velocity_control": {
+            "available": _SYNC_VELOCITY_PROFILE,
+            "atomic_velocity_group": _SYNC_VELOCITY_PROFILE,
+            "devices": list(_HMI_DEVICE_ORDER) if _SYNC_VELOCITY_PROFILE else [],
+            "commands": sorted(_SYNC_VELOCITY_COMMANDS) if _SYNC_VELOCITY_PROFILE else [],
+        },
         "warnings": _MODULE_RUNTIME.get("warnings", []),
         "enabled_feature_keys": sorted(_ENABLED_FEATURE_KEYS),
         "feature_assembly": _FEATURE_ASSEMBLY,
@@ -432,7 +461,7 @@ def _command_is_enabled(payload):
     required = _command_required_capability(payload)
     if not required:
         return True, None
-    if required in _CAPABILITY_SET:
+    if required in _EXPOSED_CAPABILITY_SET:
         return True, required
     return False, required
 
@@ -513,6 +542,23 @@ def _validate_command_numbers(cmd, clean, device):
     for key in ("master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"):
         if key in clean and clean[key] > MAX_GEAR_RATIO:
             return False
+    if cmd == "sync_jog_velocity":
+        if clean["velocity"] == 0:
+            return False
+        group_max_velocity = min(
+            int(axis.get("max_velocity_counts_s", _PRIMARY_AXIS_MAX_VELOCITY_CPS))
+            for axis in _AXIS_DEVICES
+        )
+        if abs(clean["velocity"]) > group_max_velocity:
+            return False
+        if "acceleration_rpm_s" in clean:
+            expected_accels = {int(axis.get("default_accel_rpm_s", 0)) for axis in _AXIS_DEVICES}
+            if len(expected_accels) != 1 or clean["acceleration_rpm_s"] not in expected_accels:
+                return False
+    if cmd == "sync_stop" and "deceleration_rpm_s" in clean:
+        expected_decels = {int(axis.get("stop_decel_rpm_s", 0)) for axis in _AXIS_DEVICES}
+        if len(expected_decels) != 1 or clean["deceleration_rpm_s"] not in expected_decels:
+            return False
     return True
 
 
@@ -523,7 +569,11 @@ def _sanitize_command_payload(payload, device):
     order = _COMMAND_FIELD_ORDER.get(cmd)
     if not order:
         return None
-    clean = {"cmd": cmd, "device": device}
+    if cmd in _SYNC_VELOCITY_COMMANDS and not _SYNC_VELOCITY_PROFILE:
+        return None
+    clean = {"cmd": cmd}
+    if cmd not in _SYNC_VELOCITY_COMMANDS:
+        clean["device"] = device
     for key in order:
         if key in ("cmd", "device"):
             continue
@@ -676,6 +726,14 @@ body.lang-en .label-subtext { font-size:10px; }
 .control-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .control-row.three { grid-template-columns:1fr 1fr 1fr; }
 .control-note { min-height:24px; color:#666; font-size:11px; line-height:1.25; font-weight:700; }
+.sync-velocity-card { margin-top:8px; border:2px solid rgba(42,131,183,.28); }
+.sync-velocity-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.sync-velocity-switch { display:flex; align-items:center; gap:8px; color:var(--theme-deep); font-size:13px; font-weight:900; cursor:pointer; }
+.sync-velocity-switch input { width:20px; height:20px; accent-color:var(--theme-blue); }
+.sync-velocity-status { padding:7px 9px; border-radius:8px; background:var(--soft); color:#667; font-size:11px; line-height:1.3; font-weight:800; }
+.sync-velocity-status.good { color:var(--ok); background:rgba(22,134,74,.08); }
+.sync-velocity-status.bad { color:var(--bad); background:rgba(186,26,26,.08); }
+.sync-velocity-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .mode-panel { display:none; }
 .mode-panel.active { display:grid; gap:8px; }
 .active-mode-card { min-height:0; }
@@ -1016,6 +1074,23 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
               <button class="stop" onclick="stopMotion()">停止</button>
               <button class="blue" onclick="jogVelocity(Number(velRpm.value))">正转</button>
             </div>
+          </div>
+          <div id="syncVelocityCard" class="slider-card sync-velocity-card" hidden>
+            <div class="sync-velocity-head">
+              <strong>D + E 同步速度控制</strong>
+              <label class="sync-velocity-switch"><input id="syncVelocityToggle" type="checkbox" onchange="setSyncVelocityEnabled(this.checked)"><span>同步开关</span></label>
+            </div>
+            <div id="syncVelocityStatus" class="sync-velocity-status" aria-live="polite">同步关闭；单轴控制保持不变</div>
+            <div class="sync-velocity-actions">
+              <button id="syncEnableBtn" class="blue" onclick="syncEnableAxes()">同步使能</button>
+              <button id="syncDisableBtn" class="neutral" onclick="syncDisableAxes()">同步失能</button>
+            </div>
+            <div class="control-row three">
+              <button id="syncReverseBtn" class="blue" onclick="syncJogVelocity(-Number(velRpm.value))">同步反转</button>
+              <button id="syncStopBtn" class="stop" onclick="syncStopMotion()">同步停止</button>
+              <button id="syncForwardBtn" class="blue" onclick="syncJogVelocity(Number(velRpm.value))">同步正转</button>
+            </div>
+            <div id="syncVelocityProfileText" class="control-note">RPM、加速度与停止减速度均来自 profile</div>
           </div>
         </div>
         <div id="panel-torque" class="mode-panel">
@@ -1527,6 +1602,7 @@ const deviceProfiles = {};
 const lastUiStateSnapshot = {};
 const velocitySliderCommandTimerByDevice = {};
 const uiStateSaveTimerByDevice = {};
+const faultResetFeedbackByDevice = {};
 for (const device of ASSEMBLED_DEVICE_ORDER) {
   statusByDevice[device] = null;
   feedbackByDevice[device] = null;
@@ -1536,6 +1612,7 @@ for (const device of ASSEMBLED_DEVICE_ORDER) {
   lastUiStateSnapshot[device] = '';
   velocitySliderCommandTimerByDevice[device] = 0;
   uiStateSaveTimerByDevice[device] = 0;
+  faultResetFeedbackByDevice[device] = null;
 }
 let transmissionDraft = null;
 const POWEROFF_HOLD_MS = 2000;
@@ -1554,15 +1631,17 @@ const capabilityState = {
   featureRegistrySource:'',
   warnings:[],
   generatedAt:'',
-  commissioningInhibit:false
+  commissioningInhibit:false,
+  syncVelocityAvailable:false
 };
+let syncVelocityEnabled = false;
 let diagModalText = '';
 function currentModeUi(device = activeDevice) {
   return modeUiStateByDevice[device];
 }
 function syncModeSelectDisabled(device = activeDevice) {
   if (!modeSelect || device !== activeDevice) return;
-  modeSelect.disabled = false;
+  modeSelect.disabled = syncVelocityEnabled;
 }
 function axisDisplayName(device) {
   if (device === 'virtual') return UI_TEXT[currentLang].virtualAxis;
@@ -1742,6 +1821,22 @@ async function apiForDevice(device, payload) {
   const requestPayload = Object.assign({}, payload, {device});
   const res = await fetch('/api/command', {method:'POST', headers:apiHeaders({'Content-Type':'application/json'}), body: JSON.stringify(requestPayload)});
   return res.json();
+}
+async function refreshDeviceStatus(device) {
+  const res = await fetch('/api/status?device=' + encodeURIComponent(device));
+  const data = await res.json();
+  if (data.ok && data.status) {
+    const status = Object.assign({}, data.status, {device});
+    statusByDevice[device] = status;
+    if (device === activeDevice) render(status);
+  }
+  return data;
+}
+async function apiForSyncGroup(payload) {
+  const res = await fetch('/api/command', {method:'POST', headers:apiHeaders({'Content-Type':'application/json'}), body: JSON.stringify(payload)});
+  const data = await res.json();
+  showApiError(data);
+  return data;
 }
 function modeOption(value) {
   return Array.from(modeSelect.options || []).find(opt => opt.value === value) || null;
@@ -2881,6 +2976,10 @@ function switchAxis(deviceName) {
   if (monitorBtn) monitorBtn.classList.toggle('active', activeDevice === ASSEMBLED_DEVICE_ORDER[0]);
   if (configBtn) configBtn.classList.toggle('active', activeDevice === ASSEMBLED_DEVICE_ORDER[1]);
   loadUiState();
+  if (syncVelocityEnabled && modeSelect) {
+    modeSelect.value = 'velocity';
+    currentProfile(activeDevice).mode = 'velocity';
+  }
   applyCapabilityModeAvailability(activeDevice);
   enforceGearConstraints();
   feedbackByDevice[activeDevice] = null;
@@ -2981,6 +3080,7 @@ function render(s) {
   const reportedDevice = String(s && s.device || activeDevice).toLowerCase();
   const device = supportsDevice(reportedDevice) ? reportedDevice : activeDevice;
   statusByDevice[device] = s;
+  renderSyncVelocityStatus();
   if (device !== activeDevice) return;
   const motionState = currentMotion(device);
   const now = Date.now();
@@ -3064,6 +3164,20 @@ function render(s) {
     faultButton.setAttribute('aria-label', timingFault ? text.timingFault : (s.fault ? text.fault : text.ready));
     faultButton.textContent = s.fault ? text.reset : '';
     faultButton.classList.toggle('fault', alarm);
+  }
+  const resetFeedback = faultResetFeedbackByDevice[device];
+  if (resetFeedback && Number(resetFeedback.expiresAt || 0) > Date.now()) {
+    if (faultNameText) {
+      faultNameText.textContent = resetFeedback.message;
+      faultNameText.classList.toggle('bad', Boolean(resetFeedback.error));
+      faultNameText.classList.toggle('good', !resetFeedback.error);
+    }
+  } else if (resetFeedback) {
+    faultResetFeedbackByDevice[device] = null;
+    if (faultNameText) {
+      faultNameText.classList.remove('bad');
+      faultNameText.classList.remove('good');
+    }
   }
   if (communicationAlarm) {
     communicationAlarm.hidden = !timingFault;
@@ -3181,7 +3295,11 @@ function handleVelocitySliderInput() {
     const liveTargetCps = Number(liveStatus && liveStatus.jog_velocity_cps || 0);
     if (!(activeDevice === device && liveStatus && liveStatus.enabled && liveStatus.control_mode === 'velocity' && liveTargetCps !== 0)) return;
     const direction = liveTargetCps < 0 ? -1 : 1;
-    apiForDevice(device, {cmd:'jog_velocity', velocity:rpmToCountsS(direction * requestedRpm, device)}).catch(err => console.error(err));
+    if (syncVelocityEnabled) {
+      syncJogVelocity(direction * requestedRpm).catch(err => console.error(err));
+    } else {
+      apiForDevice(device, {cmd:'jog_velocity', velocity:rpmToCountsS(direction * requestedRpm, device)}).catch(err => console.error(err));
+    }
   }, 150);
 }
 function applyConfig() {
@@ -3193,7 +3311,122 @@ function applyConfig() {
   updateSliders();
 }
 function cmd(name) { return api({cmd:name}); }
+function syncAxesStatus() {
+  return ['mctivity', 'mctivity_e'].map(device => ({device, status:statusByDevice[device]}));
+}
+function syncCommunicationGate() {
+  if (!capabilityState.syncVelocityAvailable) return {ok:false, error:'sync_not_available'};
+  if (!syncVelocityEnabled) return {ok:false, error:'sync_switch_off'};
+  if (capabilityState.commissioningInhibit) return {ok:false, error:'commissioning_inhibit'};
+  for (const item of syncAxesStatus()) {
+    const status = item.status;
+    if (!status) return {ok:false, error:item.device + '_status_unavailable'};
+    if (status.fault) return {ok:false, error:item.device + '_fault'};
+    if (!status.operational) return {ok:false, error:item.device + '_not_operational'};
+    if (!status.wc_complete) return {ok:false, error:item.device + '_wc_incomplete'};
+    if (status.communication_timing_fault) return {ok:false, error:item.device + '_timing_fault'};
+  }
+  return {ok:true};
+}
+function syncJogGate() {
+  const gate = syncCommunicationGate();
+  if (!gate.ok) return gate;
+  for (const item of syncAxesStatus()) {
+    const status = item.status;
+    if (!status.servo_request || !status.enabled) return {ok:false, error:item.device + '_not_enabled'};
+    if (Number(status.settle_cycles || 0) !== 0) return {ok:false, error:item.device + '_not_settled'};
+  }
+  return {ok:true};
+}
+function renderSyncVelocityStatus(message = '') {
+  const card = document.getElementById('syncVelocityCard');
+  const statusEl = document.getElementById('syncVelocityStatus');
+  const toggle = document.getElementById('syncVelocityToggle');
+  if (card) card.hidden = !capabilityState.syncVelocityAvailable;
+  if (!capabilityState.syncVelocityAvailable || !statusEl) return;
+  if (toggle) toggle.checked = syncVelocityEnabled;
+  const gate = syncCommunicationGate();
+  const jogGate = syncJogGate();
+  const statuses = syncAxesStatus();
+  const bothEnabled = statuses.every(item => item.status && item.status.enabled);
+  const anyRequested = statuses.some(item => item.status && item.status.servo_request);
+  const text = message || (!syncVelocityEnabled
+    ? '同步关闭；单轴控制保持不变'
+    : (gate.ok ? ('D/E 通信就绪；' + (bothEnabled ? '已同步使能' : (anyRequested ? '使能进行中' : '未使能'))) : ('组启动禁止：' + gate.error)));
+  statusEl.textContent = text;
+  statusEl.classList.toggle('good', syncVelocityEnabled && gate.ok);
+  statusEl.classList.toggle('bad', syncVelocityEnabled && !gate.ok);
+  const enableButton = document.getElementById('syncEnableBtn');
+  if (enableButton) enableButton.disabled = !syncVelocityEnabled || !gate.ok;
+  for (const id of ['syncReverseBtn', 'syncForwardBtn']) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !syncVelocityEnabled || !jogGate.ok;
+  }
+  for (const id of ['syncDisableBtn', 'syncStopBtn']) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !syncVelocityEnabled;
+  }
+}
+function setSyncVelocityEnabled(enabled) {
+  if (!capabilityState.syncVelocityAvailable) return false;
+  if (!enabled && syncAxesStatus().some(item => item.status && (item.status.moving || item.status.servo_request))) {
+    syncVelocityEnabled = true;
+    renderSyncVelocityStatus('请先同步停止并失能 D/E，再关闭同步开关');
+    return false;
+  }
+  syncVelocityEnabled = Boolean(enabled);
+  if (syncVelocityEnabled && modeSelect) {
+    modeSelect.value = 'velocity';
+    currentProfile(activeDevice).mode = 'velocity';
+    syncModePanels('velocity', true);
+  }
+  syncModeSelectDisabled(activeDevice);
+  renderSyncVelocityStatus();
+  return true;
+}
+async function refreshSyncStatuses() {
+  if (!capabilityState.syncVelocityAvailable) return [];
+  const results = await Promise.all(['mctivity', 'mctivity_e'].map(async device => {
+    const res = await fetch('/api/status?device=' + encodeURIComponent(device));
+    const data = await res.json();
+    if (data.ok && data.status) {
+      statusByDevice[device] = Object.assign({}, data.status, {device});
+      if (device === activeDevice) render(statusByDevice[device]);
+    }
+    return data;
+  }));
+  renderSyncVelocityStatus();
+  return results;
+}
+async function runSyncStartCommand(payload, requireEnabled = false) {
+  await refreshSyncStatuses();
+  const gate = requireEnabled ? syncJogGate() : syncCommunicationGate();
+  if (!gate.ok) {
+    renderSyncVelocityStatus('组启动拒绝：' + gate.error);
+    return {ok:false, error:gate.error};
+  }
+  const result = await apiForSyncGroup(payload);
+  await refreshSyncStatuses();
+  return result;
+}
+function syncEnableAxes() { return runSyncStartCommand({cmd:'sync_enable'}, false); }
+function syncDisableAxes() {
+  if (!syncVelocityEnabled || !capabilityState.syncVelocityAvailable) return Promise.resolve({ok:false, error:'sync_switch_off'});
+  return apiForSyncGroup({cmd:'sync_disable'}).then(async result => { await refreshSyncStatuses(); return result; });
+}
+function syncJogVelocity(rpmValue) {
+  const profile = currentProfile(activeDevice);
+  const direction = Number(rpmValue) < 0 ? -1 : 1;
+  return runSyncStartCommand({cmd:'sync_jog_velocity', velocity:direction * rpmToCountsS(clampVelocityRpm(Math.abs(Number(rpmValue)), activeDevice), activeDevice), acceleration_rpm_s:Number(profile.velocityAccelRpmS || axisConfig(activeDevice).default_accel_rpm_s)}, true);
+}
+function syncStopMotion() {
+  if (!syncVelocityEnabled || !capabilityState.syncVelocityAvailable) return Promise.resolve({ok:false, error:'sync_switch_off'});
+  return apiForSyncGroup({cmd:'sync_stop', deceleration_rpm_s:Number(currentProfile(activeDevice).stopDecelRpmS || axisConfig(activeDevice).stop_decel_rpm_s)}).then(async result => { await refreshSyncStatuses(); return result; });
+}
 function toggleEnable() {
+  if (syncVelocityEnabled) {
+    return refreshSyncStatuses().then(() => syncAxesStatus().some(item => item.status && item.status.servo_request) ? syncDisableAxes() : syncEnableAxes());
+  }
   if (capabilityState.commissioningInhibit) {
     return Promise.resolve({ok:false, error:'commissioning_inhibit'});
   }
@@ -3265,9 +3498,21 @@ function setMode() {
     return false;
   });
 }
-function resetFault() {
-  const motionState = currentMotion();
-  if (!(currentStatus() && currentStatus().fault)) return false;
+function setFaultResetFeedback(device, message, error = false) {
+  faultResetFeedbackByDevice[device] = {message, error:Boolean(error), expiresAt:Date.now() + 8000};
+  if (device === activeDevice) {
+    const detail = document.getElementById('faultNameText');
+    if (detail) {
+      detail.textContent = message;
+      detail.classList.toggle('bad', Boolean(error));
+      detail.classList.toggle('good', !error);
+    }
+  }
+}
+async function resetFault() {
+  const device = activeDevice;
+  const motionState = currentMotion(device);
+  if (!(currentStatus(device) && currentStatus(device).fault)) return false;
   motionState.commandSeq += 1;
   motionState.stopRequested = false;
   motionState.latch = false;
@@ -3276,10 +3521,50 @@ function resetFault() {
   motionState.gearStoppedLatched = false;
   renderMotionToggle(false);
   setGearPanelLocked(false);
-  api({cmd:'fault_reset'}).catch(err => console.error(err));
-  return false;
+  let commandResult = null;
+  let commandError = '';
+  try {
+    commandResult = await apiForDevice(device, {cmd:'fault_reset'});
+    if (!(commandResult && commandResult.ok)) commandError = String(commandResult && commandResult.error || 'unknown_error');
+  } catch (err) {
+    commandError = String(err && err.message || err);
+  }
+  let refreshed = null;
+  let refreshError = '';
+  try {
+    refreshed = await refreshDeviceStatus(device);
+    if (!(refreshed && refreshed.ok && refreshed.status)) refreshError = String(refreshed && refreshed.error || 'status_unavailable');
+  } catch (err) {
+    refreshError = String(err && err.message || err);
+  }
+  if (commandError) {
+    setFaultResetFeedback(device, '故障复位失败：' + commandError, true);
+    return commandResult || {ok:false, error:commandError};
+  }
+  if (refreshError) {
+    setFaultResetFeedback(device, '复位脉冲已发送，但状态刷新失败：' + refreshError, true);
+    return commandResult;
+  }
+  if (refreshed.status.fault) {
+    setFaultResetFeedback(device, '复位脉冲已发送，故障仍存在', true);
+  } else {
+    setFaultResetFeedback(device, '故障已复位', false);
+  }
+  return commandResult;
 }
 function stopMotion() {
+  if (syncVelocityEnabled) {
+    for (const state of Object.values(motionStateByDevice)) {
+      state.commandSeq += 1;
+      state.stopRequested = true;
+      state.latch = false;
+      state.seenMoving = false;
+    }
+    return syncStopMotion().finally(() => {
+      for (const state of Object.values(motionStateByDevice)) state.stopRequested = false;
+      renderMotionToggle(false);
+    });
+  }
   const motionState = currentMotion();
   motionState.commandSeq += 1;
   if (motionState.stopRequested) return false;
@@ -3326,6 +3611,12 @@ function stopMotion() {
     });
 }
 async function startSinglePointMotion() {
+  if (syncVelocityEnabled && modeSelect && modeSelect.value === 'velocity') {
+    await refreshSyncStatuses();
+    const anyMoving = syncAxesStatus().some(item => item.status && (item.status.moving || Number(item.status.jog_velocity_cps || 0) !== 0));
+    if (anyMoving) return stopMotion();
+    return syncJogVelocity(Number(velRpm.value));
+  }
   const motionState = currentMotion();
   if (motionState.stopRequested) return false;
   if (motionState.latch || (currentStatus() && currentStatus().moving)) {
@@ -3421,7 +3712,10 @@ function moveRel() {
     acceleration_rpm_s:Number(absAccel.value || 0)
   }, currentMotionBoundsPayload()));
 }
-function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)}); }
+function jogVelocity(v) {
+  if (syncVelocityEnabled) return syncJogVelocity(v);
+  return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)});
+}
 function sendTorque() { return api({cmd:'torque_cmd', torque:Number(torqueCmd.value)}); }
 function savePoint(n) { if (currentStatus()) { currentProfile().points[n] = axisCounts(Number(currentStatus().pos)); updateSliders(); } }
 function gotoPoint(n) { absPos.value = currentProfile().points[n]; updateSliders(); return api(motionPayload(Number(absPos.value))); }
@@ -3515,6 +3809,7 @@ async function bootstrapUi() {
       capabilityState.warnings = Array.isArray(data.warnings) ? data.warnings : [];
       capabilityState.generatedAt = data.generated_at || '';
       capabilityState.commissioningInhibit = Boolean(data.commissioning_inhibit);
+      capabilityState.syncVelocityAvailable = Boolean(data.sync_velocity_control && data.sync_velocity_control.available && capabilityState.capabilities.has('axis.group.velocity.sync'));
     }
   } catch (err) {
     console.error(err);
@@ -3530,8 +3825,10 @@ async function bootstrapUi() {
   applyCapabilityModeAvailability(activeDevice);
   enforceGearConstraints();
   applyLanguage();
-  setInterval(() => api({cmd:'status'}).catch(() => {}), 300);
-  api({cmd:'status'}).catch(() => {});
+  renderSyncVelocityStatus();
+  const pollStatus = () => capabilityState.syncVelocityAvailable ? refreshSyncStatuses() : api({cmd:'status'});
+  setInterval(() => pollStatus().catch(() => {}), 300);
+  pollStatus().catch(() => {});
 }
 bootstrapUi();
 </script>
@@ -4224,28 +4521,31 @@ class Handler(BaseHTTPRequestHandler):
                             "ok": False,
                             "error": "unsupported_command",
                             "required_capability": required,
-                            "capabilities": sorted(_CAPABILITY_SET),
+                            "capabilities": sorted(_EXPOSED_CAPABILITY_SET),
                         },
                         400,
                     )
                     return
-                status = feature_dispatch_axis_command(
-                    device,
-                    payload,
-                    _transport_command,
-                    adapter=ProtocolAdapter(
-                        wait_motion_ready_fn=_wait_motion_ready,
-                        apply_fv3_profile_fn=_apply_fv3_profile_from_payload,
-                        fv3_set_mode_fn=lambda mode_name: _write_sdo(
-                            FV3_SLAVE_POSITION,
-                            "int8",
-                            "0x6060",
-                            _fv3_mode_code_from_name(mode_name),
+                if cmd in _SYNC_VELOCITY_COMMANDS:
+                    status = motiond_command(payload)
+                else:
+                    status = feature_dispatch_axis_command(
+                        device,
+                        payload,
+                        _transport_command,
+                        adapter=ProtocolAdapter(
+                            wait_motion_ready_fn=_wait_motion_ready,
+                            apply_fv3_profile_fn=_apply_fv3_profile_from_payload,
+                            fv3_set_mode_fn=lambda mode_name: _write_sdo(
+                                FV3_SLAVE_POSITION,
+                                "int8",
+                                "0x6060",
+                                _fv3_mode_code_from_name(mode_name),
+                            ),
+                            fv3_force_csp_fn=lambda: _write_sdo(FV3_SLAVE_POSITION, "int8", "0x6060", 8),
                         ),
-                        fv3_force_csp_fn=lambda: _write_sdo(FV3_SLAVE_POSITION, "int8", "0x6060", 8),
-                    ),
-                    enabled_feature_keys=_ENABLED_FEATURE_KEYS,
-                )
+                        enabled_feature_keys=_ENABLED_FEATURE_KEYS,
+                    )
                 self.send_json(status, 400 if not status.get("ok") else 200)
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, 503)

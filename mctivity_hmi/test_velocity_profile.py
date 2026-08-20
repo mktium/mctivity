@@ -36,7 +36,8 @@ class VelocityProfileHmiTests(unittest.TestCase):
         self.assertIn("const direction = liveTargetCps < 0 ? -1 : 1;", source)
         self.assertIn("rpmToCountsS(direction * requestedRpm, device)", source)
         self.assertIn("}, 150);", source)
-        self.assertIn("function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)}); }", source)
+        self.assertIn("if (syncVelocityEnabled) return syncJogVelocity(v);", source)
+        self.assertIn("return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)});", source)
         self.assertIn("const timingFault = Boolean(s.communication_timing_fault);", source)
         self.assertIn("timingFault ? text.timingFault", source)
         self.assertIn("const visibleWarningCount = warningList.length + (timingFault ? 1 : 0);", source)
@@ -45,10 +46,30 @@ class VelocityProfileHmiTests(unittest.TestCase):
         source = (Path(mctivity_hmi.__file__).parent.parent / "scripts" / "mctivity-kiosk-verify.sh").read_text(
             encoding="utf-8"
         )
-        for command in ("set_mode", "confirm_phase_search_complete", "fault_reset", "reset_fault", "jog_velocity"):
-            self.assertNotIn(command, source)
-        self.assertNotIn("sock.sendall", source)
-        self.assertNotIn("/api/command", source)
+        for control_transport in (
+            "sock.sendall",
+            "socket.create_connection",
+            "/api/command",
+            "curl -X POST",
+            "curl --request POST",
+        ):
+            self.assertNotIn(control_transport, source)
+
+    def test_fault_reset_refreshes_status_and_surfaces_outcome(self):
+        source = Path(mctivity_hmi.__file__).read_text(encoding="utf-8")
+        start = source.index("async function resetFault()")
+        end = source.index("function stopMotion()", start)
+        reset_source = source[start:end]
+        self.assertIn("apiForDevice(device, {cmd:'fault_reset'})", reset_source)
+        self.assertIn("await refreshDeviceStatus(device)", reset_source)
+        self.assertIn("故障复位失败：", reset_source)
+        self.assertIn("复位脉冲已发送，故障仍存在", reset_source)
+        self.assertIn("故障已复位", reset_source)
+        self.assertNotIn("console.error", reset_source)
+        self.assertLess(
+            reset_source.index("apiForDevice(device, {cmd:'fault_reset'})"),
+            reset_source.index("await refreshDeviceStatus(device)"),
+        )
 
 
 if __name__ == "__main__":

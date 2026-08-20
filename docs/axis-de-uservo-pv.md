@@ -36,11 +36,38 @@ routing, fault state, and stop state for each axis. The communication timing
 guard is shared deliberately: loss of either configured slave or an incomplete
 combined domain locks out both axes and clears both target velocities.
 
+The dual topology additionally provides an atomic PV speed group:
+`sync_enable`, `sync_disable`, `sync_jog_velocity`, and `sync_stop`. A group
+command has no single-axis device key. Motiond validates both axes first, then
+updates both runtime slots together so the next combined-domain PDO frame
+carries both controlwords or both target velocities. The HMI exposes this as an
+explicit D+E synchronization switch; while it is on, the normal enable, large
+start/stop, direction buttons, stop button, and live RPM slider all use group
+commands. One-axis faults, communication loss, or loss of enabled state after
+the group is armed clears and disables both axes before PDO output and latches
+the group safety interlock. `sync_disable` is required to clear that latch.
+This is same-cycle PV speed start/stop, not encoder phase or position locking.
+
 During commissioning, use `config/axis-de-uservo-pv.env` and keep
 `MCTIVITY_COMMISSIONING_INHIBIT=1`. Inhibit forces both controlwords, mode
 commands, and target velocities to zero. Deployment verification is read-only:
 do not send `set_mode`, `enable`, `jog_velocity`, `stop`, `fault_reset`, SDO
 downloads, alias writes, state requests, or rescan requests.
+
+Commissioning inhibit permits only the CiA 402 fault-reset controlword pulse
+`0x0080`; mode, target velocity, and every enabling controlword remain forced
+to zero. Communication or synchronized-group safety latches also block the
+reset pulse. The HMI refreshes the selected axis after a reset request and
+reports whether the pulse failed, was accepted but left the fault active, or
+cleared the fault.
+
+MKTLIN01's reproducible HMI settings are in
+`config/axis-de-uservo-pv-hmi.env`. The server binds `0.0.0.0:2015` so the
+local kiosk and `http://192.168.1.201:2015` both work, while the HTTP Host
+allowlist admits only the default loopback names plus `192.168.1.201`. This is
+not client authentication: without `MCTIVITY_API_TOKEN`, every device on the
+trusted LAN that can reach the page can also submit control requests. Add a
+token before extending access beyond the controlled machine network.
 
 The first observed two-drive baseline before dual-profile deployment was:
 

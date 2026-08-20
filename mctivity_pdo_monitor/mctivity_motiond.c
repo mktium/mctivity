@@ -52,6 +52,10 @@ static volatile sig_atomic_t running = 1;
 static int uservo_axis_d_topology = 0;
 static int uservo_pv_topology = 0;
 static int uservo_dual_pv_topology = 0;
+static int sync_group_session_active = 0;
+static int sync_group_motion_active = 0;
+static int sync_group_both_enabled_once = 0;
+static int sync_group_safety_latched = 0;
 static int commissioning_inhibit = 0;
 static int require_realtime = 0;
 static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
@@ -1382,6 +1386,8 @@ static void send_status_fd(int fd, int axis)
         "\"rt_last_cycle_runtime_ns\":%llu,\"rt_max_cycle_runtime_ns\":%llu,"
         "\"wc_change_count\":%llu,\"wc_incomplete_cycles\":%llu,"
         "\"timing_guard_armed\":%s,\"communication_timing_fault\":%s,"
+        "\"sync_group_session_active\":%s,\"sync_group_motion_active\":%s,"
+        "\"sync_group_both_enabled_once\":%s,\"sync_group_safety_latched\":%s,"
         "\"last_command\":\"%s\",\"message\":\"%s\"}}\n",
         axis_name(axis), logical_axis, topology,
         (long long)axis_counts_per_rev, commissioning_inhibit ? "true" : "false",
@@ -1407,6 +1413,10 @@ static void send_status_fd(int fd, int axis)
         (unsigned long long)realtime_status.wc_incomplete_cycles,
         realtime_status.timing_guard_armed ? "true" : "false",
         realtime_status.communication_timing_fault ? "true" : "false",
+        sync_group_session_active ? "true" : "false",
+        sync_group_motion_active ? "true" : "false",
+        sync_group_both_enabled_once ? "true" : "false",
+        sync_group_safety_latched ? "true" : "false",
         s->last_command,
         s->message);
     if (n > 0) {
@@ -1424,18 +1434,215 @@ static void send_error_fd(int fd, const char *msg)
     }
 }
 
+static void send_sync_status_fd(int fd, const char *action)
+{
+    char out[768];
+    int n = snprintf(
+        out,
+        sizeof(out),
+        "{\"ok\":true,\"group\":{\"topology\":\"axis-de-uservo-pv\",\"action\":\"%s\","
+        "\"atomic\":true,\"session_active\":%s,\"motion_active\":%s,\"both_enabled_once\":%s,"
+        "\"safety_latched\":%s,"
+        "\"devices\":[\"mctivity\",\"mctivity_e\"],"
+        "\"d\":{\"enabled\":%s,\"servo_request\":%s,\"moving\":%s,\"velocity\":%d},"
+        "\"e\":{\"enabled\":%s,\"servo_request\":%s,\"moving\":%s,\"velocity\":%d}}}\n",
+        action,
+        sync_group_session_active ? "true" : "false",
+        sync_group_motion_active ? "true" : "false",
+        sync_group_both_enabled_once ? "true" : "false",
+        sync_group_safety_latched ? "true" : "false",
+        axes[AXIS_MCTIVITY].st.enabled ? "true" : "false",
+        axes[AXIS_MCTIVITY].st.servo_request ? "true" : "false",
+        axes[AXIS_MCTIVITY].st.moving ? "true" : "false",
+        axes[AXIS_MCTIVITY].st.jog_velocity_cps,
+        axes[AXIS_FV3].st.enabled ? "true" : "false",
+        axes[AXIS_FV3].st.servo_request ? "true" : "false",
+        axes[AXIS_FV3].st.moving ? "true" : "false",
+        axes[AXIS_FV3].st.jog_velocity_cps);
+    if (n > 0) {
+        size_t send_len = (size_t)n < sizeof(out) ? (size_t)n : sizeof(out) - 1;
+        (void)send(fd, out, send_len, MSG_NOSIGNAL);
+    }
+}
+
+static void clear_axis_velocity_command(axis_runtime_t *ax, int disable)
+{
+    if (disable) {
+        ax->st.servo_request = 0;
+    }
+    ax->st.enable_settle_cycles = 0;
+    clear_motion(ax);
+    ax->stop_velocity_cps = 0;
+    ax->target_velocity_cps = 0;
+    ax->st.jog_velocity_cps = 0;
+    ax->velocity_remainder = 0;
+    ax->pp_pulse_cycles = 0;
+    ax->fv3_halt_cycles = 0;
+    ax->gear_running = 0;
+    ax->gear_has_last_master_pos = 0;
+    ax->st.moving = 0;
+    ax->st.target_raw = ax->st.pos_raw;
+    ax->st.target_user = ax->st.pos_user;
+}
+
+static int dual_axes_fault_free_and_online(void)
+{
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        const status_t *s = &axes[axis].st;
+        if (s->fault || !s->operational || !s->wc_complete) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void handle_sync_velocity_command(int fd, const char *line, const char *cmd)
+{
+    const uservo_pv_profile_t *pv_d = &uservo_pv_profiles[AXIS_MCTIVITY];
+    const uservo_pv_profile_t *pv_e = &uservo_pv_profiles[AXIS_FV3];
+    if (!uservo_dual_pv_topology) {
+        send_error_fd(fd, "unsupported_for_topology");
+        return;
+    }
+    if (strcmp(cmd, "sync_stop") == 0) {
+        uint32_t requested_decel;
+        if (find_json_key(line, "deceleration_rpm_s")) {
+            if (!find_u32(line, "deceleration_rpm_s", &requested_decel) ||
+                requested_decel != pv_d->stop_decel_rpm_s || requested_decel != pv_e->stop_decel_rpm_s) {
+                send_error_fd(fd, "sync stop deceleration must match both axis profiles");
+                return;
+            }
+        }
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            clear_axis_velocity_command(&axes[axis], 0);
+            strncpy(axes[axis].st.last_command, "sync_stop", sizeof(axes[axis].st.last_command) - 1);
+            snprintf(axes[axis].st.message, sizeof(axes[axis].st.message), "%s synchronized PV stop requested", axis_label(axis));
+        }
+        sync_group_motion_active = 0;
+        send_sync_status_fd(fd, "stop");
+        return;
+    }
+    if (strcmp(cmd, "sync_disable") == 0) {
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            clear_axis_velocity_command(&axes[axis], 1);
+            strncpy(axes[axis].st.last_command, "sync_disable", sizeof(axes[axis].st.last_command) - 1);
+            snprintf(axes[axis].st.message, sizeof(axes[axis].st.message), "%s synchronized disable requested", axis_label(axis));
+        }
+        sync_group_session_active = 0;
+        sync_group_motion_active = 0;
+        sync_group_both_enabled_once = 0;
+        sync_group_safety_latched = 0;
+        send_sync_status_fd(fd, "disable");
+        return;
+    }
+    if (commissioning_inhibit) {
+        send_error_fd(fd, "commissioning_inhibit");
+        return;
+    }
+    if (realtime_status.communication_timing_fault) {
+        send_error_fd(fd, "communication_timing_fault");
+        return;
+    }
+    if (sync_group_safety_latched) {
+        send_error_fd(fd, "sync_group_safety_latched; issue sync_disable before retry");
+        return;
+    }
+    if (!realtime_status.timing_guard_armed) {
+        send_error_fd(fd, "timing_guard_not_armed");
+        return;
+    }
+    if (!dual_axes_fault_free_and_online()) {
+        send_error_fd(fd, "sync_axes_not_fault_free_and_online");
+        return;
+    }
+    if (strcmp(cmd, "sync_enable") == 0) {
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            axis_runtime_t *ax = &axes[axis];
+            clear_axis_velocity_command(ax, 0);
+            ax->st.servo_request = 1;
+            ax->st.enable_settle_cycles = ENABLE_SETTLE_CYCLES;
+            strncpy(ax->st.last_command, "sync_enable", sizeof(ax->st.last_command) - 1);
+            snprintf(ax->st.message, sizeof(ax->st.message), "%s synchronized enable requested", axis_label(axis));
+        }
+        sync_group_session_active = 1;
+        sync_group_motion_active = 0;
+        sync_group_both_enabled_once = 0;
+        send_sync_status_fd(fd, "enable");
+        return;
+    }
+    if (strcmp(cmd, "sync_jog_velocity") == 0) {
+        int32_t velocity;
+        uint32_t requested_accel;
+        uint32_t group_max_velocity = pv_d->max_velocity_cps < pv_e->max_velocity_cps
+            ? pv_d->max_velocity_cps : pv_e->max_velocity_cps;
+        if (!find_i32(line, "velocity", &velocity) || velocity == 0) {
+            send_error_fd(fd, "sync_jog_velocity requires nonzero velocity");
+            return;
+        }
+        if ((int64_t)velocity > (int64_t)group_max_velocity ||
+            (int64_t)velocity < -(int64_t)group_max_velocity) {
+            send_error_fd(fd, "sync velocity exceeds shared profile maximum");
+            return;
+        }
+        if (find_json_key(line, "acceleration_rpm_s")) {
+            if (!find_u32(line, "acceleration_rpm_s", &requested_accel) ||
+                requested_accel != pv_d->accel_rpm_s || requested_accel != pv_e->accel_rpm_s) {
+                send_error_fd(fd, "sync acceleration must match both axis profiles");
+                return;
+            }
+        }
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            if (!axes[axis].st.servo_request || !ready_for_motion(&axes[axis])) {
+                send_error_fd(fd, "sync axes are not both enabled and settled");
+                return;
+            }
+        }
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            axis_runtime_t *ax = &axes[axis];
+            clear_motion(ax);
+            ax->stop_velocity_cps = 0;
+            ax->st.jog_velocity_cps = velocity;
+            ax->target_velocity_cps = velocity;
+            ax->st.moving = 1;
+            ax->velocity_remainder = 0;
+            ax->commanded_mode = 3;
+            set_control_mode(ax, "velocity");
+            strncpy(ax->st.last_command, "sync_jog_velocity", sizeof(ax->st.last_command) - 1);
+            snprintf(ax->st.message, sizeof(ax->st.message), "%s synchronized PV velocity %d counts/s", axis_label(axis), velocity);
+        }
+        sync_group_session_active = 1;
+        sync_group_motion_active = 1;
+        sync_group_both_enabled_once = 1;
+        send_sync_status_fd(fd, "jog_velocity");
+        return;
+    }
+    send_error_fd(fd, "unsupported_sync_command");
+}
+
 static void handle_command(int fd, const char *line)
 {
-    int axis = axis_from_line(line);
+    int axis;
+    char cmd[64];
+    if (!command_from_line(line, cmd, sizeof(cmd))) {
+        send_error_fd(fd, "missing command");
+        return;
+    }
+    if (strcmp(cmd, "sync_enable") == 0 || strcmp(cmd, "sync_disable") == 0 ||
+        strcmp(cmd, "sync_jog_velocity") == 0 || strcmp(cmd, "sync_stop") == 0) {
+        handle_sync_velocity_command(fd, line, cmd);
+        return;
+    }
+    axis = axis_from_line(line);
     if (axis < 0 || axis >= AXIS_COUNT) {
         send_error_fd(fd, "unsupported_device");
         return;
     }
     axis_runtime_t *ax = &axes[axis];
     status_t *s = &ax->st;
-    char cmd[64];
-    if (!command_from_line(line, cmd, sizeof(cmd))) {
-        send_error_fd(fd, "missing command");
+
+    if (uservo_dual_pv_topology && (sync_group_session_active || sync_group_safety_latched) &&
+        strcmp(cmd, "status") != 0) {
+        send_error_fd(fd, "sync_group_active; issue sync_disable before single-axis control");
         return;
     }
 
@@ -2428,6 +2635,62 @@ static void update_dual_uservo_communication_guard(
     }
 }
 
+static void enforce_sync_group_interlock_before_output(void)
+{
+    const char *reason = NULL;
+    if (!sync_group_session_active) {
+        return;
+    }
+    if (!sync_group_both_enabled_once &&
+        axes[AXIS_MCTIVITY].st.servo_request && axes[AXIS_MCTIVITY].st.enabled &&
+        axes[AXIS_MCTIVITY].st.enable_settle_cycles == 0 &&
+        axes[AXIS_FV3].st.servo_request && axes[AXIS_FV3].st.enabled &&
+        axes[AXIS_FV3].st.enable_settle_cycles == 0) {
+        sync_group_both_enabled_once = 1;
+    }
+    if (realtime_status.communication_timing_fault) {
+        reason = "communication timing fault";
+    } else if (!realtime_status.timing_guard_armed) {
+        reason = "timing guard not armed";
+    } else {
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            const status_t *s = &axes[axis].st;
+            if (s->fault) {
+                reason = axis == AXIS_MCTIVITY ? "Axis D fault" : "Axis E fault";
+                break;
+            }
+            if (!s->operational || !s->wc_complete) {
+                reason = axis == AXIS_MCTIVITY ? "Axis D communication unavailable" : "Axis E communication unavailable";
+                break;
+            }
+            if (sync_group_both_enabled_once && (!s->servo_request || !s->enabled)) {
+                reason = axis == AXIS_MCTIVITY ? "Axis D no longer ready" : "Axis E no longer ready";
+                break;
+            }
+        }
+    }
+    if (!reason) {
+        return;
+    }
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        axis_runtime_t *runtime = &axes[axis];
+        clear_axis_velocity_command(runtime, 1);
+        runtime->st.cw = 0;
+        runtime->commanded_mode = 0;
+        runtime->fault_reset_cycles = 0;
+        strncpy(runtime->st.last_command, "sync_group_interlock", sizeof(runtime->st.last_command) - 1);
+        snprintf(
+            runtime->st.message,
+            sizeof(runtime->st.message),
+            "group interlock: %s; both axes disabled",
+            reason);
+    }
+    sync_group_session_active = 0;
+    sync_group_motion_active = 0;
+    sync_group_both_enabled_once = 0;
+    sync_group_safety_latched = 1;
+}
+
 static void build_uservo_dual_pv_domain_regs(void)
 {
     static const uint16_t indices[8] = {0x6040, 0x6060, 0x60ff, 0x60fe, 0x6041, 0x6061, 0x606c, 0x60fd};
@@ -2618,20 +2881,32 @@ static int run_uservo_axes_de_pv(void)
                 runtime->st.cw = 0;
             }
         }
+        enforce_sync_group_interlock_before_output();
         for (int axis = 0; axis < AXIS_COUNT; axis++) {
             axis_runtime_t *runtime = &axes[axis];
             uservo_pv_offsets_t *off = &uservo_dual_pv_offsets[axis];
-            int outputs_inhibited = commissioning_inhibit || realtime_status.communication_timing_fault;
-            EC_WRITE_U16(process_data + off->controlword, outputs_inhibited ? 0 : runtime->st.cw);
-            EC_WRITE_S8(process_data + off->mode, outputs_inhibited ? 0 : runtime->commanded_mode);
-            EC_WRITE_S32(process_data + off->target_velocity, outputs_inhibited ? 0 : runtime->target_velocity_cps);
+            int safety_output_blocked = realtime_status.communication_timing_fault || sync_group_safety_latched;
+            uint16_t output_controlword = safety_output_blocked
+                ? 0
+                : (commissioning_inhibit
+                    ? (runtime->st.cw == 0x0080 ? 0x0080 : 0)
+                    : runtime->st.cw);
+            EC_WRITE_U16(process_data + off->controlword, output_controlword);
+            EC_WRITE_S8(
+                process_data + off->mode,
+                commissioning_inhibit || safety_output_blocked ? 0 : runtime->commanded_mode);
+            EC_WRITE_S32(
+                process_data + off->target_velocity,
+                commissioning_inhibit || safety_output_blocked ? 0 : runtime->target_velocity_cps);
             EC_WRITE_U32(process_data + off->digital_output, 0);
         }
         ecrt_domain_queue(domain);
         ecrt_master_sync_reference_clock(master);
         ecrt_master_sync_slave_clocks(master);
         ecrt_master_send(master);
-        poll_server(AXIS_D_SERVER_ACCEPT_BUDGET, AXIS_D_SERVER_COMMAND_BUDGET, 1);
+        /* One command per dual-axis cycle guarantees an acknowledged atomic group
+         * update reaches the next PDO frame before another command can replace it. */
+        poll_server(AXIS_D_SERVER_ACCEPT_BUDGET, 1U, 1);
         for (int axis = 0; axis < AXIS_COUNT; axis++) {
             axes[axis].st.cycles++;
         }

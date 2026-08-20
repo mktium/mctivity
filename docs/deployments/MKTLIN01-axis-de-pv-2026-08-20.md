@@ -54,6 +54,17 @@ counts are zero. The 10001 motion socket and 2015 HMI listener are local-only.
 HMI and kiosk are active, Xorg/Chromium are running, and HDMI-1 outputs
 1920x1080.
 
+The HMI was subsequently opened to the controlled LAN at
+`http://192.168.1.201:2015`. The previous failure was caused by
+`MCTIVITY_WEB_HOST=127.0.0.1`, not by routing or the firewall. The deployed HMI
+now binds `0.0.0.0:2015` and allows Host `192.168.1.201`; the firewall input
+policy is accept. A request from the commissioning workstation returned HTTP
+200 and the active `axis-de-uservo-pv` capability manifest. The previous
+`hmi.env` is backed up under
+`/var/backups/mctivity/hmi-lan-20260820T101400`. No motiond restart or motor
+command was involved. LAN command access currently has no API token and must
+therefore remain on the trusted machine network.
+
 The final read-only verifier deliberately did not pass: D retained the known
 `0x8100` transition fault (`6041=0x1218`, status `fault=true`), while E was
 fault-free. No automatic reset was issued. EtherCAT SDO upload cannot be
