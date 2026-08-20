@@ -34,6 +34,7 @@ class ProfileRuntimeTest(unittest.TestCase):
             rpm_s_to_counts_s2(device["default_accel_rpm_s"], counts_per_rev),
         )
         self.assertEqual(device["default_decel_rpm_s"], device["stop_decel_rpm_s"])
+        self.assertEqual(device["velocity_step_rpm"], 1)
 
     def test_position_uservo_stays_without_velocity_feature(self):
         runtime = self.runtime("axis-d-uservo")

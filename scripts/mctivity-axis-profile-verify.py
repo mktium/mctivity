@@ -117,6 +117,8 @@ def main():
                 for key in ("velocity_step_counts_s", "stop_decel_rpm_s"):
                     if int(device.get(key, 0)) <= 0:
                         raise SystemExit(f"axis-d-uservo-pv requires positive {key}")
+                if int(device.get("velocity_step_rpm", 0)) <= 0:
+                    raise SystemExit("axis-d-uservo-pv requires positive velocity_step_rpm")
                 if int(device["default_decel_rpm_s"]) != int(device["stop_decel_rpm_s"]):
                     raise SystemExit("axis-d-uservo-pv 0x6084 deceleration and stop deceleration must match")
                 if resolved_device["default_accel_counts_s2"] <= 0 or resolved_device["stop_decel_counts_s2"] <= 0:

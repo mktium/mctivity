@@ -339,6 +339,9 @@ _PRIMARY_AXIS_MAX_VELOCITY_CPS = min(
     max(1, int(_PRIMARY_AXIS_DEVICE.get("max_velocity_counts_s", MAX_JOG_VELOCITY_CPS))),
 )
 _PRIMARY_AXIS_VELOCITY_STEP_CPS = max(1, int(_PRIMARY_AXIS_DEVICE.get("velocity_step_counts_s", 1)))
+_PRIMARY_AXIS_VELOCITY_STEP_RPM = max(1, int(_PRIMARY_AXIS_DEVICE.get("velocity_step_rpm", 1)))
+_PRIMARY_AXIS_DEFAULT_VELOCITY_RPM = _PRIMARY_AXIS_DEFAULT_SPEED_RPM
+_PRIMARY_AXIS_MAX_VELOCITY_RPM = _PRIMARY_AXIS_MAX_SPEED_RPM
 _PRIMARY_AXIS_STOP_DECEL_RPM_S = max(
     1,
     int(_PRIMARY_AXIS_DEVICE.get("stop_decel_rpm_s", _PRIMARY_AXIS_DEVICE.get("default_decel_rpm_s", 300))),
@@ -941,11 +944,12 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         <div id="panel-velocity" class="mode-panel">
           <div class="slider-card">
             <div class="slider-head"><span class="slider-title">速度点动</span><span id="velText" class="slider-number">--</span></div>
-            <input id="velCps" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_VELOCITY_STEP_CPS__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" oninput="updateSliders()">
+            <input id="velRpm" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_RPM__" step="__PRIMARY_AXIS_VELOCITY_STEP_RPM__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__" oninput="updateSliders()">
+            <div class="control-note">加速度 <strong id="velocityAccelText">__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__ rpm/s</strong>（profile）</div>
             <div class="control-row three">
-              <button class="blue" onclick="jogVelocity(-Number(velCps.value))">反转</button>
+              <button class="blue" onclick="jogVelocity(-Number(velRpm.value))">反转</button>
               <button class="stop" onclick="stopMotion()">停止</button>
-              <button class="blue" onclick="jogVelocity(Number(velCps.value))">正转</button>
+              <button class="blue" onclick="jogVelocity(Number(velRpm.value))">正转</button>
             </div>
           </div>
         </div>
@@ -1019,8 +1023,9 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
           <label>默认运动时间 ms<input id="cfgMs" type="number" value="3000" min="500" max="15000" step="100" onchange="applyConfig()"></label>
         </div>
         <div class="param-card">
-          <h3>速度/转矩</h3>
-          <label>默认速度 cnt/s<input id="cfgVel" type="number" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_CPS__" step="__PRIMARY_AXIS_VELOCITY_STEP_CPS__" onchange="applyConfig()"></label>
+          <h3>速度/加速度</h3>
+          <label id="cfgVelLabel">默认速度 rpm<input id="cfgVel" type="number" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_RPM__" step="__PRIMARY_AXIS_VELOCITY_STEP_RPM__" onchange="applyConfig()"></label>
+          <label id="cfgAccelLabel" title="native PV acceleration is configured by the profile at motiond startup">加速度 rpm/s<input id="cfgAccel" type="number" value="__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__" min="1" max="__PRIMARY_AXIS_MAX_ACCEL_RPM_S__" step="1" readonly></label>
           <label>转矩上限 %<input id="cfgTorqueLimit" type="number" value="100" min="1" max="100" step="1" onchange="applyConfig()"></label>
         </div>
         <div class="param-card">
@@ -1134,9 +1139,19 @@ __MOTION_CURVE_EDITOR_BLOCK__
 <script>
 const REV = __PRIMARY_AXIS_COUNTS_PER_REV__;
 const PRIMARY_AXIS_LABEL = '__PRIMARY_AXIS_LABEL__';
+const PRIMARY_AXIS_DEFAULT_VELOCITY_RPM = __PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__;
+const PRIMARY_AXIS_MAX_VELOCITY_RPM = __PRIMARY_AXIS_MAX_VELOCITY_RPM__;
+const PRIMARY_AXIS_VELOCITY_STEP_RPM = __PRIMARY_AXIS_VELOCITY_STEP_RPM__;
+const PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S = __PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__;
+const PRIMARY_AXIS_MAX_ACCEL_RPM_S = __PRIMARY_AXIS_MAX_ACCEL_RPM_S__;
 const AXIS_DIR = -1;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
+function rpmToCountsS(value) { return Math.trunc(Number(value) * REV / 60); }
+function countsSToRpm(value) { return Number(value) * 60 / REV; }
+function clampVelocityRpm(value) {
+  return clamp(Number(value) || PRIMARY_AXIS_DEFAULT_VELOCITY_RPM, 1, PRIMARY_AXIS_MAX_VELOCITY_RPM);
+}
 const MODE_LABELS = {
   zh: {position:'单点定位', incremental:'增量位移', jog:'点动', point:'点位表', homing:'回零/置零', velocity:'速度控制', torque:'转矩控制', gear_cam:'电子齿轮'},
   en: {position:'Point Positioning', incremental:'Incremental Displacement', jog:'Jog', point:'Point Table', homing:'Zeroing', velocity:'Velocity Control', torque:'Torque Control', gear_cam:'Electronic Gearing'}
@@ -1190,13 +1205,14 @@ const UI_TEXT = {
     pointConfig:'点表配置',
     posJog:'位置/点动',
     incrementalParams:'增量位移参数',
-    speedTorque:'速度/转矩',
+    speedTorque:'速度/加速度',
     gear:'电子齿轮',
     cam:'电子凸轮',
     defaultRel:'默认相对位移',
     defaultAbs:'默认绝对位置',
     defaultMoveMs:'默认运动时间',
     defaultVel:'默认速度',
+    velocityAccel:'加速度',
     torqueLimit:'转矩上限',
     gearNum:'齿轮比分子',
     gearDen:'齿轮比分母',
@@ -1313,13 +1329,14 @@ const UI_TEXT = {
     pointConfig:'Point Table',
     posJog:'Position / Jog',
     incrementalParams:'Incremental Displacement Parameters',
-    speedTorque:'Speed / Torque',
+    speedTorque:'Speed / Acceleration',
     gear:'Electronic Gearing',
     cam:'Electronic Cam',
     defaultRel:'Default Relative Move',
     defaultAbs:'Default Absolute Target',
     defaultMoveMs:'Default Move Time',
     defaultVel:'Default Speed',
+    velocityAccel:'Acceleration',
     torqueLimit:'Torque Limit',
     gearNum:'Gear Numerator',
     gearDen:'Gear Denominator',
@@ -1410,7 +1427,7 @@ const motionStateByDevice = {
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0}
 };
 const deviceProfiles = {
-  mctivity: {mode:'__PRIMARY_AXIS_DEFAULT_MODE__', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, stopDecelRpmS:__PRIMARY_AXIS_STOP_DECEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velCps:__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
+  mctivity: {mode:'__PRIMARY_AXIS_DEFAULT_MODE__', absPos:0, absSpeedRpm:__PRIMARY_AXIS_DEFAULT_SPEED_RPM__, absAccel:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, velocityAccelRpmS:__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__, stopDecelRpmS:__PRIMARY_AXIS_STOP_DECEL_RPM_S__, relDelta:__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__, moveMs:3000, velRpm:__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__, torqueCmd:0, gearMaster:'fv3', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}},
   fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
 let uiStateSaveTimer = 0;
@@ -2123,7 +2140,8 @@ function saveUiState(device = activeDevice) {
   profile.absAccel = Number(absAccel.value);
   profile.relDelta = Number(relDelta.value);
   profile.moveMs = Number(moveMs.value);
-  profile.velCps = Number(velCps.value);
+  profile.velRpm = Number(velRpm.value);
+  profile.velCps = rpmToCountsS(profile.velRpm);
   profile.torqueCmd = Number(torqueCmd.value);
   profile.gearMaster = gearMasterSelect.value;
   profile.gearMasterRatio = Number(gearMasterRatio.value);
@@ -2139,7 +2157,10 @@ function saveUiState(device = activeDevice) {
 function loadUiState(device = activeDevice) {
   const profile = currentProfile(device);
   if (device === 'mctivity') {
-    profile.velCps = Math.max(1, Math.min(__PRIMARY_AXIS_MAX_VELOCITY_CPS__, Number(profile.velCps) || __PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__));
+    const legacyVelocity = countsSToRpm(Number(profile.velCps));
+    profile.velRpm = clampVelocityRpm(Number(profile.velRpm) || legacyVelocity);
+    profile.velCps = rpmToCountsS(profile.velRpm);
+    profile.velocityAccelRpmS = clamp(Number(profile.velocityAccelRpmS) || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S, 1, PRIMARY_AXIS_MAX_ACCEL_RPM_S);
   }
   profile.transmission = normalizedTransmission(profile);
   profile.incrementalCurve = storeIncrementalCurveState(device, profile.incrementalCurve, false);
@@ -2148,7 +2169,9 @@ function loadUiState(device = activeDevice) {
   absAccel.value = profile.absAccel;
   relDelta.value = profile.relDelta;
   moveMs.value = profile.moveMs;
-  velCps.value = profile.velCps;
+  velRpm.value = profile.velRpm || PRIMARY_AXIS_DEFAULT_VELOCITY_RPM;
+  cfgVel.value = velRpm.value;
+  cfgAccel.value = profile.velocityAccelRpmS || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S;
   torqueCmd.value = profile.torqueCmd;
   gearMasterRatio.value = profile.gearMasterRatio || 1;
   gearSlaveRatio.value = profile.gearSlaveRatio || 1;
@@ -2524,12 +2547,15 @@ function refreshStaticText() {
   if (configLabels[0]) configLabels[0].childNodes[0].nodeValue = text.defaultRel;
   if (configLabels[1]) configLabels[1].childNodes[0].nodeValue = text.defaultAbs;
   if (configLabels[2]) configLabels[2].childNodes[0].nodeValue = text.defaultMoveMs + ' ms';
-  if (configLabels[3]) configLabels[3].childNodes[0].nodeValue = text.defaultVel + ' cnt/s';
-  if (configLabels[4]) configLabels[4].childNodes[0].nodeValue = text.torqueLimit + ' %';
-  if (configLabels[5]) configLabels[5].childNodes[0].nodeValue = text.gearNum;
-  if (configLabels[6]) configLabels[6].childNodes[0].nodeValue = text.gearDen;
-  if (configLabels[7]) configLabels[7].childNodes[0].nodeValue = text.camTable;
-  if (configLabels[8]) configLabels[8].childNodes[0].nodeValue = text.syncPeriod + ' ms';
+  const cfgVelLabel = document.getElementById('cfgVelLabel');
+  const cfgAccelLabel = document.getElementById('cfgAccelLabel');
+  if (cfgVelLabel) cfgVelLabel.childNodes[0].nodeValue = text.defaultVel + ' rpm';
+  if (cfgAccelLabel) cfgAccelLabel.childNodes[0].nodeValue = text.velocityAccel + ' rpm/s';
+  if (configLabels[5]) configLabels[5].childNodes[0].nodeValue = text.torqueLimit + ' %';
+  if (configLabels[6]) configLabels[6].childNodes[0].nodeValue = text.gearNum;
+  if (configLabels[7]) configLabels[7].childNodes[0].nodeValue = text.gearDen;
+  if (configLabels[8]) configLabels[8].childNodes[0].nodeValue = text.camTable;
+  if (configLabels[9]) configLabels[9].childNodes[0].nodeValue = text.syncPeriod + ' ms';
   document.querySelectorAll('#tabConfig .point-actions button').forEach(btn => btn.textContent = text.record);
   refreshModeOptions();
   refreshGearMasterOptions();
@@ -2919,7 +2945,7 @@ function render(s) {
   setText('wc', s.wc + (s.wc_complete ? ' complete' : ''));
   setText('mode', s.mode);
   setText('controlModeView', modeLabel(s.control_mode) || s.control_mode || '--');
-  setText('velocityView', fmt(s.velocity_actual_cps || s.jog_velocity_cps || 0));
+  setText('velocityView', countsSToRpm(s.velocity_actual_cps || s.jog_velocity_cps || 0).toFixed(1));
   setText('torqueView', String(s.torque_cmd || 0) + '%');
   const modeUi = currentModeUi(device);
   if (!modeUi.interacting) {
@@ -2961,7 +2987,7 @@ function updateSliders() {
   absPos.value = String(clamp(Number(absPos.value), rangeMin, rangeMax));
   profile.absPos = Number(absPos.value);
   const rel = Number(relDelta.value), abs = Number(absPos.value), ms = Number(moveMs.value);
-  const vel = Number(velCps.value), tq = Number(torqueCmd.value);
+  const vel = Number(velRpm.value), tq = Number(torqueCmd.value);
   const speed = Number(absSpeedRpm.value), accel = Number(absAccel.value);
   const gearSlaveName = axisDisplayName(activeDevice);
   const status = currentStatus();
@@ -2997,7 +3023,9 @@ function updateSliders() {
   renderGearWheel('slave');
   setText('gearSlaveName', gearSlaveName);
   setText('msText', fmt(ms) + ' ms');
-  setText('velText', fmt(vel) + ' cnt/s'); setText('torqueText', tq + '%');
+  setText('velText', fmt(vel) + ' rpm');
+  setText('velocityAccelText', fmt(Number(profile.velocityAccelRpmS || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S)) + ' rpm/s');
+  setText('torqueText', tq + '%');
   const points = profile.points;
   for (const k of [1,2,3]) {
     const pointText = formatTransmissionScalar(transmissionValueFromCounts(points[k], profile), tx.unit, 1);
@@ -3006,8 +3034,9 @@ function updateSliders() {
   }
 }
 function applyConfig() {
-  relDelta.value = cfgRel.value; absPos.value = cfgAbs.value; moveMs.value = cfgMs.value; velCps.value = cfgVel.value;
-  absSpeedRpm.value = Math.max(1, Math.min(3000, Math.round(Number(cfgVel.value) * 60 / REV)));
+  relDelta.value = cfgRel.value; absPos.value = cfgAbs.value; moveMs.value = cfgMs.value; velRpm.value = clampVelocityRpm(cfgVel.value);
+  absSpeedRpm.value = Math.max(1, Math.min(3000, Math.round(Number(cfgVel.value))));
+  currentProfile().velocityAccelRpmS = clamp(Number(cfgAccel.value) || PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S, 1, PRIMARY_AXIS_MAX_ACCEL_RPM_S);
   torqueCmd.min = -Number(cfgTorqueLimit.value); torqueCmd.max = Number(cfgTorqueLimit.value);
   updateSliders();
 }
@@ -3185,7 +3214,7 @@ async function startSinglePointMotion() {
       const modeResult = await api({cmd:'set_mode', mode:'velocity'});
       if (!modeResult.ok) throw new Error(modeResult.error || 'set_mode velocity failed');
       if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
-      const velocity = __PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__;
+      const velocity = PRIMARY_AXIS_DEFAULT_VELOCITY_RPM;
       const startResult = await jogVelocity(velocity);
       if (!startResult.ok) throw new Error(startResult.error || 'jog_velocity failed');
       return startResult;
@@ -3240,7 +3269,7 @@ function moveRel() {
     acceleration_rpm_s:Number(absAccel.value || 0)
   }, currentMotionBoundsPayload()));
 }
-function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:v}); }
+function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v)}); }
 function sendTorque() { return api({cmd:'torque_cmd', torque:Number(torqueCmd.value)}); }
 function savePoint(n) { if (currentStatus()) { currentProfile().points[n] = axisCounts(Number(currentStatus().pos)); updateSliders(); } }
 function gotoPoint(n) { absPos.value = currentProfile().points[n]; updateSliders(); return api(motionPayload(Number(absPos.value))); }
@@ -3371,6 +3400,9 @@ HTML = HTML.replace("__PRIMARY_AXIS_MAX_ACCEL_RPM_S__", str(_PRIMARY_AXIS_MAX_AC
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__", str(_PRIMARY_AXIS_DEFAULT_VELOCITY_CPS))
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_VELOCITY_CPS__", str(_PRIMARY_AXIS_MAX_VELOCITY_CPS))
 HTML = HTML.replace("__PRIMARY_AXIS_VELOCITY_STEP_CPS__", str(_PRIMARY_AXIS_VELOCITY_STEP_CPS))
+HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__", str(_PRIMARY_AXIS_DEFAULT_VELOCITY_RPM))
+HTML = HTML.replace("__PRIMARY_AXIS_MAX_VELOCITY_RPM__", str(_PRIMARY_AXIS_MAX_VELOCITY_RPM))
+HTML = HTML.replace("__PRIMARY_AXIS_VELOCITY_STEP_RPM__", str(_PRIMARY_AXIS_VELOCITY_STEP_RPM))
 HTML = HTML.replace("__PRIMARY_AXIS_STOP_DECEL_RPM_S__", str(_PRIMARY_AXIS_STOP_DECEL_RPM_S))
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_MODE__", _PRIMARY_AXIS_DEFAULT_MODE)
 
@@ -3412,8 +3444,10 @@ def _normalize_ui_device_state(raw):
         "absPos",
         "absSpeedRpm",
         "absAccel",
+        "velocityAccelRpmS",
         "relDelta",
         "moveMs",
+        "velRpm",
         "velCps",
         "torqueCmd",
         "gearMasterRatio",

@@ -14,7 +14,9 @@ class VelocityProfileHmiTests(unittest.TestCase):
     def test_rendered_axis_d_velocity_parameters(self):
         html = mctivity_hmi.HTML
         self.assertIn("const PRIMARY_AXIS_LABEL = 'D';", html)
-        self.assertIn('id="velCps" type="range" min="1" max="166500" step="10" value="37000"', html)
+        self.assertIn('id="velRpm" type="range" min="1" max="999" step="1" value="222"', html)
+        self.assertIn('id="cfgAccel" type="number" value="2222"', html)
+        self.assertIn('加速度 <strong id="velocityAccelText">2222 rpm/s</strong>', html)
         self.assertIn("stopDecelRpmS:2222", html)
         self.assertIn("syncModePanels('velocity');", html)
 
@@ -24,7 +26,8 @@ class VelocityProfileHmiTests(unittest.TestCase):
         position_fallback = source.index("modeSelect.value !== 'position'", velocity_branch)
         self.assertLess(velocity_branch, position_fallback)
         self.assertIn("currentProfile().stopDecelRpmS", source)
-        self.assertIn("const velocity = __PRIMARY_AXIS_DEFAULT_VELOCITY_CPS__;", source)
+        self.assertIn("const velocity = PRIMARY_AXIS_DEFAULT_VELOCITY_RPM;", source)
+        self.assertIn("function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v)}); }", source)
 
     def test_deployment_verifier_has_no_control_requests(self):
         source = (Path(mctivity_hmi.__file__).parent.parent / "scripts" / "mctivity-kiosk-verify.sh").read_text(

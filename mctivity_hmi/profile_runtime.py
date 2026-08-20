@@ -73,6 +73,7 @@ def normalize_axis_device(device):
         "velocity_step_counts_s",
         result.get("position_step_counts", 1),
     )
+    velocity_step_rpm = _positive_int(result, "velocity_step_rpm", 1)
 
     if default_speed_rpm > max_speed_rpm:
         raise ProfileRuntimeError("default speed exceeds maximum speed")
@@ -102,6 +103,7 @@ def normalize_axis_device(device):
     result["max_decel_rpm_s"] = max_decel_rpm_s
     result["stop_decel_rpm_s"] = stop_decel_rpm_s
     result["velocity_step_counts_s"] = velocity_step_counts_s
+    result["velocity_step_rpm"] = velocity_step_rpm
     result["default_accel_counts_s2"] = rpm_s_to_counts_s2(default_accel_rpm_s, counts_per_rev)
     result["default_decel_counts_s2"] = rpm_s_to_counts_s2(default_decel_rpm_s, counts_per_rev)
     result["stop_decel_counts_s2"] = rpm_s_to_counts_s2(stop_decel_rpm_s, counts_per_rev)

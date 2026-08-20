@@ -53,14 +53,14 @@ The position profile intentionally omits velocity mode because the drive's defau
 
 The vendor documentation also provides a native PV profile. `profiles/axis-d-uservo-pv.json` selects RxPDO `0x1601` (`6040`, `6060`, `60ff`, `60fe:01`) and TxPDO `0x1A01` (`6041`, `6061`, `606c`, `60fd`) with CiA 402 mode code `3` (PV). `jog_velocity` writes `0x60ff` in counts/s; the actual velocity is read from `0x606c`. This is not CSV and does not reuse the CSP target-position increment path.
 
-`modules/axis/device/uservo/pv/module.json` is the single source for the PV motion and HMI values: counts/revolution, target and maximum speed in rpm, acceleration/deceleration/stop-deceleration in rpm/s, and the HMI velocity step in counts/s. `mctivity_hmi/profile_runtime.py` validates the manifest and derives counts/s or counts/s² by integer conversion:
+`modules/axis/device/uservo/pv/module.json` is the single source for the PV motion and HMI values: counts/revolution, target and maximum speed in rpm, acceleration/deceleration/stop-deceleration in rpm/s, and the HMI velocity steps in rpm and counts/s. `mctivity_hmi/profile_runtime.py` validates the manifest and derives counts/s or counts/s² by integer conversion:
 
 ```text
 counts/s  = rpm   * counts/rev / 60
 counts/s² = rpm/s * counts/rev / 60
 ```
 
-At 10000 counts/rev, 222 rpm becomes 37000 cnt/s, 999 rpm becomes 166500 cnt/s, and 2222 rpm/s becomes 370333 cnt/s². The motiond launcher resolves the same selected profile and passes only validated rpm and counts/rev values to the C process; C repeats the conversion and fails closed if a required PV value is absent or invalid. It writes the derived maximum to `0x607F`, acceleration to `0x6083`, and deceleration to `0x6084`. The drive uses `0x6084` for the PV stop ramp as well as profile deceleration, so the verifier requires normal and stop deceleration to be equal. The HMI exposes the derived target, maximum, step, and stop deceleration without independent numeric defaults. The separate CSP, legacy, standard, and full profiles do not receive these PV parameters.
+At 10000 counts/rev, 222 rpm becomes 37000 cnt/s, 999 rpm becomes 166500 cnt/s, and 2222 rpm/s becomes 370333 cnt/s². The motiond launcher resolves the same selected profile and passes only validated rpm and counts/rev values to the C process; C repeats the conversion and fails closed if a required PV value is absent or invalid. It writes the derived maximum to `0x607F`, acceleration to `0x6083`, and deceleration to `0x6084`. The drive uses `0x6084` for the PV stop ramp as well as profile deceleration, so the verifier requires normal and stop deceleration to be equal. The HMI now displays and accepts velocity settings in rpm (222 rpm default, 999 rpm maximum, 1 rpm step), converts only at the API boundary, and displays the profile acceleration as 2222 rpm/s. Acceleration is intentionally read-only in the HMI because native PV drive object `0x6083` is configured at motiond startup; changing it requires a profile change and a controlled restart, not a live jog command. The separate CSP, legacy, standard, and full profiles do not receive these PV parameters.
 
 The default TxPDO does not contain `0x603f` (error code). The statusword fault bit is available, but the HMI error-code field remains zero until an error-code PDO or SDO diagnostic path is added.
 

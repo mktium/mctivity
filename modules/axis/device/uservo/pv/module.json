@@ -29,6 +29,7 @@
     "default_speed_rpm": 222,
     "max_speed_rpm": 999,
     "velocity_step_counts_s": 10,
+    "velocity_step_rpm": 1,
     "default_accel_rpm_s": 2222,
     "max_accel_rpm_s": 2222,
     "default_decel_rpm_s": 2222,
