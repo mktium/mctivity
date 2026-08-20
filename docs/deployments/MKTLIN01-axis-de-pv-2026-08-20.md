@@ -79,3 +79,36 @@ in the backup directory; run daemon-reload and unit verification; then start
 the prior services and repeat read-only checks. Neither release is deleted.
 Motion testing was not performed and still requires a separate operator-approved
 plan.
+
+## Atomic synchronized-velocity and LAN follow-up
+
+Commit `9302dfbd60c76e3ffe3c138903b34f0179d329f6` adds the D+E atomic
+velocity group, fixes inhibited fault-reset controlword delivery, improves HMI
+reset feedback, and records the MKTLIN01 LAN HMI environment. The source archive
+SHA-256 is
+`9e9b3584586625cc7f8cc7c86c373908ba72c5bdf57121cf0f83d6c256aa2d0e`.
+Target release `/opt/mctivity-releases/v1.4.1-axis-de-sync-9302dfb` was
+compiled with the real EtherLab headers under `-Werror`; its motiond SHA-256 is
+`ab17ceaebb1d8cdf3d9bd5a00ee8149b7e94251287efdbe3c345eb043b01a6b2`.
+The pre-switch backup is
+`/var/backups/mctivity/pre-axis-de-sync-20260820T102954-18624`.
+
+The synchronized group uses device-free `sync_enable`, `sync_disable`,
+`sync_jog_velocity`, and `sync_stop` commands. All D/E preconditions are checked
+before either runtime slot changes, and both controlwords/targets are emitted in
+the next combined-domain frame. Once the group has reached enabled state, loss
+of either axis, WC/OP, enabled state, or fault-free state disables and clears
+both axes before output and latches a group safety interlock. No synchronized
+command was exercised during deployment.
+
+The first dual inhibited implementation suppressed `0x0080` together with all
+other controlwords, which explained why the user's HMI fault-reset click had no
+effect. The corrected writer permits only `0x0080` while inhibited; mode,
+target velocity, and enabling controlwords remain zero. After the new release
+restart, both drives showed the known transition fault. The operator reset D
+and E once each through the HMI. Read-only status then confirmed both
+`fault=false`, OP, combined WC `6/6`, disabled, `servo_request=false`,
+`moving=false`, `cw=0`, target velocity zero, deadline miss/skip `0/0`, and all
+group session/motion/safety-latch flags false. The GET/status-only kiosk verifier
+passed completely. No enable, mode selection, velocity, stop, or motion command
+was sent during acceptance.
