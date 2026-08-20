@@ -32,10 +32,10 @@ Rollback keeps inhibit active: stop kiosk/HMI/motiond, restore the recorded envi
 
 ## Deployment evidence
 
-The release was first installed without restarting motiond because the physical EtherCAT link was down at the deployment gate. After the link returned, the new motiond was restarted once with inhibit still set. No enable or motion request was sent. The restart reproduced the known drive communication fault `0x8100`, so acceptance is stopped and no reset is attempted.
+The release was first installed without restarting motiond because the physical EtherCAT link was down at the deployment gate. After the link returned, the new motiond was restarted once with inhibit still set; that transition exposed the known `0x8100` fault. The operator then manually power-cycled the drive. No enable, reset, phase-search acknowledgement, or motion request was sent.
 
 - implementation commits: `22f8887fb52dfc4405ddd1ff9890942b0ba4a3e0`, `e596331ce521699c6224f814d40c6ac51155deda`
-- final documentation commit: pending
+- final documentation record is committed and pushed after the read-only acceptance update
 - active release symlink: `/opt/mctivity-releases/v1.4.1-axis-d-pv-e596331`
 - source archive SHA-256: `17fa7b40ec3527fe2cedb60d3d96a3d8130e5e3e47f225689b1644abebd395b4`
 - target-built motiond SHA-256: `661f9fec271d5159e2530d2c76698db4b47f63ec379fb2519a3d7b1d248bfcf1`
@@ -45,17 +45,18 @@ The release was first installed without restarting motiond because the physical 
 - HMI listener `127.0.0.1:2015`: pass
 - effective HMI profile/topology/Axis D/velocity capability and route: pass
 - profile values `37000`/`166500` cnt/s and `370333` cnt/s²: pass
-- `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`, deadline miss/skip zero: pass on the inhibited pre-existing process
+- `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`, deadline miss/skip zero: pass after final motiond restart
 - OP and WC complete: pass after link restoration (`OP`, WC `3/3`)
-- `fault=true`, backend `err=0`; SDO `0x603F=0x8100` (`Communication_DS_301`): acceptance blocked
+- `fault=false`, backend `err=0`; SDO `0x603F=0`: pass after manual drive power cycle
 - new motiond launcher activation: pass; systemd `ExecStart` uses the launcher and target binary hash matches
 - post-restart state: `enabled=false`, `servo_request=false`, `moving=false`, `cw=0`, inhibit true; no control request was sent
+- GET-only PV acceptance script: pass; kiosk unit remains pre-existing failed/timeout and was not started or modified
 
-The HMI GET-only profile/capability/status check passed, but the `0x8100` fault means the no-motion acceptance is incomplete. Keep commissioning inhibit set, do not issue `fault_reset`, enable, mode, jog, stop, or phase-search commands, and preserve the target journal/SDO evidence for the restart-transition investigation.
+The no-motion acceptance passed after the manual power cycle and final motiond restart. The earlier `0x8100` remains a known restart-transition risk and is preserved in the evidence below. Keep commissioning inhibit set; do not issue `fault_reset`, enable, mode, jog, stop, or phase-search commands as part of this deployment.
 
 ## Read-only fault evidence
 
-At 09:26:40 CST, the old motiond released EtherCAT and the new process requested the master. The kernel then reported PREOP, a domain WC transition, an unmatched datagram, and OP roughly one second later. The drive's read-only communication timeout object `0x36B5` is `100 ms` (`0x0064`). This restart/OP gap therefore exceeds the drive's configured communication-loss tolerance. After the restart, the link remained UP with zero new lost frames, OP/WC stayed healthy, and realtime deadline miss/skip counters stayed zero, while `0x603F` remained `0x8100` and statusword `0x0218` retained the fault bit. Objects `0x3008`, `0x3622`, `0x3657`, and `0x3638` all read zero; no phase-search acknowledgement was sent.
+At 09:26:40 CST, the old motiond released EtherCAT and the new process requested the master. The kernel then reported PREOP, a domain WC transition, an unmatched datagram, and OP roughly one second later. The drive's read-only communication timeout object `0x36B5` is `100 ms` (`0x0064`). This restart/OP gap therefore exceeds the drive's configured communication-loss tolerance. After the first restart, the link remained UP and OP/WC stayed healthy, but `0x603F` was `0x8100` and statusword `0x0218` retained the fault bit. The manual drive power cycle cleared the fault (`0x603F=0`); the final motiond restart then reached OP/WC `3/3` with timing guard armed, deadline/skip counters zero, and no fault. Objects `0x3008`, `0x3622`, `0x3657`, and `0x3638` all read zero; no phase-search acknowledgement was sent.
 
 This evidence supports a restart-transition investigation. It does not authorize changing `0x36B5`, issuing `fault_reset`, or enabling the drive. A future fix must either remove the EtherCAT communication gap or be explicitly reviewed against the vendor's timeout behavior before any motion test.
 
