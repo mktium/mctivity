@@ -13,6 +13,9 @@ the Axis D HMI presentation:
 - the velocity-mode large start/stop control uses the current rpm slider value
   instead of always sending the 222 rpm profile default; it starts in the
   positive direction and its second press uses the profile stop deceleration.
+- while a non-zero velocity command is active, slider input updates the target
+  after a 150 ms debounce and preserves the current direction. Slider movement
+  while stopped or disabled remains preset-only and cannot start the axis.
 - a latched `communication_timing_fault` is shown as a red alarm with
   “motiond restart required”; the HMI does not auto-reset it.
 

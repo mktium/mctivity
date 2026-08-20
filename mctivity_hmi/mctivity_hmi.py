@@ -947,7 +947,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         <div id="panel-velocity" class="mode-panel">
           <div class="slider-card">
             <div class="slider-head"><span class="slider-title">速度点动</span><span id="velText" class="slider-number">--</span></div>
-            <input id="velRpm" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_RPM__" step="__PRIMARY_AXIS_VELOCITY_STEP_RPM__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__" oninput="updateSliders()">
+            <input id="velRpm" type="range" min="1" max="__PRIMARY_AXIS_MAX_VELOCITY_RPM__" step="__PRIMARY_AXIS_VELOCITY_STEP_RPM__" value="__PRIMARY_AXIS_DEFAULT_VELOCITY_RPM__" oninput="handleVelocitySliderInput()">
             <div class="control-note">加速度 <strong id="velocityAccelText">__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__ rpm/s</strong>（profile）</div>
             <div class="control-row three">
               <button class="blue" onclick="jogVelocity(-Number(velRpm.value))">反转</button>
@@ -1438,6 +1438,7 @@ const deviceProfiles = {
   fv3: {mode:'position', absPos:0, absSpeedRpm:120, absAccel:300, relDelta:4194304, moveMs:3000, velCps:200000, torqueCmd:0, gearMaster:'mctivity', gearMasterRatio:1, gearSlaveRatio:1, incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'}, transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360}, points:{1:0, 2:REV/2, 3:REV}}
 };
 let uiStateSaveTimer = 0;
+let velocitySliderCommandTimer = 0;
 const lastUiStateSnapshot = {mctivity:'', fv3:''};
 let transmissionDraft = null;
 const POWEROFF_HOLD_MS = 2000;
@@ -3059,6 +3060,26 @@ function updateSliders() {
     setText('p' + k, pointText);
     setText('p' + k + 'Quick', pointText);
   }
+}
+function handleVelocitySliderInput() {
+  updateSliders();
+  if (velocitySliderCommandTimer) {
+    clearTimeout(velocitySliderCommandTimer);
+    velocitySliderCommandTimer = 0;
+  }
+  const device = activeDevice;
+  const status = currentStatus(device);
+  const targetCps = Number(status && status.jog_velocity_cps || 0);
+  if (!(status && status.enabled && status.control_mode === 'velocity' && targetCps !== 0)) return;
+  const requestedRpm = clampVelocityRpm(Number(velRpm.value));
+  velocitySliderCommandTimer = setTimeout(() => {
+    velocitySliderCommandTimer = 0;
+    const liveStatus = currentStatus(device);
+    const liveTargetCps = Number(liveStatus && liveStatus.jog_velocity_cps || 0);
+    if (!(activeDevice === device && liveStatus && liveStatus.enabled && liveStatus.control_mode === 'velocity' && liveTargetCps !== 0)) return;
+    const direction = liveTargetCps < 0 ? -1 : 1;
+    apiForDevice(device, {cmd:'jog_velocity', velocity:rpmToCountsS(direction * requestedRpm)}).catch(err => console.error(err));
+  }, 150);
 }
 function applyConfig() {
   relDelta.value = cfgRel.value; absPos.value = cfgAbs.value; moveMs.value = cfgMs.value; velRpm.value = clampVelocityRpm(cfgVel.value);
