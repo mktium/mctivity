@@ -53,6 +53,12 @@ The release was first installed without restarting motiond because the physical 
 
 The HMI GET-only profile/capability/status check passed, but the `0x8100` fault means the no-motion acceptance is incomplete. Keep commissioning inhibit set, do not issue `fault_reset`, enable, mode, jog, stop, or phase-search commands, and preserve the target journal/SDO evidence for the restart-transition investigation.
 
+## Read-only fault evidence
+
+At 09:26:40 CST, the old motiond released EtherCAT and the new process requested the master. The kernel then reported PREOP, a domain WC transition, an unmatched datagram, and OP roughly one second later. The drive's read-only communication timeout object `0x36B5` is `100 ms` (`0x0064`). This restart/OP gap therefore exceeds the drive's configured communication-loss tolerance. After the restart, the link remained UP with zero new lost frames, OP/WC stayed healthy, and realtime deadline miss/skip counters stayed zero, while `0x603F` remained `0x8100` and statusword `0x0218` retained the fault bit. Objects `0x3008`, `0x3622`, `0x3657`, and `0x3638` all read zero; no phase-search acknowledgement was sent.
+
+This evidence supports a restart-transition investigation. It does not authorize changing `0x36B5`, issuing `fault_reset`, or enabling the drive. A future fix must either remove the EtherCAT communication gap or be explicitly reviewed against the vendor's timeout behavior before any motion test.
+
 ## Known risk
 
 Drive fault `0x8100` (`Communication_DS_301`) has occurred during earlier restart/shutdown switching. It remains a known transition risk and is never concealed by automatic fault reset. If it recurs, acceptance stops with inhibit active and the journal, EtherCAT state, and read-only `0x603F` evidence are retained.
