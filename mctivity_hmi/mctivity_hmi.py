@@ -1814,17 +1814,20 @@ function showFeatureDetails() {
 }
 function showWarningDetails() {
   const warningList = Array.isArray(capabilityState.warnings) ? capabilityState.warnings : [];
+  const status = currentStatus();
+  const timingFault = Boolean(status && status.communication_timing_fault);
   const lines = [];
   lines.push('profile: ' + (capabilityState.profile || 'unknown'));
   if (capabilityState.generatedAt) {
     lines.push('generated_at: ' + capabilityState.generatedAt);
   }
-  lines.push('warnings: ' + warningList.length);
-  if (warningList.length) {
+  lines.push('warnings: ' + (warningList.length + (timingFault ? 1 : 0)));
+  if (warningList.length || timingFault) {
     lines.push('---');
     for (const w of warningList) {
       lines.push('- ' + String(w));
     }
+    if (timingFault) lines.push('- communication_timing_fault: motiond restart required');
   }
   openDiagModal('Warning Details', lines.join('\n'));
   return false;
@@ -2939,6 +2942,16 @@ function render(s) {
   const communicationAlarm = document.getElementById('communicationAlarm');
   const timingFault = Boolean(s.communication_timing_fault);
   const alarm = Boolean(s.fault) || timingFault;
+  const warningList = Array.isArray(capabilityState.warnings) ? capabilityState.warnings : [];
+  const visibleWarningCount = warningList.length + (timingFault ? 1 : 0);
+  setText('warningCountValue', String(visibleWarningCount));
+  const warningSummary = warningList.slice();
+  if (timingFault) warningSummary.push('communication_timing_fault: motiond restart required');
+  const warningSummaryText = warningSummary.length ? warningSummary.join('\n') : 'none';
+  const warningValueEl = document.getElementById('warningCountValue');
+  const warningChipEl = document.getElementById('warningChip');
+  if (warningValueEl) warningValueEl.title = warningSummaryText;
+  if (warningChipEl) warningChipEl.title = warningSummaryText;
   if (faultIndicator && faultText && faultButton) {
     faultIndicator.classList.toggle('fault-on', alarm);
     faultText.textContent = timingFault ? text.timingFault : (s.fault ? text.fault : text.ready);

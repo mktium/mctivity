@@ -31,6 +31,7 @@ class VelocityProfileHmiTests(unittest.TestCase):
         self.assertIn("function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v)}); }", source)
         self.assertIn("const timingFault = Boolean(s.communication_timing_fault);", source)
         self.assertIn("timingFault ? text.timingFault", source)
+        self.assertIn("const visibleWarningCount = warningList.length + (timingFault ? 1 : 0);", source)
 
     def test_deployment_verifier_has_no_control_requests(self):
         source = (Path(mctivity_hmi.__file__).parent.parent / "scripts" / "mctivity-kiosk-verify.sh").read_text(
