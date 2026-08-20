@@ -17,6 +17,7 @@ class VelocityProfileHmiTests(unittest.TestCase):
         self.assertIn('id="velRpm" type="range" min="1" max="999" step="1" value="222"', html)
         self.assertIn('id="cfgAccel" type="number" value="2222"', html)
         self.assertIn('加速度 <strong id="velocityAccelText">2222 rpm/s</strong>', html)
+        self.assertIn('id="communicationAlarm"', html)
         self.assertIn("stopDecelRpmS:2222", html)
         self.assertIn("syncModePanels('velocity');", html)
 
@@ -28,6 +29,8 @@ class VelocityProfileHmiTests(unittest.TestCase):
         self.assertIn("currentProfile().stopDecelRpmS", source)
         self.assertIn("const velocity = PRIMARY_AXIS_DEFAULT_VELOCITY_RPM;", source)
         self.assertIn("function jogVelocity(v) { return api({cmd:'jog_velocity', velocity:rpmToCountsS(v)}); }", source)
+        self.assertIn("const timingFault = Boolean(s.communication_timing_fault);", source)
+        self.assertIn("timingFault ? text.timingFault", source)
 
     def test_deployment_verifier_has_no_control_requests(self):
         source = (Path(mctivity_hmi.__file__).parent.parent / "scripts" / "mctivity-kiosk-verify.sh").read_text(

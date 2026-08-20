@@ -582,6 +582,8 @@ h2 { margin:0 0 8px; font-size:17px; line-height:1.1; font-weight:900; }
 .feedback-number { color:var(--theme-deep); font-size:20px; line-height:.95; font-weight:900; }
 .feedback-unit { color:#667; font-size:10px; font-weight:900; }
 .feedback-tick { position:absolute; z-index:3; color:#5d6c76; font-size:8px; line-height:1; font-weight:900; transform:translate(-50%, -50%); font-variant-numeric:tabular-nums; }
+.communication-alarm { margin:10px 0 0; padding:10px 12px; border:2px solid #b42318; border-radius:10px; background:#fff1f0; color:#8b1e16; font-weight:800; line-height:1.35; }
+.communication-alarm[hidden] { display:none; }
 .tick-0 { left:24%; top:66%; } .tick-20 { left:22%; top:39%; } .tick-40 { left:40%; top:22%; } .tick-60 { left:60%; top:22%; } .tick-80 { left:78%; top:39%; } .tick-100 { left:76%; top:66%; }
 .tick-1000 { left:27%; top:36%; } .tick-2000 { left:73%; top:36%; } .tick-3000 { left:76%; top:66%; }
 .tick-k1 { left:25%; top:34%; } .tick-k2 { left:75%; top:34%; } .tick-k3 { left:78%; top:68%; }
@@ -876,6 +878,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
           <button class="stop" onclick="returnZero()">一键回到零位</button>
           <button class="blue" onclick="cmd('set_zero')">当前位置置零</button>
         </div>
+        <div id="communicationAlarm" class="communication-alarm" role="alert" hidden>通信时序故障：需要重启 motiond；未执行自动复位。</div>
       </section>
     </div>
     <div class="right-stack">
@@ -1230,6 +1233,8 @@ const UI_TEXT = {
     on:'ON',
     ready:'READY',
     fault:'FAULT',
+    timingFault:'通信时序故障',
+    timingRestart:'需要重启 motiond',
     reset:'复位',
     standstill:'静止',
     inMotion:'运动中',
@@ -1354,6 +1359,8 @@ const UI_TEXT = {
     on:'ON',
     ready:'READY',
     fault:'FAULT',
+    timingFault:'Communication Timing Fault',
+    timingRestart:'motiond restart required',
     reset:'Reset',
     standstill:'Standstill',
     inMotion:'In Motion',
@@ -2929,17 +2936,24 @@ function render(s) {
   const faultButton = document.getElementById('faultIndicatorButton');
   const faultCodeText = document.getElementById('faultCodeText');
   const faultNameText = document.getElementById('faultNameText');
+  const communicationAlarm = document.getElementById('communicationAlarm');
+  const timingFault = Boolean(s.communication_timing_fault);
+  const alarm = Boolean(s.fault) || timingFault;
   if (faultIndicator && faultText && faultButton) {
-    faultIndicator.classList.toggle('fault-on', Boolean(s.fault));
-    faultText.textContent = s.fault ? text.fault : text.ready;
+    faultIndicator.classList.toggle('fault-on', alarm);
+    faultText.textContent = timingFault ? text.timingFault : (s.fault ? text.fault : text.ready);
     setText('faultCodeText', hex4(s.err));
-    setText('faultNameText', faultName(s.err, s.sw));
-    faultButton.setAttribute('aria-label', s.fault ? text.fault : text.ready);
+    setText('faultNameText', timingFault ? text.timingRestart : faultName(s.err, s.sw));
+    faultButton.setAttribute('aria-label', timingFault ? text.timingFault : (s.fault ? text.fault : text.ready));
     faultButton.textContent = s.fault ? text.reset : '';
-    faultButton.classList.toggle('fault', Boolean(s.fault));
+    faultButton.classList.toggle('fault', alarm);
+  }
+  if (communicationAlarm) {
+    communicationAlarm.hidden = !timingFault;
+    communicationAlarm.textContent = text.timingFault + ': ' + text.timingRestart + '；未执行自动复位。';
   }
   let m = document.getElementById('moving'); if (m) { m.textContent = s.moving ? text.moving : text.idle; m.className = 'value info'; }
-  let f = document.getElementById('fault'); if (f) { f.textContent = s.fault ? text.fault : text.ok; cls(f, !s.fault); }
+  let f = document.getElementById('fault'); if (f) { f.textContent = timingFault ? text.timingFault : (s.fault ? text.fault : text.ok); cls(f, !alarm); }
   setText('pos', fmt(s.pos)); setText('target', fmt(s.target)); setText('follow', fmt(s.following_error));
   setText('op', '0x' + Number(s.al_state).toString(16) + ' / ' + s.operational);
   setText('wc', s.wc + (s.wc_complete ? ' complete' : ''));
