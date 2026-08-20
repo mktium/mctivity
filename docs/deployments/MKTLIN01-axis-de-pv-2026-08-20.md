@@ -133,3 +133,26 @@ and latches the communication safety fault. EtherCAT watchdog settings, the
 1 ms cycle, DC configuration, and active-motion fail-closed behavior are not
 relaxed. The HMI also consumes live commissioning-inhibit state, reports generic
 command rejection reasons, and disables caching of HTML/API responses.
+
+The recovery implementation was committed and pushed as
+`bbc9f7d9cb71810198e930a4043a0dc58889875d`. Its source archive SHA-256 is
+`ad8a162795973569630abb0a501cc7dd360878ae4114c8460f49f61ed661d11b`.
+The target built the release with the real EtherLab headers under `-Werror` at
+`/opt/mctivity-releases/v1.4.1-axis-de-recovery-bbc9f7d`; the resulting
+motiond SHA-256 is
+`0b91116f8012212ab37212b69b68e4223c3b3feb8dc99844fb7828e8ba6530f8`.
+The pre-switch backup is
+`/var/backups/mctivity/pre-axis-de-recovery-20260820T110102Z-44036`.
+
+Activation was deliberately performed while the operator had the EtherCAT
+cable disconnected. Both axes remained disabled and stationary with
+controlword/target zero; OP/WC were unavailable, the timing guard stayed
+unarmed, and no communication fault latched. After the operator reconnected the
+cable and reset the drives, the normal INIT/PREOP/DC synchronization sequence
+included temporary SDO timeouts and an E-axis `0x001B` Sync Manager watchdog.
+The bus then recovered automatically to two OP slaves and WC `6/6`, armed the
+guard after its healthy window, and retained
+`communication_timing_fault=false`. A following 60-second read-only monitor
+recorded 60/60 healthy samples with both axes fault-free, disabled, stationary,
+controlword/target zero, and deadline miss/skip `0/0`. No enable, velocity, or
+motion command was issued during deployment acceptance.
