@@ -116,3 +116,31 @@ not a requirement to manually confirm phase search before every ordinary
 enable. The follow-up change removes the software acknowledgement from
 ordinary enable and `gear_start`; drive-side electrical-angle alignment, if
 enabled by the saved drive parameters, remains entirely drive-controlled.
+
+## Follow-up deployment: remove non-vendor acknowledgement gate
+
+Source commit `fdad9ae` was pushed to
+`mktium/mctivity:feature/v1.4.1-axis-d-uservo`. The immutable source archive
+used for the target build was
+`v1.4.1-axis-de-gear-no-phase-fdad9ae.tar.gz`, SHA-256
+`46b3a2610fc0996c765b2aba4b827ecfb8e847a9532f80018a463e454ebaa0cc`.
+MKTLIN01 compiled the source against its real `/opt/etherlab` with
+`-O2 -Wall -Wextra -Werror`; the deployed `mctivity_motiond` SHA-256 is
+`0205ff41b1399b2006020113668dce62358139b5a635e27a67dc302e31974eb0`.
+
+The pre-switch backup is
+`/var/backups/mctivity/pre-axis-de-gear-no-phase-20260821T082407Z` and the
+new release is `/opt/mctivity-releases/v1.4.1-axis-de-gear-no-phase-fdad9ae`.
+The active profile is `axis-de-uservo-gear`; both services are active and
+`MCTIVITY_COMMISSIONING_INHIBIT=1` is enforced in the runtime environment.
+
+After startup, the real EtherCAT master reported Link UP, two Uservo slaves in
+OP, and combined WC `6/6`. Read-only API status confirmed that the removed
+phase-search fields are absent. D/E remained disabled and stationary with
+`servo_request=false`, `moving=false`, `cw=0`, and each target equal to actual;
+the gear session and safety latch stayed false. D nevertheless reported a
+drive fault during the restart transition while E remained fault-free. No
+fault reset, enable, mode, gear-start, stop, or motion command was sent.
+The 60-second no-motion acceptance is paused on that fault and must not be
+claimed complete until the operator handles it separately. The release remains
+active but inhibited; the fault is intentionally left for separate disposition.
