@@ -57,3 +57,28 @@ The new CSP gear profile is not accepted as deployed until the EtherCAT link
 is restored and a separately authorized, still-inhibited no-motion gate can
 complete. No drive fault was reset automatically; no motion acceptance was
 performed.
+
+## Retry after EtherCAT link restoration
+
+After the fieldbus link was restored, a read-only check confirmed two OP
+Uservo slaves, Link UP, WC `6/6`, an armed timing gate, and the old PV release
+still inhibited and stationary. The prepared gear release was then activated
+again with the following retry backup:
+
+`/var/backups/mctivity/pre-axis-de-gear-retry-20260821T152300`
+
+The gear HMI/API profile and D/E routing were correct. During the inhibited
+warmup, D remained fault-free but E reported a drive fault. Independent
+read-only evidence was:
+
+```text
+P0/D 0x603F = 0x0000
+P1/E 0x603F = 0x8100
+```
+
+At the stop point both axes were still disabled and stationary with
+`servo_request=false`, `moving=false`, `gear_running=false`, `cw=0`, and each
+target equal to actual position. The gear session and safety latch were false;
+no fault reset, enable, mode, gear-start, stop, or motion command was sent.
+The 60-second no-motion gate is paused, and the E fault is left untouched for
+separate operator disposition.
