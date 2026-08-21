@@ -144,3 +144,30 @@ fault reset, enable, mode, gear-start, stop, or motion command was sent.
 The 60-second no-motion acceptance is paused on that fault and must not be
 claimed complete until the operator handles it separately. The release remains
 active but inhibited; the fault is intentionally left for separate disposition.
+
+## Post-reset no-motion acceptance completion
+
+The operator cleared the remaining D drive fault. A read-only EtherCAT check
+then reported Link UP, Master0 in Operation, and both Uservo slaves in OP.
+Both API endpoints reported `fault=false`, `operational=1`, and complete WC
+(`wc=6`, `wc_complete=true`).
+
+With `/opt/mctivity-releases/v1.4.1-axis-de-gear-no-phase-fdad9ae` still
+active and `MCTIVITY_COMMISSIONING_INHIBIT=1`, a 60-second read-only gate was
+run using 60 one-second samples for both D (`mctivity`) and E (`mctivity_e`).
+All 60 samples passed:
+
+- D/E stayed disabled with `enabled=false`, `servo_request=false`,
+  `moving=false`, and `gear_running=false`;
+- `cw=0`, and each target remained pinned to its actual position (D `1`, E
+  `0` counts for the baseline and final sample);
+- no gear session or safety latch became active;
+- the timing guard remained armed, `communication_timing_fault=false`, and
+  realtime deadline misses/skipped periods remained `0/0`;
+- no position change, mode command, enable request, gear command, stop
+  command, or motion command was observed or sent.
+
+The inhibited no-motion deployment phase is therefore accepted. The release,
+backup, and source/build hashes remain the ones recorded above. First enable
+and first-motion acceptance remain a separate, explicitly authorized phase;
+this record does not authorize either action.
