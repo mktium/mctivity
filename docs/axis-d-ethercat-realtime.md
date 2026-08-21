@@ -36,6 +36,11 @@ PDO offsets, commands, and HMI persistence. Their shared 1 ms domain and timing
 guard intentionally fail closed for both axes if either slave or the combined
 working counter becomes unhealthy.
 
+The `axis-de-uservo-combined` profile keeps the verified CSP map above and
+adds velocity mode through software position stepping over `0x607A`. It does
+not claim or require a new native PV mapping; the existing `axis-de-uservo-pv`
+profile remains the native PV fallback.
+
 Official fault `0x8100` is `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises a communication alarm. The default is 100 ms and the timeout is configured through object `0x36B5`. It is distinct from EtherCAT AL code `0x001B` (Sync Manager watchdog).
 
 MKTLIN01 has already produced `0x8100` during restart/shutdown switching when the PDO exchange gap exceeded the drive tolerance. This is a known unresolved acceptance risk, not a cosmetic alarm. Deployment must never auto-reset it: keep inhibit active, retain the fault and timing evidence, and stop acceptance until the transition is understood.

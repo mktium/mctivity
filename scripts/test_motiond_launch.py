@@ -47,6 +47,21 @@ class MotiondLaunchTests(unittest.TestCase):
             self.assertEqual(env[f"{prefix}_PV_DECEL_RPM_S"], "2222")
             self.assertEqual(env[f"{prefix}_PV_STOP_DECEL_RPM_S"], "2222")
 
+    def test_combined_profile_keeps_csp_topology_and_gear_limits(self):
+        runtime, device, env = LAUNCH.resolve_launch_environment(
+            profile_name="axis-de-uservo-combined",
+            environ={"MCTIVITY_COMMISSIONING_INHIBIT": "1"},
+        )
+        self.assertEqual(runtime["profile"], "axis-de-uservo-combined")
+        self.assertEqual(len(runtime["axis_devices"]), 2)
+        self.assertEqual(device["logical_axis"], "D")
+        self.assertEqual(env["MCTIVITY_TOPOLOGY"], "axis-de-uservo-gear")
+        self.assertEqual(env["MCTIVITY_PROFILE"], "axis-de-uservo-combined")
+        self.assertEqual(env["MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS"], "200")
+        self.assertEqual(env["MCTIVITY_GEAR_MAX_RATIO"], "200")
+        self.assertEqual(env["MCTIVITY_AXIS_D_MAX_SPEED_RPM"], "222")
+        self.assertEqual(env["MCTIVITY_AXIS_E_MAX_SPEED_RPM"], "222")
+
     def test_environment_topology_mismatch_is_rejected(self):
         with self.assertRaises(LAUNCH.ProfileRuntimeError):
             LAUNCH.resolve_launch_environment(

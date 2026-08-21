@@ -54,6 +54,7 @@ static int uservo_axis_d_topology = 0;
 static int uservo_pv_topology = 0;
 static int uservo_dual_pv_topology = 0;
 static int uservo_dual_gear_topology = 0;
+static int uservo_dual_combined_topology = 0;
 static int uservo_dual_topology = 0;
 static int sync_group_session_active = 0;
 static int sync_group_motion_active = 0;
@@ -867,6 +868,12 @@ static int8_t axis_mode_code(int axis, const char *mode)
     if (axis_is_uservo_pv(axis) && strcmp(mode, "velocity") == 0) {
         return 3;
     }
+    /* The combined D/E profile deliberately keeps the verified CSP PDO map.
+     * Its velocity mode is software position stepping, so the drive remains in
+     * CSP mode 8 and receives only the known 0x607A target-position entry. */
+    if (uservo_dual_combined_topology && strcmp(mode, "velocity") == 0) {
+        return 8;
+    }
     return mode_code_for_name(mode);
 }
 
@@ -1430,11 +1437,13 @@ static void send_status_fd(int fd, int axis)
     axis_runtime_t *ax = &axes[axis];
     const status_t *s = &ax->st;
     const uservo_pv_profile_t *pv = uservo_pv_profile_for_axis(axis);
-    const char *topology = uservo_dual_gear_topology
+    const char *topology = uservo_dual_combined_topology
+        ? "axis-de-uservo-combined"
+        : (uservo_dual_gear_topology
         ? "axis-de-uservo-gear"
         : (uservo_dual_pv_topology
             ? "axis-de-uservo-pv"
-            : (uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual")));
+            : (uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual"))));
     const char *logical_axis = uservo_dual_topology ? (axis == AXIS_FV3 ? "E" : "D") :
         (uservo_axis_d_topology && axis == AXIS_MCTIVITY ? "D" : (axis == AXIS_FV3 ? "B" : "A"));
     int64_t axis_counts_per_rev = pv ? pv->counts_per_rev
@@ -2093,6 +2102,12 @@ static void handle_command(int fd, const char *line)
             send_error_fd(fd, "unsupported_for_axis_d_uservo");
             return;
         }
+        if (uservo_dual_combined_topology &&
+            ((s->moving || s->jog_velocity_cps != 0 || ax->stop_velocity_cps != 0) ||
+             (gear_group_session_active && strcmp(mode, "gear_cam") != 0))) {
+            send_error_fd(fd, "combined_mode_change_requires_stop");
+            return;
+        }
         clear_motion(ax);
         ax->stop_velocity_cps = 0;
         s->jog_velocity_cps = 0;
@@ -2415,6 +2430,12 @@ static void handle_command(int fd, const char *line)
             ((int64_t)velocity > (int64_t)pv->max_velocity_cps ||
              (int64_t)velocity < -(int64_t)pv->max_velocity_cps)) {
             send_error_fd(fd, "PV velocity exceeds profile maximum");
+            return;
+        }
+        if (uservo_dual_combined_topology &&
+            ((int64_t)velocity > (int64_t)gear_max_velocity_cps[axis] ||
+             (int64_t)velocity < -(int64_t)gear_max_velocity_cps[axis])) {
+            send_error_fd(fd, "CSP software velocity exceeds profile maximum");
             return;
         }
         set_control_mode(ax, "velocity");
@@ -3652,9 +3673,12 @@ int main(void)
     struct timespec wake_time;
     uint64_t app_time_base;
     const char *topology = getenv("MCTIVITY_TOPOLOGY");
+    const char *profile = getenv("MCTIVITY_PROFILE");
 
     uservo_dual_pv_topology = topology && strcmp(topology, "axis-de-uservo-pv") == 0;
     uservo_dual_gear_topology = topology && strcmp(topology, "axis-de-uservo-gear") == 0;
+    uservo_dual_combined_topology = uservo_dual_gear_topology && profile &&
+        strcmp(profile, "axis-de-uservo-combined") == 0;
     uservo_dual_topology = uservo_dual_pv_topology || uservo_dual_gear_topology;
     uservo_pv_topology = topology &&
         (strcmp(topology, "axis-d-uservo-pv") == 0 || uservo_dual_pv_topology);

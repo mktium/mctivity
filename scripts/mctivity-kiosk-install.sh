@@ -11,8 +11,11 @@ SERVICE_USER="${MCTIVITY_SERVICE_USER:-mctivity}"
 SERVICE_GROUP="${MCTIVITY_SERVICE_GROUP:-$SERVICE_USER}"
 INSTALL_PACKAGES="${MCTIVITY_INSTALL_PACKAGES:-0}"
 PROFILE="${MCTIVITY_PROFILE:-full}"
-if [ "$PROFILE" = "axis-d-uservo" ] || [ "$PROFILE" = "axis-d-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-gear" ]; then
+if [ "$PROFILE" = "axis-d-uservo" ] || [ "$PROFILE" = "axis-d-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-gear" ] || [ "$PROFILE" = "axis-de-uservo-combined" ]; then
   TOPOLOGY="${MCTIVITY_TOPOLOGY:-$PROFILE}"
+  if [ "$PROFILE" = "axis-de-uservo-combined" ]; then
+    TOPOLOGY="axis-de-uservo-gear"
+  fi
   COMMISSIONING_INHIBIT="${MCTIVITY_COMMISSIONING_INHIBIT:-1}"
   REQUIRE_REALTIME="${MCTIVITY_REQUIRE_REALTIME:-1}"
 else
@@ -170,7 +173,7 @@ rewrite_unit "${ROOT}/systemd/mctivity-poweroff.service" /etc/systemd/system/mct
 
 motiond_dropin_dir=/etc/systemd/system/mctivity-motiond.service.d
 motiond_dropin="${motiond_dropin_dir}/10-axis-d-realtime.conf"
-if [ "$PROFILE" = "axis-d-uservo" ] || [ "$PROFILE" = "axis-d-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-gear" ]; then
+if [ "$PROFILE" = "axis-d-uservo" ] || [ "$PROFILE" = "axis-d-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-pv" ] || [ "$PROFILE" = "axis-de-uservo-gear" ] || [ "$PROFILE" = "axis-de-uservo-combined" ]; then
   install -d -m 0755 "$motiond_dropin_dir"
   if [ -n "$RT_CPU" ] && ! printf '%s' "$RT_CPU" | grep -Eq '^[0-9]+$'; then
     echo "invalid MCTIVITY_RT_CPU: $RT_CPU" >&2

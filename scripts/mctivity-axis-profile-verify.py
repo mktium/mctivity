@@ -65,13 +65,14 @@ def main():
             checked += 1
         if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv"} and len(axis_devices) != 1:
             raise SystemExit(f"{profile.get('profile')} profile must contain exactly one axis device")
-        if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear"} and len(axis_devices) != 2:
+        if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"} and len(axis_devices) != 2:
             raise SystemExit(f"{profile.get('profile')} profile must contain exactly two axis devices")
-        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear"}:
+        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
             modules = set(profile.get("modules", []))
             is_pv = profile.get("profile") in {"axis-d-uservo-pv", "axis-de-uservo-pv"}
-            is_gear = profile.get("profile") == "axis-de-uservo-gear"
-            if not is_pv and {"feature-logic-velocity", "feature-hmi-velocity"} & modules:
+            is_gear = profile.get("profile") in {"axis-de-uservo-gear", "axis-de-uservo-combined"}
+            is_combined = profile.get("profile") == "axis-de-uservo-combined"
+            if profile.get("profile") in {"axis-d-uservo"} and {"feature-logic-velocity", "feature-hmi-velocity"} & modules:
                 raise SystemExit("axis-d-uservo must not expose velocity mode without a 0x60ff target-velocity PDO")
             if is_pv and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
                 raise SystemExit("axis-d-uservo-pv must expose velocity logic and HMI modules")
@@ -82,8 +83,10 @@ def main():
                 "feature-hmi-electronic-gear",
             } <= modules:
                 raise SystemExit("axis-de-uservo-gear must expose single-point and electronic-gear modules")
+            if is_combined and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
+                raise SystemExit("axis-de-uservo-combined must expose velocity logic and HMI modules")
             expected_instances = ([('D', 'mctivity', 0), ('E', 'mctivity_e', 1)]
-                                  if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear"} else
+                                  if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"} else
                                   [('D', 'mctivity', 0)])
             actual_instances = [
                 (str(item.get("logical_axis")), str(item.get("transport_device")), int(item.get("physical_position", -1)))

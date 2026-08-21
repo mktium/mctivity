@@ -16,7 +16,7 @@ echo "mctivity status ok"
 capabilities="$(curl -fsS "${URL}/api/capabilities")"
 echo "capabilities ok"
 status_e_json=""
-if CAPABILITIES_JSON="$capabilities" python3 -c 'import json, os, sys; sys.exit(0 if json.loads(os.environ["CAPABILITIES_JSON"]).get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear"} else 1)'; then
+if CAPABILITIES_JSON="$capabilities" python3 -c 'import json, os, sys; sys.exit(0 if json.loads(os.environ["CAPABILITIES_JSON"]).get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"} else 1)'; then
   status_e_json="$(curl -fsS "${URL}/api/status?device=mctivity_e")"
   echo "mctivity_e status ok"
 fi
@@ -37,7 +37,7 @@ profile = capabilities.get("profile")
 if expected_profile and profile != expected_profile:
     raise SystemExit(f"profile mismatch: expected {expected_profile}, got {profile}")
 
-if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear"}:
+if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
     expected_topology = profile
     assert capabilities.get("primary_axis_label") == "D", capabilities
     assert capabilities.get("counts_per_rev") == 10000, capabilities
@@ -54,7 +54,7 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-d
     assert all(item.get("topology") == expected_topology for item in axis_devices), capabilities
 
     statuses = [status_response.get("status") or {}]
-    if profile in {"axis-de-uservo-pv", "axis-de-uservo-gear"}:
+    if profile in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
         statuses.append((json.loads(os.environ["STATUS_E_JSON"]) or {}).get("status") or {})
     for expected_device, status in zip(expected_instances, statuses):
         assert status.get("device") == expected_device[1], status
@@ -100,7 +100,7 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-d
         assert all(status.get("sync_group_session_active") is False for status in statuses), statuses
         assert all(status.get("sync_group_motion_active") is False for status in statuses), statuses
         assert all(status.get("sync_group_safety_latched") is False for status in statuses), statuses
-    if profile == "axis-de-uservo-gear":
+    if profile in {"axis-de-uservo-gear", "axis-de-uservo-combined"}:
         assert all(status.get("gear_group_session_active") is False for status in statuses), statuses
         assert all(status.get("gear_group_safety_latched") is False for status in statuses), statuses
         assert all(status.get("gear_running") is False for status in statuses), statuses
