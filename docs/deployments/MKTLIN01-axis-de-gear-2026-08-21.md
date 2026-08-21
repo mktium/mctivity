@@ -82,3 +82,28 @@ target equal to actual position. The gear session and safety latch were false;
 no fault reset, enable, mode, gear-start, stop, or motion command was sent.
 The 60-second no-motion gate is paused, and the E fault is left untouched for
 separate operator disposition.
+
+## No-motion gate completion after E fault reset
+
+The operator subsequently reset E. Read-only verification then showed both
+drive fault registers clear (`0x603F=0x0000`), and both API statuses reported
+`fault=false`. With the release still inhibited, the gate was rerun and passed
+60/60 one-second samples. During the gate:
+
+- both Uservo slaves stayed OP with combined WC `6/6`;
+- `commissioning_inhibit=true`, timing guard armed, and communication fault
+  false;
+- D/E stayed disabled with `servo_request=false`, `moving=false`, and
+  `gear_running=false`;
+- gear session and safety latch stayed false, phase-search confirmation stayed
+  unset, and `cw=0`;
+- each target remained equal to its actual position;
+- realtime deadline misses and skipped periods remained `0/0`.
+
+The gear release is now accepted for the inhibited no-motion deployment phase
+and remains active at `/opt/mctivity-releases/v1.4.1-axis-de-gear-cdaa2ca`.
+The direct SDO read attempted after the gate returned EtherLab I/O errors while
+motiond owned the active master; the immediately preceding post-reset SDO
+reads and the continuous API status gate were clean. No enable, mode, gear
+start, stop, or motion command was issued. First motion acceptance remains a
+separate plan and still requires explicit confirmation.
