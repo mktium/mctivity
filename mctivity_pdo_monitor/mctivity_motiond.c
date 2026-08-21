@@ -18,7 +18,6 @@
 
 #include "communication_guard.h"
 #include "electronic_gear.h"
-#include "phase_search_guard.h"
 #include "realtime_schedule.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
@@ -323,7 +322,6 @@ typedef struct {
     int wc_complete;
     int servo_request;
     int enabled;
-    int phase_search_confirmed;
     uint32_t enable_settle_cycles;
     int moving;
     int fault;
@@ -1447,7 +1445,6 @@ static void send_status_fd(int fd, int axis)
         out, sizeof(out),
         "{\"ok\":true,\"status\":{\"device\":\"%s\",\"logical_axis\":\"%s\",\"topology\":\"%s\","
         "\"counts_per_rev\":%lld,\"commissioning_inhibit\":%s,\"enabled\":%s,\"servo_request\":%s,"
-        "\"phase_search_confirmation_required\":%s,\"phase_search_confirmed\":%s,"
         "\"moving\":%s,\"gear_running\":%s,\"fault\":%s,\"settle_cycles\":%u,\"al_state\":%u,\"operational\":%u,"
         "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,"
         "\"control_mode\":\"%s\",\"pos_raw\":%d,\"pos\":%d,\"velocity_actual_cps\":%d,\"target_raw\":%d,\"target\":%d,"
@@ -1468,8 +1465,6 @@ static void send_status_fd(int fd, int axis)
         axis_name(axis), logical_axis, topology,
         (long long)axis_counts_per_rev, commissioning_inhibit ? "true" : "false",
         s->enabled ? "true" : "false", s->servo_request ? "true" : "false",
-        uservo_axis_d_topology && !uservo_pv_topology && !s->phase_search_confirmed ? "true" : "false",
-        s->phase_search_confirmed ? "true" : "false",
         s->moving ? "true" : "false", ax->gear_running ? "true" : "false", s->fault ? "true" : "false",
         s->enable_settle_cycles, s->al_state,
         s->operational, s->wc, s->wc_complete ? "true" : "false", s->cw, s->sw, s->err, s->mode_display,
@@ -1627,10 +1622,6 @@ static int gear_group_ready(int slave_axis, const char **reason)
         const status_t *s = &axes[axis].st;
         if (!s->servo_request || !s->enabled || s->enable_settle_cycles != 0) {
             *reason = "gear axes are not both enabled and settled";
-            return 0;
-        }
-        if (!s->phase_search_confirmed) {
-            *reason = "phase_search_confirmation_required";
             return 0;
         }
     }
@@ -1868,12 +1859,6 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if (strcmp(cmd, "enable") == 0 && !uservo_pv_topology &&
-        !mctivity_phase_search_enable_allowed(uservo_axis_d_topology, s->phase_search_confirmed)) {
-        send_error_fd(fd, "phase_search_confirmation_required");
-        return;
-    }
-
     if (uservo_dual_gear_topology && gear_group_safety_latched &&
         strcmp(cmd, "status") != 0 && strcmp(cmd, "gear_stop") != 0 && strcmp(cmd, "disable") != 0 &&
         strcmp(cmd, "stop") != 0) {
@@ -1901,30 +1886,6 @@ static void handle_command(int fd, const char *line)
 
     if (strcmp(cmd, "status") == 0) {
         strncpy(s->last_command, "status", sizeof(s->last_command) - 1);
-        send_status_fd(fd, axis);
-        return;
-    }
-
-    if (strcmp(cmd, "confirm_phase_search_complete") == 0) {
-        if (!mctivity_phase_search_confirmation_allowed(
-                uservo_axis_d_topology,
-                s->servo_request,
-                s->enabled,
-                s->moving,
-                s->fault,
-                s->operational,
-                s->wc_complete,
-                realtime_status.timing_guard_armed,
-                realtime_status.communication_timing_fault)) {
-            send_error_fd(fd, "phase_search_confirmation_preconditions_not_met");
-            return;
-        }
-        s->phase_search_confirmed = 1;
-        strncpy(s->last_command, "confirm_phase_search_complete", sizeof(s->last_command) - 1);
-        snprintf(
-            s->message,
-            sizeof(s->message),
-            "phase search completion confirmed for this motiond communication session");
         send_status_fd(fd, axis);
         return;
     }
@@ -2651,7 +2612,6 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         s->jog_velocity_cps = 0;
         ax->velocity_remainder = 0;
         s->servo_request = 0;
-        s->phase_search_confirmed = 0;
         ax->pp_pulse_cycles = 0;
         ax->fv3_halt_cycles = 0;
         ax->fv3_motion_hold_cycles = 0;
@@ -2844,7 +2804,6 @@ static void update_axis_d_communication_guard(axis_runtime_t *axis)
     } else {
         realtime_status.wc_incomplete_cycles++;
         realtime_status.consecutive_good_cycles = 0;
-        s->phase_search_confirmed = 0;
         if (realtime_status.timing_guard_armed) {
             realtime_status.communication_timing_fault = 1;
         }
@@ -2852,7 +2811,6 @@ static void update_axis_d_communication_guard(axis_runtime_t *axis)
 
     if (realtime_status.communication_timing_fault) {
         s->servo_request = 0;
-        s->phase_search_confirmed = 0;
         clear_motion(axis);
         axis->stop_velocity_cps = 0;
         axis->target_velocity_cps = 0;
@@ -2875,7 +2833,6 @@ static void clear_axis_for_communication_fault(axis_runtime_t *axis)
 {
     status_t *s = &axis->st;
     s->servo_request = 0;
-    s->phase_search_confirmed = 0;
     clear_motion(axis);
     axis->stop_velocity_cps = 0;
     axis->target_velocity_cps = 0;
@@ -2926,9 +2883,6 @@ static void update_dual_uservo_communication_guard(
          * healthy window again.  Once control is active, retain the original
          * fail-closed behavior and latch immediately for both axes. */
         realtime_status.timing_guard_armed = 0;
-        for (int axis = 0; axis < AXIS_COUNT; axis++) {
-            axes[axis].st.phase_search_confirmed = 0;
-        }
         if (mctivity_dual_comm_loss_latches(control_active)) {
             realtime_status.communication_timing_fault = 1;
         }

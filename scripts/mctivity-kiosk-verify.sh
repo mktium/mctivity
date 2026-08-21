@@ -61,7 +61,6 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-d
         assert status.get("topology") == expected_topology, status
         assert status.get("counts_per_rev") == 10000, status
         assert status.get("commissioning_inhibit") is True, status
-        assert status.get("phase_search_confirmation_required") is False, status
         assert status.get("operational") == 1, status
         assert status.get("wc_complete") is True, status
         assert status.get("enabled") is False, status

@@ -33,10 +33,10 @@ to 200 plus same/reverse direction. The default is D master, E slave, same
 direction, 1:1.
 
 `gear_start` is a two-axis gate. It requires both drives to be OP with a
-complete working counter, fault-free, enabled, settled, communication timing
-healthy, and phase-search confirmation present. The slave then enters the
-gear session; ordinary slave position commands are rejected while the
-session is active. The master remains available for normal position commands.
+complete working counter, fault-free, enabled, settled, and communication
+timing healthy. The slave then enters the gear session; ordinary slave
+position commands are rejected while the session is active. The master
+remains available for normal position commands.
 
 The slave target is calculated from the captured engagement positions:
 
@@ -78,7 +78,7 @@ Before any future motion plan, verify for at least 60 seconds:
 - both axes are disabled with `servo_request=false`, `moving=false`, and
   `gear_running=false`;
 - controlword and mode outputs are zero and each target equals actual position;
-- gear session, safety latch, and phase-search confirmation are clear;
+- gear session and safety latch are clear;
 - realtime deadline misses and skipped periods remain zero.
 
 Any driver fault is recorded and left in place; it is never automatically

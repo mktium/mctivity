@@ -27,7 +27,6 @@ def assert_safe(status):
         "topology": expected_topology,
         "counts_per_rev": 10000,
         "commissioning_inhibit": True,
-        "phase_search_confirmation_required": False,
         "enabled": False,
         "servo_request": False,
         "moving": False,

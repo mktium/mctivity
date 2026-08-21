@@ -19,6 +19,7 @@
 - replaces catch-up bursts and counter-derived DC time with a no-catch-up deadline scheduler and explicit realtime/WC telemetry
 - bounds command-socket work inside each 1 ms cycle and refreshes DC application time during the shortened safe shutdown sequence
 - requires locked memory and `SCHED_FIFO` for Axis D and latches a safe hold after any post-arm timing or communication failure
+- removes the non-vendor session-level phase-search acknowledgement from Uservo enable and D/E electronic-gear start; drive-side electrical-angle alignment remains controlled by the saved drive parameters
 
 The first deployment gate permits EtherCAT OP, working-counter validation, and position feedback only. The verification script uses a non-energizing mode-selection request to confirm the low-level commissioning lock. It does not send enable and does not authorize motor enable or motion.
 

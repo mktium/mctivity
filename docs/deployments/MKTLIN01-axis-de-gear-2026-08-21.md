@@ -95,8 +95,7 @@ drive fault registers clear (`0x603F=0x0000`), and both API statuses reported
   false;
 - D/E stayed disabled with `servo_request=false`, `moving=false`, and
   `gear_running=false`;
-- gear session and safety latch stayed false, phase-search confirmation stayed
-  unset, and `cw=0`;
+- gear session and safety latch stayed false, and `cw=0`;
 - each target remained equal to its actual position;
 - realtime deadline misses and skipped periods remained `0/0`.
 
@@ -107,3 +106,13 @@ motiond owned the active master; the immediately preceding post-reset SDO
 reads and the continuous API status gate were clean. No enable, mode, gear
 start, stop, or motion command was issued. First motion acceptance remains a
 separate plan and still requires explicit confirmation.
+
+## Superseded phase-search gate
+
+The first gear implementation carried a session-level
+`phase_search_confirmed` acknowledgement gate. After reviewing the official
+MotorHost manual, that gate was identified as an application safety policy,
+not a requirement to manually confirm phase search before every ordinary
+enable. The follow-up change removes the software acknowledgement from
+ordinary enable and `gear_start`; drive-side electrical-angle alignment, if
+enabled by the saved drive parameters, remains entirely drive-controlled.

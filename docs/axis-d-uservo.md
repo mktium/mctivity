@@ -64,33 +64,20 @@ At 10000 counts/rev, 222 rpm becomes 37000 cnt/s, 999 rpm becomes 166500 cnt/s, 
 
 The default TxPDO does not contain `0x603f` (error code). The statusword fault bit is available, but the HMI error-code field remains zero until an error-code PDO or SDO diagnostic path is added.
 
-## Incremental-encoder phase-search gate
+## Encoder electrical-angle behavior
 
-The motor uses an incremental ABZ encoder. XActant's MotorHost manual states
-that every incremental encoder needs an electrical-angle search before the
-first enable after each power-on. The configured strong-pull search can move
-the shaft; enable must therefore never be treated as a non-moving operation.
+The MotorHost manual describes electrical-angle alignment and forced search as
+drive-side behaviors controlled by the encoder type and saved drive settings.
+It does not require a separate operator phase-search acknowledgement before
+every ordinary EtherCAT enable. The drive may still perform its configured
+alignment/search during reset, power-up, or enable; that behavior is not
+replaced or suppressed by `motiond`.
 
-The original guarded commissioning flow started every `motiond` communication
-session with `phase_search_confirmed=false`. The APP-direct PV flow no longer
-uses that session gate; a normal `enable` request is governed by the explicit
-commissioning-inhibit configuration and the realtime/fault gates. No automatic
-phase-search command is issued:
-
-```json
-{"cmd":"confirm_phase_search_complete","device":"mctivity"}
-```
-
-The legacy confirmation command remains available for diagnostics but is not
-required by the Axis D PV enable path. EtherCAT OP/WC, realtime timing, fault,
-and stop gates remain enforced.
-
-This latch is an operator safety acknowledgement, not proof that the drive's
-electrical-angle identification succeeded. Before acknowledging it, use
-MotorHost or a future read-only SDO diagnostic path to verify the current
-power cycle's identification result and review `0x3622` (automatic phase
-search), `0x3657` (return after search), `0x3638` (search mode), and `0x3008`
-(identification state). Motion permission remains a separate user decision.
+The software therefore does not keep a session-scoped phase-search latch and
+does not expose a fake `confirm_phase_search_complete` command. Enable remains
+protected by `MCTIVITY_COMMISSIONING_INHIBIT`, EtherCAT OP/WC, realtime timing,
+fault, and communication-safety gates. Mechanical safety and the drive's own
+encoder/motor parameters must still be checked before energizing a real axis.
 
 ## First Deployment Gate
 
@@ -100,10 +87,9 @@ search), `0x3657` (return after search), `0x3638` (search mode), and `0x3008`
 4. Restart `mctivity-motiond.service`, then `mctivity-hmi.service` and `mctivity-kiosk.service` if needed.
 5. Confirm the EtherCAT slave reaches OP and the domain working counter is complete.
 6. Confirm status reports `enabled=false`, `servo_request=false`, `cw=0`, and changing position feedback is plausible when the shaft is moved manually.
-7. Confirm status reports `phase_search_confirmation_required=true` and `phase_search_confirmed=false`.
-8. Read `0x603F` with `ethercat upload`; do not prove the gate by sending a rejected control request.
+7. Read `0x603F` with `ethercat upload`; do not use rejected control requests as a deployment test.
 
-Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo` and checks topology, scale, inhibit, disabled/stationary state, OP/WC, realtime counters, and command-routing metadata using GET/status operations only. It sends no mode, acknowledgement, reset, enable, stop, or motion request.
+Run `scripts/mctivity-axis-d-verify.sh` for this gate. The script pins the expected profile to `axis-d-uservo` and checks topology, scale, inhibit, disabled/stationary state, OP/WC, realtime counters, and command-routing metadata using GET/status operations only. It sends no mode, reset, enable, stop, or motion request.
 
 For the native PV profile, run `scripts/mctivity-axis-d-pv-verify.sh`; it pins the expected profile to `axis-d-uservo-pv`, additionally checks Axis D, the velocity feature/capability/route, and the resolved PV values, and performs the same no-motion checks. Read `0x603F` separately with `ethercat upload -p 0 0x603f 0`. For the longer read-only stability window, set `MCTIVITY_EXPECT_PROFILE=axis-d-uservo-pv` before `scripts/mctivity-axis-d-stability.py`. Do not switch profiles or remove inhibit as part of this verification.
 
