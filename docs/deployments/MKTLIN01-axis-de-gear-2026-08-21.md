@@ -171,3 +171,25 @@ The inhibited no-motion deployment phase is therefore accepted. The release,
 backup, and source/build hashes remain the ones recorded above. First enable
 and first-motion acceptance remain a separate, explicitly authorized phase;
 this record does not authorize either action.
+
+## Commissioning inhibit removal requested by operator
+
+The operator subsequently requested removal of the commissioning inhibit. The
+current configuration was backed up at
+`/var/backups/mctivity/pre-inhibit-remove-20260821T164735`, including both
+axis/HMI environment files and the two systemd unit files. The active release
+was not changed.
+
+`MCTIVITY_COMMISSIONING_INHIBIT` was changed from `1` to `0` in both
+`/etc/mctivity/axis.env` and `/etc/mctivity/hmi.env`. `mctivity-motiond` and
+`mctivity-hmi` were restarted and both returned `active`. No enable, mode,
+gear-start, gear-stop, stop, or motion command was sent.
+
+After the restart, EtherCAT remained Link UP with two Uservo slaves in OP and
+combined WC `6/6`. Both axes remained disabled and stationary with
+`servo_request=false`, `moving=false`, `gear_running=false`, `cw=0`, and each
+target equal to actual; the gear session and safety latch were clear and
+timing counters remained healthy. However, both D and E reported a drive fault
+after the restart transition. Per the fault policy, no automatic reset was
+performed and the next read-only acceptance is paused until the operator
+resets both faults and they are independently confirmed clear.
