@@ -3041,6 +3041,7 @@ function switchAxis(deviceName) {
   if (configPanel) configPanel.classList.remove('active');
   if (monitorBtn) monitorBtn.classList.toggle('active', activeDevice === ASSEMBLED_DEVICE_ORDER[0]);
   if (configBtn) configBtn.classList.toggle('active', activeDevice === ASSEMBLED_DEVICE_ORDER[1]);
+  refreshGearMasterOptions();
   loadUiState();
   if (syncVelocityEnabled && modeSelect) {
     modeSelect.value = 'velocity';

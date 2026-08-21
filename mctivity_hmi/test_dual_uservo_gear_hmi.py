@@ -61,6 +61,13 @@ class DualUservoGearHmiTests(unittest.TestCase):
         self.assertIn("gear_position_error", html)
         self.assertNotIn('value="virtual"', html)
 
+    def test_axis_switch_refreshes_gear_master_options_before_loading_state(self):
+        html = mctivity_hmi.HTML
+        switch_axis = html.split("function switchAxis", 1)[1].split("function bindAxisSwitchButtons", 1)[0]
+        refresh_at = switch_axis.index("refreshGearMasterOptions();")
+        load_state_at = switch_axis.index("loadUiState();")
+        self.assertLess(refresh_at, load_state_at)
+
 
 if __name__ == "__main__":
     unittest.main()
