@@ -17,6 +17,7 @@
 #include <ecrt.h>
 
 #include "communication_guard.h"
+#include "electronic_gear.h"
 #include "phase_search_guard.h"
 #include "realtime_schedule.h"
 
@@ -53,13 +54,22 @@ static volatile sig_atomic_t running = 1;
 static int uservo_axis_d_topology = 0;
 static int uservo_pv_topology = 0;
 static int uservo_dual_pv_topology = 0;
+static int uservo_dual_gear_topology = 0;
+static int uservo_dual_topology = 0;
 static int sync_group_session_active = 0;
 static int sync_group_motion_active = 0;
 static int sync_group_both_enabled_once = 0;
 static int sync_group_safety_latched = 0;
+static int gear_group_session_active = 0;
+static int gear_group_safety_latched = 0;
+static int gear_group_master_axis = AXIS_MCTIVITY;
+static int gear_group_slave_axis = AXIS_FV3;
 static int commissioning_inhibit = 0;
 static int require_realtime = 0;
 static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
+static uint32_t gear_following_error_limit_counts = MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS;
+static uint32_t gear_max_ratio = MCTIVITY_GEAR_DEFAULT_MAX_RATIO;
+static uint32_t gear_max_velocity_cps[AXIS_COUNT] = {37000U, 37000U};
 
 typedef struct {
     uint32_t counts_per_rev;
@@ -376,9 +386,27 @@ typedef struct {
     int gear_master_axis;
     int32_t gear_master_ratio;
     int32_t gear_slave_ratio;
+    int gear_direction;
     int gear_has_last_master_pos;
     int32_t gear_last_master_pos_raw;
+    int64_t gear_position_error;
+    int gear_safety_latched;
+    mctivity_electronic_gear_t gear_math;
 } axis_runtime_t;
+
+typedef struct {
+    unsigned int controlword;
+    unsigned int mode;
+    unsigned int target_position;
+    unsigned int digital_output;
+    unsigned int statusword;
+    unsigned int mode_display;
+    unsigned int position_actual;
+    unsigned int digital_input;
+} uservo_csp_offsets_t;
+
+static uservo_csp_offsets_t uservo_dual_csp_offsets[AXIS_COUNT];
+static ec_pdo_entry_reg_t uservo_dual_csp_domain_regs[AXIS_COUNT * 8 + 1];
 
 static axis_runtime_t axes[AXIS_COUNT];
 static client_t clients[MAX_CLIENTS];
@@ -427,9 +455,15 @@ static int axis_is_uservo_pv(int axis)
     return uservo_pv_topology && (uservo_dual_pv_topology || axis == AXIS_MCTIVITY);
 }
 
+static int axis_is_uservo_gear(int axis)
+{
+    (void)axis;
+    return uservo_dual_gear_topology;
+}
+
 static int axis_is_fv3_hardware(int axis)
 {
-    return axis == AXIS_FV3 && !uservo_dual_pv_topology;
+    return axis == AXIS_FV3 && !uservo_dual_topology;
 }
 
 static const uservo_pv_profile_t *uservo_pv_profile_for_axis(int axis)
@@ -439,7 +473,7 @@ static const uservo_pv_profile_t *uservo_pv_profile_for_axis(int axis)
 
 static const char *axis_name(int axis)
 {
-    if (uservo_dual_pv_topology) {
+    if (uservo_dual_topology) {
         return axis == AXIS_FV3 ? "mctivity_e" : "mctivity";
     }
     return axis == AXIS_FV3 ? "fv3" : "mctivity";
@@ -447,7 +481,10 @@ static const char *axis_name(int axis)
 
 static const char *axis_label(int axis)
 {
-    if (uservo_dual_pv_topology) {
+    if (uservo_dual_topology) {
+        if (uservo_dual_gear_topology) {
+            return axis == AXIS_FV3 ? "Axis E Uservo CSP" : "Axis D Uservo CSP";
+        }
         return axis == AXIS_FV3 ? "Axis E Uservo PV" : "Axis D Uservo PV";
     }
     if (uservo_axis_d_topology && axis == AXIS_MCTIVITY) {
@@ -461,11 +498,11 @@ static int axis_from_name(const char *name, int fallback)
     if (!name) {
         return fallback;
     }
-    if (uservo_dual_pv_topology &&
+    if (uservo_dual_topology &&
         (strcmp(name, "mctivity_e") == 0 || strcmp(name, "E") == 0 || strcmp(name, "e") == 0)) {
         return AXIS_FV3;
     }
-    if (!uservo_dual_pv_topology && (strcmp(name, "fv3") == 0 || strcmp(name, "flexem") == 0)) {
+    if (!uservo_dual_topology && (strcmp(name, "fv3") == 0 || strcmp(name, "flexem") == 0)) {
         return AXIS_FV3;
     }
     if (strcmp(name, "mctivity") == 0 || strcmp(name, "hcfa") == 0 ||
@@ -760,9 +797,9 @@ static int axis_from_line(const char *line)
 {
     char dev[24];
     if (!find_str(line, "device", dev, sizeof(dev))) {
-        return uservo_dual_pv_topology ? -1 : AXIS_MCTIVITY;
+        return uservo_dual_topology ? -1 : AXIS_MCTIVITY;
     }
-    if (uservo_dual_pv_topology) {
+    if (uservo_dual_topology) {
         if (strcmp(dev, "mctivity_e") == 0 || strcmp(dev, "E") == 0 || strcmp(dev, "e") == 0) {
             return AXIS_FV3;
         }
@@ -1022,6 +1059,37 @@ static int load_axis_profile_parameters(void)
     uint32_t configured_axis_count;
     if (!uservo_axis_d_topology) {
         counts_per_rev = LEGACY_COUNTS_PER_REV;
+        return 0;
+    }
+    if (uservo_dual_gear_topology) {
+        if (env_u32_required("MCTIVITY_USERVO_AXIS_COUNT", &configured_axis_count) < 0 ||
+            configured_axis_count != AXIS_COUNT) {
+            fprintf(stderr, "axis-de-uservo-gear requires exactly %d Uservo axes\n", AXIS_COUNT);
+            return -1;
+        }
+        if (env_u32_required("MCTIVITY_AXIS_D_COUNTS_PER_REV", &configured_counts_per_rev) < 0) {
+            return -1;
+        }
+        uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev = configured_counts_per_rev;
+        if (env_u32_required("MCTIVITY_AXIS_E_COUNTS_PER_REV", &configured_counts_per_rev) < 0) {
+            return -1;
+        }
+        uservo_pv_profiles[AXIS_FV3].counts_per_rev = configured_counts_per_rev;
+        if (env_u32_required("MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS", &gear_following_error_limit_counts) < 0 ||
+            env_u32_required("MCTIVITY_GEAR_MAX_RATIO", &gear_max_ratio) < 0 ||
+            gear_following_error_limit_counts == 0 || gear_max_ratio == 0 || gear_max_ratio > MCTIVITY_GEAR_DEFAULT_MAX_RATIO) {
+            fprintf(stderr, "axis-de-uservo-gear safety parameters are invalid\n");
+            return -1;
+        }
+        if (env_u32_required("MCTIVITY_AXIS_D_MAX_SPEED_RPM", &configured_counts_per_rev) < 0) {
+            return -1;
+        }
+        gear_max_velocity_cps[AXIS_MCTIVITY] = (uint32_t)(((uint64_t)configured_counts_per_rev * uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev) / 60ULL);
+        if (env_u32_required("MCTIVITY_AXIS_E_MAX_SPEED_RPM", &configured_counts_per_rev) < 0) {
+            return -1;
+        }
+        gear_max_velocity_cps[AXIS_FV3] = (uint32_t)(((uint64_t)configured_counts_per_rev * uservo_pv_profiles[AXIS_FV3].counts_per_rev) / 60ULL);
+        counts_per_rev = uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev;
         return 0;
     }
     if (uservo_dual_pv_topology) {
@@ -1364,13 +1432,17 @@ static void send_status_fd(int fd, int axis)
     axis_runtime_t *ax = &axes[axis];
     const status_t *s = &ax->st;
     const uservo_pv_profile_t *pv = uservo_pv_profile_for_axis(axis);
-    const char *topology = uservo_dual_pv_topology
-        ? "axis-de-uservo-pv"
-        : (uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual"));
-    const char *logical_axis = uservo_dual_pv_topology ? (axis == AXIS_FV3 ? "E" : "D") :
+    const char *topology = uservo_dual_gear_topology
+        ? "axis-de-uservo-gear"
+        : (uservo_dual_pv_topology
+            ? "axis-de-uservo-pv"
+            : (uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual")));
+    const char *logical_axis = uservo_dual_topology ? (axis == AXIS_FV3 ? "E" : "D") :
         (uservo_axis_d_topology && axis == AXIS_MCTIVITY ? "D" : (axis == AXIS_FV3 ? "B" : "A"));
-    int64_t axis_counts_per_rev = pv ? pv->counts_per_rev : counts_per_rev;
-    char out[2000];
+    int64_t axis_counts_per_rev = pv ? pv->counts_per_rev
+        : (uservo_dual_gear_topology ? (int64_t)uservo_pv_profiles[axis].counts_per_rev : counts_per_rev);
+    const axis_runtime_t *gear_slave = &axes[gear_group_slave_axis];
+    char out[2600];
     int n = snprintf(
         out, sizeof(out),
         "{\"ok\":true,\"status\":{\"device\":\"%s\",\"logical_axis\":\"%s\",\"topology\":\"%s\","
@@ -1389,6 +1461,9 @@ static void send_status_fd(int fd, int axis)
         "\"timing_guard_armed\":%s,\"communication_timing_fault\":%s,"
         "\"sync_group_session_active\":%s,\"sync_group_motion_active\":%s,"
         "\"sync_group_both_enabled_once\":%s,\"sync_group_safety_latched\":%s,"
+        "\"gear_group_session_active\":%s,\"gear_group_safety_latched\":%s,"
+        "\"gear_master\":\"%s\",\"gear_slave\":\"%s\",\"gear_direction\":%d,"
+        "\"gear_master_ratio\":%d,\"gear_slave_ratio\":%d,\"gear_position_error\":%lld,"
         "\"last_command\":\"%s\",\"message\":\"%s\"}}\n",
         axis_name(axis), logical_axis, topology,
         (long long)axis_counts_per_rev, commissioning_inhibit ? "true" : "false",
@@ -1418,6 +1493,12 @@ static void send_status_fd(int fd, int axis)
         sync_group_motion_active ? "true" : "false",
         sync_group_both_enabled_once ? "true" : "false",
         sync_group_safety_latched ? "true" : "false",
+        gear_group_session_active ? "true" : "false",
+        gear_group_safety_latched ? "true" : "false",
+        axis_name(gear_group_master_axis), axis_name(gear_group_slave_axis),
+        gear_slave->gear_direction,
+        gear_slave->gear_master_ratio, gear_slave->gear_slave_ratio,
+        (long long)gear_slave->gear_position_error,
         s->last_command,
         s->message);
     if (n > 0) {
@@ -1481,9 +1562,131 @@ static void clear_axis_velocity_command(axis_runtime_t *ax, int disable)
     ax->fv3_halt_cycles = 0;
     ax->gear_running = 0;
     ax->gear_has_last_master_pos = 0;
+    ax->gear_position_error = 0;
+    ax->gear_math.initialized = 0;
     ax->st.moving = 0;
     ax->st.target_raw = ax->st.pos_raw;
     ax->st.target_user = ax->st.pos_user;
+}
+
+static int dual_axes_fault_free_and_online(void);
+
+static void gear_group_clear_runtime(int disable)
+{
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        axis_runtime_t *runtime = &axes[axis];
+        if (disable) {
+            runtime->st.servo_request = 0;
+        }
+        runtime->st.cw = 0;
+        runtime->commanded_mode = 0;
+        runtime->gear_running = 0;
+        runtime->gear_has_last_master_pos = 0;
+        runtime->gear_position_error = 0;
+        runtime->gear_math.initialized = 0;
+        clear_motion(runtime);
+        runtime->stop_velocity_cps = 0;
+        runtime->st.jog_velocity_cps = 0;
+        runtime->st.moving = 0;
+        runtime->st.target_raw = runtime->st.pos_raw;
+        runtime->st.target_user = runtime->st.pos_user;
+    }
+    gear_group_session_active = 0;
+}
+
+static void gear_group_trip(const char *reason)
+{
+    gear_group_clear_runtime(1);
+    gear_group_safety_latched = 1;
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        snprintf(axes[axis].st.message, sizeof(axes[axis].st.message), "D/E electronic gear safety stop: %s", reason);
+    }
+}
+
+static int gear_group_ready(int slave_axis, const char **reason)
+{
+    int master_axis = axes[slave_axis].gear_master_axis;
+    if (slave_axis == master_axis || master_axis < 0 || master_axis >= AXIS_COUNT) {
+        *reason = "gear master axis cannot be self";
+        return 0;
+    }
+    if (gear_group_safety_latched) {
+        *reason = "gear_group_safety_latched; issue gear_stop after both axes are disabled";
+        return 0;
+    }
+    if (realtime_status.communication_timing_fault || !realtime_status.timing_guard_armed) {
+        *reason = realtime_status.communication_timing_fault
+            ? "communication_timing_fault" : "timing_guard_not_armed";
+        return 0;
+    }
+    if (!dual_axes_fault_free_and_online()) {
+        *reason = "gear axes are not fault-free and online";
+        return 0;
+    }
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        const status_t *s = &axes[axis].st;
+        if (!s->servo_request || !s->enabled || s->enable_settle_cycles != 0) {
+            *reason = "gear axes are not both enabled and settled";
+            return 0;
+        }
+        if (!s->phase_search_confirmed) {
+            *reason = "phase_search_confirmation_required";
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int gear_group_start(int slave_axis, const char **reason)
+{
+    axis_runtime_t *slave = &axes[slave_axis];
+    axis_runtime_t *master = &axes[slave->gear_master_axis];
+    if (!gear_group_ready(slave_axis, reason)) {
+        return 0;
+    }
+    if (!mctivity_gear_start(&slave->gear_math, master->st.pos_raw, slave->st.pos_raw)) {
+        *reason = "gear_math_initialization_failed";
+        return 0;
+    }
+    gear_group_master_axis = slave->gear_master_axis;
+    gear_group_slave_axis = slave_axis;
+    gear_group_session_active = 1;
+    slave->gear_running = 1;
+    slave->gear_has_last_master_pos = 1;
+    slave->gear_position_error = 0;
+    set_control_mode(slave, "gear_cam");
+    slave->commanded_mode = mode_code_for_name("position");
+    snprintf(master->st.message, sizeof(master->st.message), "%s is electronic-gear master", axis_label(master->gear_master_axis));
+    snprintf(slave->st.message, sizeof(slave->st.message), "%s electronic gear engaged: master=%s ratio=%d:%d direction=%d",
+             axis_label(slave_axis), axis_name(slave->gear_master_axis), slave->gear_slave_ratio,
+             slave->gear_master_ratio, slave->gear_direction);
+    return 1;
+}
+
+static int gear_group_stop(int slave_axis, const char **reason)
+{
+    axis_runtime_t *slave = &axes[slave_axis];
+    int master_axis = gear_group_session_active ? gear_group_master_axis : slave->gear_master_axis;
+    if (master_axis < 0 || master_axis >= AXIS_COUNT || master_axis == slave_axis) {
+        *reason = "gear master axis cannot be self";
+        return 0;
+    }
+    clear_motion(&axes[master_axis]);
+    axes[master_axis].stop_velocity_cps = 0;
+    axes[master_axis].st.jog_velocity_cps = 0;
+    axes[master_axis].st.target_raw = axes[master_axis].st.pos_raw;
+    axes[master_axis].st.target_user = axes[master_axis].st.pos_user;
+    gear_group_clear_runtime(0);
+    if (gear_group_safety_latched &&
+        (axes[AXIS_MCTIVITY].st.servo_request || axes[AXIS_FV3].st.servo_request ||
+         axes[AXIS_MCTIVITY].st.enabled || axes[AXIS_FV3].st.enabled ||
+         !dual_axes_fault_free_and_online())) {
+        *reason = "gear safety latch requires both axes disabled and healthy before clearing";
+        return 0;
+    }
+    gear_group_safety_latched = 0;
+    snprintf(axes[slave_axis].st.message, sizeof(axes[slave_axis].st.message), "%s electronic gear disengaged", axis_label(slave_axis));
+    return 1;
 }
 
 static int dual_axes_fault_free_and_online(void)
@@ -1649,7 +1852,7 @@ static void handle_command(int fd, const char *line)
 
     if (uservo_axis_d_topology && commissioning_inhibit &&
         strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0 &&
-        strcmp(cmd, "fault_reset") != 0 && strcmp(cmd, "reset_fault") != 0) {
+        strcmp(cmd, "fault_reset") != 0 && strcmp(cmd, "reset_fault") != 0 && strcmp(cmd, "gear_stop") != 0) {
         send_error_fd(fd, "commissioning_inhibit");
         return;
     }
@@ -1671,11 +1874,25 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
+    if (uservo_dual_gear_topology && gear_group_safety_latched &&
+        strcmp(cmd, "status") != 0 && strcmp(cmd, "gear_stop") != 0 && strcmp(cmd, "disable") != 0 &&
+        strcmp(cmd, "stop") != 0) {
+        send_error_fd(fd, "gear_group_safety_latched; issue gear_stop after both axes are disabled");
+        return;
+    }
+
+    if (uservo_dual_gear_topology && gear_group_session_active && axis == gear_group_slave_axis &&
+        strcmp(cmd, "status") != 0 && strcmp(cmd, "gear_stop") != 0 && strcmp(cmd, "disable") != 0 &&
+        strcmp(cmd, "stop") != 0) {
+        send_error_fd(fd, "gear_slave_control_locked; issue gear_stop before changing slave control");
+        return;
+    }
+
     if ((uservo_pv_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
           strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "move_abs") == 0 || strcmp(cmd, "move_rel") == 0 ||
           strcmp(cmd, "move_curve_rel") == 0 || strcmp(cmd, "torque_cmd") == 0)) ||
-        (uservo_axis_d_topology && !uservo_pv_topology &&
+        (uservo_axis_d_topology && !uservo_pv_topology && !uservo_dual_gear_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
           strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "jog_velocity") == 0 || strcmp(cmd, "torque_cmd") == 0))) {
         send_error_fd(fd, "unsupported_for_axis_d_uservo");
@@ -1909,7 +2126,7 @@ static void handle_command(int fd, const char *line)
             send_error_fd(fd, "unsupported_for_axis_d_uservo_pv");
             return;
         }
-        if (uservo_axis_d_topology && !uservo_pv_topology &&
+        if (uservo_axis_d_topology && !uservo_pv_topology && !uservo_dual_gear_topology &&
             strcmp(mode, "position") != 0 && strcmp(mode, "incremental") != 0 && strcmp(mode, "jog") != 0 &&
             strcmp(mode, "point") != 0) {
             send_error_fd(fd, "unsupported_for_axis_d_uservo");
@@ -1943,7 +2160,9 @@ static void handle_command(int fd, const char *line)
     if (strcmp(cmd, "gear_config") == 0) {
         uint32_t master_ratio = 1;
         uint32_t slave_ratio = 1;
+        int32_t direction = 1;
         char master_name[24] = {0};
+        char direction_name[24] = {0};
         int master_axis;
         if (!find_u32(line, "master_ratio", &master_ratio)) {
             (void)find_u32(line, "gear_master_ratio", &master_ratio);
@@ -1954,11 +2173,33 @@ static void handle_command(int fd, const char *line)
         if (!find_str(line, "master", master_name, sizeof(master_name))) {
             (void)find_str(line, "master_axis", master_name, sizeof(master_name));
         }
+        if (!find_i32(line, "direction", &direction) && find_str(line, "direction", direction_name, sizeof(direction_name))) {
+            if (strcmp(direction_name, "reverse") == 0 || strcmp(direction_name, "opposite") == 0 || strcmp(direction_name, "-1") == 0) {
+                direction = -1;
+            } else if (strcmp(direction_name, "same") != 0 && strcmp(direction_name, "forward") != 0 && strcmp(direction_name, "+1") != 0) {
+                send_error_fd(fd, "gear direction must be same/forward or reverse/opposite");
+                return;
+            }
+        }
+        if (uservo_dual_gear_topology &&
+            strcmp(master_name, "mctivity") != 0 && strcmp(master_name, "D") != 0 && strcmp(master_name, "d") != 0 &&
+            strcmp(master_name, "mctivity_e") != 0 && strcmp(master_name, "E") != 0 && strcmp(master_name, "e") != 0) {
+            send_error_fd(fd, "gear master must be D or E");
+            return;
+        }
         if (master_ratio < 1) {
             master_ratio = 1;
         }
         if (slave_ratio < 1) {
             slave_ratio = 1;
+        }
+        if (uservo_dual_gear_topology && (master_ratio > gear_max_ratio || slave_ratio > gear_max_ratio)) {
+            send_error_fd(fd, "gear ratio exceeds profile maximum");
+            return;
+        }
+        if (direction != 1 && direction != -1) {
+            send_error_fd(fd, "gear direction must be 1 or -1");
+            return;
         }
         master_axis = axis_from_name(master_name, ax->gear_master_axis);
         if (master_axis == axis) {
@@ -1968,22 +2209,38 @@ static void handle_command(int fd, const char *line)
         ax->gear_master_axis = master_axis;
         ax->gear_master_ratio = (int32_t)master_ratio;
         ax->gear_slave_ratio = (int32_t)slave_ratio;
+        ax->gear_direction = direction;
+        if (uservo_dual_gear_topology && !mctivity_gear_configure(
+                &ax->gear_math, direction, (int32_t)master_ratio, (int32_t)slave_ratio)) {
+            send_error_fd(fd, "invalid electronic gear configuration");
+            return;
+        }
         set_control_mode(ax, "gear_cam");
         ax->commanded_mode = mode_code_for_name("position");
         strncpy(s->last_command, "gear_config", sizeof(s->last_command) - 1);
         snprintf(
             s->message,
             sizeof(s->message),
-            "%s gear config: master=%s ratio=%u:%u",
+            "%s gear config: master=%s ratio=%u:%u direction=%d",
             axis_label(axis),
             axis_name(master_axis),
             slave_ratio,
-            master_ratio);
+            master_ratio, direction);
         send_status_fd(fd, axis);
         return;
     }
 
     if (strcmp(cmd, "gear_start") == 0) {
+        if (uservo_dual_gear_topology) {
+            const char *reason = NULL;
+            if (!gear_group_start(axis, &reason)) {
+                send_error_fd(fd, reason ? reason : "gear start preconditions failed");
+                return;
+            }
+            strncpy(s->last_command, "gear_start", sizeof(s->last_command) - 1);
+            send_status_fd(fd, axis);
+            return;
+        }
         if (!ready_for_motion(ax)) {
             send_error_fd(fd, "servo is not ready for gear start; enable and wait for settle first");
             return;
@@ -2016,6 +2273,16 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "gear_stop") == 0) {
+        if (uservo_dual_gear_topology) {
+            const char *reason = NULL;
+            if (!gear_group_stop(axis, &reason)) {
+                send_error_fd(fd, reason ? reason : "gear stop failed");
+                return;
+            }
+            strncpy(s->last_command, "gear_stop", sizeof(s->last_command) - 1);
+            send_status_fd(fd, axis);
+            return;
+        }
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
         ax->pp_pulse_cycles = 0;
@@ -2420,6 +2687,34 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
                                    strcmp(s->control_mode, "velocity") == 0)
                                       ? s->jog_velocity_cps
                                       : 0;
+    } else if (axis_is_uservo_gear(axis) && gear_group_session_active && axis == gear_group_slave_axis &&
+               strcmp(s->control_mode, "gear_cam") == 0 && ax->gear_running && s->enabled) {
+        axis_runtime_t *master_ax = &axes[gear_group_master_axis];
+        int32_t next_target = s->target_raw;
+        int64_t step;
+        uint64_t max_step;
+        if (!mctivity_gear_target(&ax->gear_math, master_ax->st.pos_raw, &next_target)) {
+            gear_group_trip("position target overflow");
+            gear_tracking_active = 0;
+        } else {
+            step = (int64_t)next_target - (int64_t)s->target_raw;
+            max_step = ((uint64_t)gear_max_velocity_cps[axis] + 999ULL) / 1000ULL + 2ULL;
+            if (step < 0 ? (uint64_t)(-step) > max_step : (uint64_t)step > max_step) {
+                gear_group_trip("follower speed limit exceeded");
+                gear_tracking_active = 0;
+            } else {
+                s->target_raw = next_target;
+                s->target_user = s->target_raw - s->soft_zero_raw;
+                ax->gear_position_error = mctivity_gear_abs_error(s->target_raw, s->pos_raw);
+                s->following_error = clamp_i64_to_i32((int64_t)s->target_raw - (int64_t)s->pos_raw);
+                if ((uint64_t)ax->gear_position_error > (uint64_t)gear_following_error_limit_counts) {
+                    gear_group_trip("follower position error exceeded limit");
+                    gear_tracking_active = 0;
+                } else {
+                    gear_tracking_active = 1;
+                }
+            }
+        }
     } else if (strcmp(s->control_mode, "gear_cam") == 0 && ax->gear_running && s->enabled) {
         axis_runtime_t *master_ax = &axes[ax->gear_master_axis];
         int32_t master_pos = master_ax->st.pos_raw;
@@ -2607,7 +2902,7 @@ static void update_dual_uservo_communication_guard(
 {
     int healthy = wc_complete && slaves_responding == AXIS_COUNT && master_link_up &&
         axes[AXIS_MCTIVITY].st.operational && axes[AXIS_FV3].st.operational;
-    int control_active = sync_group_session_active || sync_group_motion_active ||
+    int control_active = sync_group_session_active || sync_group_motion_active || gear_group_session_active ||
         axes[AXIS_MCTIVITY].st.servo_request || axes[AXIS_MCTIVITY].st.enabled ||
         axes[AXIS_MCTIVITY].st.moving || axes[AXIS_FV3].st.servo_request ||
         axes[AXIS_FV3].st.enabled || axes[AXIS_FV3].st.moving;
@@ -2639,6 +2934,10 @@ static void update_dual_uservo_communication_guard(
         }
     }
     if (realtime_status.communication_timing_fault) {
+        if (uservo_dual_gear_topology && gear_group_session_active) {
+            gear_group_safety_latched = 1;
+            gear_group_session_active = 0;
+        }
         for (int axis = 0; axis < AXIS_COUNT; axis++) {
             clear_axis_for_communication_fault(&axes[axis]);
         }
@@ -2701,6 +3000,31 @@ static void enforce_sync_group_interlock_before_output(void)
     sync_group_safety_latched = 1;
 }
 
+static void enforce_gear_group_interlock_before_output(void)
+{
+    const char *reason = NULL;
+    const axis_runtime_t *slave;
+    if (!uservo_dual_gear_topology || !gear_group_session_active) {
+        return;
+    }
+    slave = &axes[gear_group_slave_axis];
+    if (realtime_status.communication_timing_fault) {
+        reason = "communication timing fault";
+    } else if (!realtime_status.timing_guard_armed) {
+        reason = "timing guard not armed";
+    } else if (!dual_axes_fault_free_and_online()) {
+        reason = "gear axis fault or communication unavailable";
+    } else if (!axes[gear_group_master_axis].st.servo_request || !axes[gear_group_master_axis].st.enabled ||
+               !slave->st.servo_request || !slave->st.enabled || slave->st.enable_settle_cycles != 0) {
+        reason = "gear axis no longer enabled and settled";
+    } else if (slave->gear_position_error > (int64_t)gear_following_error_limit_counts) {
+        reason = "follower position error exceeded limit";
+    }
+    if (reason) {
+        gear_group_trip(reason);
+    }
+}
+
 static void build_uservo_dual_pv_domain_regs(void)
 {
     static const uint16_t indices[8] = {0x6040, 0x6060, 0x60ff, 0x60fe, 0x6041, 0x6061, 0x606c, 0x60fd};
@@ -2719,6 +3043,26 @@ static void build_uservo_dual_pv_domain_regs(void)
         }
     }
     uservo_dual_pv_domain_regs[AXIS_COUNT * 8] = (ec_pdo_entry_reg_t){};
+}
+
+static void build_uservo_dual_csp_domain_regs(void)
+{
+    static const uint16_t indices[8] = {0x6040, 0x6060, 0x607a, 0x60fe, 0x6041, 0x6061, 0x6064, 0x60fd};
+    static const uint8_t subindices[8] = {0, 0, 0, 1, 0, 0, 0, 0};
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        uservo_csp_offsets_t *off = &uservo_dual_csp_offsets[axis];
+        unsigned int *offsets[8] = {
+            &off->controlword, &off->mode, &off->target_position, &off->digital_output,
+            &off->statusword, &off->mode_display, &off->position_actual, &off->digital_input,
+        };
+        for (int entry = 0; entry < 8; entry++) {
+            uservo_dual_csp_domain_regs[axis * 8 + entry] = (ec_pdo_entry_reg_t){
+                0, (uint16_t)axis, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE,
+                indices[entry], subindices[entry], offsets[entry], NULL
+            };
+        }
+    }
+    uservo_dual_csp_domain_regs[AXIS_COUNT * 8] = (ec_pdo_entry_reg_t){};
 }
 
 static int configure_uservo_pv_profile(
@@ -2746,6 +3090,201 @@ static int configure_uservo_pv_profile(
         profile->accel_cps2,
         profile->decel_rpm_s,
         profile->decel_cps2);
+    return 0;
+}
+
+static int run_uservo_axes_de_gear(void)
+{
+    ec_master_t *master;
+    ec_domain_t *domain;
+    ec_slave_config_t *slave_configs[AXIS_COUNT];
+    uint8_t *process_data;
+    uint64_t deadline_ns;
+
+    if (prepare_axis_d_realtime() < 0) {
+        return 1;
+    }
+    master = ecrt_request_master(0);
+    if (!master) {
+        fprintf(stderr, "failed to request EtherCAT master 0\n");
+        return 1;
+    }
+    domain = ecrt_master_create_domain(master);
+    if (!domain) {
+        fprintf(stderr, "failed to create dual Uservo CSP domain\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        slave_configs[axis] = ecrt_master_slave_config(
+            master, 0, (uint16_t)axis, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE);
+        if (!slave_configs[axis]) {
+            fprintf(stderr, "failed to create %s slave config at position %d\n", axis_label(axis), axis);
+            ecrt_release_master(master);
+            return 1;
+        }
+        if (ecrt_slave_config_pdos(slave_configs[axis], EC_END, uservo_syncs)) {
+            fprintf(stderr, "failed to configure %s Uservo CSP PDOs\n", axis_label(axis));
+            ecrt_release_master(master);
+            return 1;
+        }
+        ecrt_slave_config_dc(slave_configs[axis], 0x0300, PERIOD_NS, 0, 0, 0);
+    }
+    if (ecrt_master_select_reference_clock(master, slave_configs[AXIS_MCTIVITY])) {
+        fprintf(stderr, "failed to select Axis D Uservo CSP DC reference clock\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    build_uservo_dual_csp_domain_regs();
+    if (ecrt_domain_reg_pdo_entry_list(domain, uservo_dual_csp_domain_regs)) {
+        fprintf(stderr, "failed to register dual Uservo CSP PDO entries\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    if (ecrt_master_activate(master)) {
+        fprintf(stderr, "failed to activate EtherCAT master for dual Uservo CSP\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    process_data = ecrt_domain_data(domain);
+    if (!process_data) {
+        fprintf(stderr, "failed to get dual Uservo CSP domain data\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        axes[axis].commanded_mode = 0;
+        axes[axis].st.servo_request = 0;
+        axes[axis].st.target_raw = 0;
+        axes[axis].st.target_user = 0;
+        snprintf(axes[axis].st.message, sizeof(axes[axis].st.message),
+                 "%s commissioning inhibit active", axis_label(axis));
+    }
+    printf(
+        "Axis D/E dual Uservo CSP gear daemon listening on 127.0.0.1:%d (inhibit=%s, D counts/rev=%u, E counts/rev=%u, error-limit=%u)\n",
+        SERVER_PORT,
+        commissioning_inhibit ? "on" : "off",
+        uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev,
+        uservo_pv_profiles[AXIS_FV3].counts_per_rev,
+        gear_following_error_limit_counts);
+    fflush(stdout);
+
+    deadline_ns = monotonic_now_ns();
+    while (running) {
+        uint64_t scheduled_time_ns;
+        uint64_t cycle_started_ns;
+        uint64_t cycle_finished_ns;
+        ec_slave_config_state_t slave_states[AXIS_COUNT];
+        ec_domain_state_t domain_state;
+        ec_master_state_t master_state;
+
+        if (wait_for_axis_d_cycle(&deadline_ns, &scheduled_time_ns) < 0) {
+            perror("Axis D/E CSP cycle sleep");
+            break;
+        }
+        cycle_started_ns = monotonic_now_ns();
+        ecrt_master_application_time(master, scheduled_time_ns);
+        ecrt_master_receive(master);
+        ecrt_domain_process(domain);
+        ecrt_domain_state(domain, &domain_state);
+        ecrt_master_state(master, &master_state);
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            axis_runtime_t *runtime = &axes[axis];
+            uservo_csp_offsets_t *off = &uservo_dual_csp_offsets[axis];
+            ecrt_slave_config_state(slave_configs[axis], &slave_states[axis]);
+            runtime->st.sw = EC_READ_U16(process_data + off->statusword);
+            runtime->st.err = 0;
+            runtime->st.mode_display = EC_READ_S8(process_data + off->mode_display);
+            runtime->st.pos_raw = EC_READ_S32(process_data + off->position_actual);
+            runtime->st.velocity_actual_cps = 0;
+            runtime->st.following_error = 0;
+            runtime->st.torque_feedback = 0;
+            runtime->st.al_state = slave_states[axis].al_state;
+            runtime->st.operational = slave_states[axis].operational;
+            runtime->st.wc = domain_state.working_counter;
+            runtime->st.wc_complete = domain_state.wc_state == EC_WC_COMPLETE;
+            runtime->st.enabled = operation_enabled(runtime->st.sw);
+            runtime->st.fault = (runtime->st.sw & 0x0008) != 0;
+            runtime->st.pos_user = runtime->st.pos_raw - runtime->st.soft_zero_raw;
+        }
+
+        update_dual_uservo_communication_guard(
+            domain_state.working_counter,
+            domain_state.wc_state == EC_WC_COMPLETE,
+            master_state.slaves_responding,
+            master_state.link_up);
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            axis_runtime_t *runtime = &axes[axis];
+            if (commissioning_inhibit) {
+                runtime->st.servo_request = 0;
+                runtime->st.jog_velocity_cps = 0;
+                runtime->st.target_raw = runtime->st.pos_raw;
+                runtime->st.target_user = runtime->st.pos_user;
+            }
+            axis_cycle_logic(runtime, axis);
+            if (realtime_status.communication_timing_fault) {
+                runtime->st.cw = 0;
+            }
+        }
+        enforce_gear_group_interlock_before_output();
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            axis_runtime_t *runtime = &axes[axis];
+            uservo_csp_offsets_t *off = &uservo_dual_csp_offsets[axis];
+            int safety_output_blocked = realtime_status.communication_timing_fault || gear_group_safety_latched;
+            uint16_t output_controlword = safety_output_blocked
+                ? 0
+                : (commissioning_inhibit
+                    ? (runtime->st.cw == 0x0080 ? 0x0080 : 0)
+                    : runtime->st.cw);
+            EC_WRITE_U16(process_data + off->controlword, output_controlword);
+            EC_WRITE_S8(process_data + off->mode,
+                        commissioning_inhibit || safety_output_blocked ? 0 : runtime->commanded_mode);
+            EC_WRITE_S32(process_data + off->target_position,
+                         commissioning_inhibit || safety_output_blocked ? runtime->st.pos_raw : runtime->st.target_raw);
+            EC_WRITE_U32(process_data + off->digital_output, 0);
+        }
+        ecrt_domain_queue(domain);
+        ecrt_master_sync_reference_clock(master);
+        ecrt_master_sync_slave_clocks(master);
+        ecrt_master_send(master);
+        poll_server(AXIS_D_SERVER_ACCEPT_BUDGET, 1U, 1);
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            axes[axis].st.cycles++;
+        }
+        cycle_finished_ns = monotonic_now_ns();
+        realtime_status.last_cycle_runtime_ns = cycle_finished_ns - cycle_started_ns;
+        if (realtime_status.last_cycle_runtime_ns > realtime_status.max_cycle_runtime_ns) {
+            realtime_status.max_cycle_runtime_ns = realtime_status.last_cycle_runtime_ns;
+        }
+    }
+
+    printf("Disabling Axis D/E Uservo CSP outputs before exit...\n");
+    for (unsigned int cycle = 0; cycle < AXIS_D_SHUTDOWN_CYCLES; cycle++) {
+        uint64_t scheduled_time_ns;
+        if (wait_for_axis_d_cycle(&deadline_ns, &scheduled_time_ns) < 0) {
+            break;
+        }
+        ecrt_master_application_time(master, scheduled_time_ns);
+        ecrt_master_receive(master);
+        ecrt_domain_process(domain);
+        for (int axis = 0; axis < AXIS_COUNT; axis++) {
+            uservo_csp_offsets_t *off = &uservo_dual_csp_offsets[axis];
+            EC_WRITE_U16(process_data + off->controlword, 0);
+            EC_WRITE_S8(process_data + off->mode, 0);
+            EC_WRITE_S32(process_data + off->target_position,
+                         EC_READ_S32(process_data + off->position_actual));
+            EC_WRITE_U32(process_data + off->digital_output, 0);
+        }
+        ecrt_domain_queue(domain);
+        ecrt_master_sync_reference_clock(master);
+        ecrt_master_sync_slave_clocks(master);
+        ecrt_master_send(master);
+    }
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        close_client(&clients[i]);
+    }
+    close(listen_fd);
+    ecrt_release_master(master);
     return 0;
 }
 
@@ -3161,10 +3700,12 @@ int main(void)
     const char *topology = getenv("MCTIVITY_TOPOLOGY");
 
     uservo_dual_pv_topology = topology && strcmp(topology, "axis-de-uservo-pv") == 0;
+    uservo_dual_gear_topology = topology && strcmp(topology, "axis-de-uservo-gear") == 0;
+    uservo_dual_topology = uservo_dual_pv_topology || uservo_dual_gear_topology;
     uservo_pv_topology = topology &&
         (strcmp(topology, "axis-d-uservo-pv") == 0 || uservo_dual_pv_topology);
     uservo_axis_d_topology = topology &&
-        (strcmp(topology, "axis-d-uservo") == 0 || uservo_pv_topology || uservo_dual_pv_topology);
+        (strcmp(topology, "axis-d-uservo") == 0 || uservo_pv_topology || uservo_dual_topology);
     commissioning_inhibit = uservo_axis_d_topology
         ? env_flag_default("MCTIVITY_COMMISSIONING_INHIBIT", 1)
         : 0;
@@ -3189,6 +3730,8 @@ int main(void)
         axes[axis].gear_master_axis = axis == AXIS_FV3 ? AXIS_MCTIVITY : AXIS_FV3;
         axes[axis].gear_master_ratio = 1;
         axes[axis].gear_slave_ratio = 1;
+        axes[axis].gear_direction = 1;
+        (void)mctivity_gear_configure(&axes[axis].gear_math, 1, 1, 1);
         snprintf(axes[axis].st.message, sizeof(axes[axis].st.message), "starting");
     }
 
@@ -3198,6 +3741,9 @@ int main(void)
         return 1;
     }
 
+    if (uservo_dual_gear_topology) {
+        return run_uservo_axes_de_gear();
+    }
     if (uservo_dual_pv_topology) {
         return run_uservo_axes_de_pv();
     }

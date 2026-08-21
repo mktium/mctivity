@@ -225,6 +225,7 @@ _COMMAND_FIELD_ORDER = {
         "slave_ratio",
         "gear_master_ratio",
         "gear_slave_ratio",
+        "direction",
     ],
     "gear_start": [
         "cmd",
@@ -235,6 +236,7 @@ _COMMAND_FIELD_ORDER = {
         "slave_ratio",
         "gear_master_ratio",
         "gear_slave_ratio",
+        "direction",
     ],
     "gear_stop": ["cmd", "device"],
     "sync_enable": ["cmd"],
@@ -328,6 +330,11 @@ _AXIS_DEVICE_BY_KEY = {
     for device in _AXIS_DEVICES
     if str(device.get("transport_device", "")).strip()
 }
+_GEAR_PROFILE = (
+    len(_AXIS_DEVICES) == 2
+    and all(device.get("topology") == "axis-de-uservo-gear" for device in _AXIS_DEVICES)
+    and {str(device.get("logical_axis", "")).upper() for device in _AXIS_DEVICES} == {"D", "E"}
+)
 _PRIMARY_AXIS_DEVICE = _AXIS_DEVICES[0] if _AXIS_DEVICES else {}
 _PRIMARY_AXIS_LABEL = str(_PRIMARY_AXIS_DEVICE.get("logical_axis", "A")).strip().upper() or "A"
 _PRIMARY_AXIS_COUNTS_PER_REV = max(1, int(_PRIMARY_AXIS_DEVICE.get("counts_per_rev", 8388608)))
@@ -436,6 +443,16 @@ def capability_manifest():
             "devices": list(_HMI_DEVICE_ORDER) if _SYNC_VELOCITY_PROFILE else [],
             "commands": sorted(_SYNC_VELOCITY_COMMANDS) if _SYNC_VELOCITY_PROFILE else [],
         },
+        "electronic_gear_control": {
+            "available": _GEAR_PROFILE,
+            "devices": list(_HMI_DEVICE_ORDER) if _GEAR_PROFILE else [],
+            "default_master": "mctivity" if _GEAR_PROFILE else None,
+            "default_slave": "mctivity_e" if _GEAR_PROFILE else None,
+            "default_direction": 1,
+            "max_ratio": MAX_GEAR_RATIO,
+            "following_error_limit_counts": 200 if _GEAR_PROFILE else None,
+            "commands": ["gear_config", "gear_start", "gear_stop"] if _GEAR_PROFILE else [],
+        },
         "warnings": _MODULE_RUNTIME.get("warnings", []),
         "enabled_feature_keys": sorted(_ENABLED_FEATURE_KEYS),
         "feature_assembly": _FEATURE_ASSEMBLY,
@@ -542,6 +559,22 @@ def _validate_command_numbers(cmd, clean, device):
     for key in ("master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"):
         if key in clean and clean[key] > MAX_GEAR_RATIO:
             return False
+    if cmd in ("gear_config", "gear_start") and "direction" in clean:
+        direction = clean["direction"]
+        if isinstance(direction, str):
+            if direction.strip().lower() in {"same", "forward", "+1", "1"}:
+                clean["direction"] = 1
+            elif direction.strip().lower() in {"reverse", "opposite", "-1"}:
+                clean["direction"] = -1
+            else:
+                return False
+        else:
+            try:
+                clean["direction"] = _strict_int(direction)
+            except ValueError:
+                return False
+            if clean["direction"] not in (-1, 1):
+                return False
     if cmd == "sync_jog_velocity":
         if clean["velocity"] == 0:
             return False
@@ -591,12 +624,17 @@ def _sanitize_command_payload(payload, device):
         clean["blend"] = blend
     if cmd in ("gear_config", "gear_start"):
         master = str(clean.get("master", "")).strip().lower()
-        if master and master not in ("mctivity", "fv3", "virtual"):
+        allowed_masters = set(_HMI_DEVICE_ORDER) if _GEAR_PROFILE else {"mctivity", "fv3", "virtual"}
+        if master and master not in allowed_masters:
+            return None
+        if _GEAR_PROFILE and (not master or master == device):
             return None
         if master:
             clean["master"] = master
         master_axis = str(clean.get("master_axis", "")).strip().lower()
-        if master_axis and master_axis not in ("mctivity", "fv3", "virtual"):
+        if master_axis and master_axis not in allowed_masters:
+            return None
+        if _GEAR_PROFILE and master_axis and master_axis == device:
             return None
         if master_axis:
             clean["master_axis"] = master_axis
@@ -1109,12 +1147,18 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
                 <select id="gearMasterSelect" onchange="updateGearMaster()">
                   <option value="mctivity">Axis A</option>
                   <option value="fv3">Axis B</option>
-                  <option value="virtual">虚拟主轴</option>
                 </select>
               </div>
               <div class="gear-field">
                 <span class="label">从轴</span>
                 <span id="gearSlaveName" class="gear-name">--</span>
+              </div>
+              <div class="gear-field">
+                <span class="label">方向</span>
+                <select id="gearDirectionSelect" onchange="updateGearDirection()">
+                  <option value="1">同向</option>
+                  <option value="-1">反向</option>
+                </select>
               </div>
             </div>
             <div id="gearRatioBlock" class="gear-ratio">
@@ -1145,6 +1189,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
                 </div>
               </div>
             </div>
+            <div id="gearRuntimeStatus" class="control-note" aria-live="polite">齿轮未接合；D 主轴 / E 从轴默认同向 1:1</div>
           </div>
         </div>
       </section>
@@ -1584,12 +1629,12 @@ function newMotionState() {
 function newDeviceProfile(device) {
   const config = axisConfig(device);
   const counts = config.counts_per_rev;
-  const defaultGearMaster = device === 'fv3' ? 'mctivity' : (ASSEMBLED_DEVICE_ORDER.includes('fv3') ? 'fv3' : 'virtual');
+  const defaultGearMaster = device === 'mctivity_e' ? 'mctivity' : (ASSEMBLED_DEVICE_ORDER.includes('mctivity_e') ? 'mctivity_e' : (device === 'fv3' ? 'mctivity' : (ASSEMBLED_DEVICE_ORDER.includes('fv3') ? 'fv3' : 'virtual')));
   return {mode:config.default_mode, absPos:0, absSpeedRpm:config.default_speed_rpm,
     absAccel:config.default_accel_rpm_s, velocityAccelRpmS:config.default_accel_rpm_s,
     stopDecelRpmS:config.stop_decel_rpm_s, relDelta:config.default_relative_counts,
     moveMs:3000, velRpm:config.default_speed_rpm, velCps:rpmToCountsS(config.default_speed_rpm, device),
-    torqueCmd:0, gearMaster:defaultGearMaster, gearMasterRatio:1, gearSlaveRatio:1,
+    torqueCmd:0, gearMaster:defaultGearMaster, gearMasterRatio:1, gearSlaveRatio:1, gearDirection:1,
     incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'},
     transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360},
     points:{1:0, 2:counts/2, 3:counts}};
@@ -1656,17 +1701,21 @@ function axisDevices() {
   return ASSEMBLED_DEVICE_ORDER.filter(supportsDevice);
 }
 function preferredGearMaster(device) {
-  if (device === 'fv3') return 'mctivity';
-  return supportsDevice('fv3') ? 'fv3' : 'virtual';
+  const peers = axisDevices().filter(other => other !== device);
+  if (device === 'mctivity_e' && supportsDevice('mctivity')) return 'mctivity';
+  if (device === 'mctivity' && supportsDevice('mctivity_e')) return 'mctivity_e';
+  if (device === 'fv3' && supportsDevice('mctivity')) return 'mctivity';
+  return peers[0] || 'virtual';
 }
 function refreshGearPanel(device = activeDevice) {
   const profile = currentProfile(device);
-  if (!profile.gearMaster || profile.gearMaster === device) {
+  if (!profile.gearMaster || profile.gearMaster === device || !supportsDevice(profile.gearMaster)) {
     profile.gearMaster = preferredGearMaster(device);
   }
   if (gearMasterSelect) {
     gearMasterSelect.value = profile.gearMaster;
   }
+  if (gearDirectionSelect) gearDirectionSelect.value = String(profile.gearDirection || 1);
   setText('gearSlaveName', axisDisplayName(device));
 }
 function clampGearRatioValue(value) {
@@ -1695,6 +1744,7 @@ function setGearPanelLocked(locked) {
   if (panel) panel.classList.toggle('locked', Boolean(locked));
   if (ratio) ratio.classList.toggle('locked', Boolean(locked));
   if (master) master.disabled = Boolean(locked);
+  if (gearDirectionSelect) gearDirectionSelect.disabled = Boolean(locked);
 }
 const gearDragState = {role:null, lastY:0, acc:0, lastT:0, velocity:0, moved:false, suppressTapUntil:0, inertiaRole:null, inertiaAcc:0, inertiaV:0, inertiaTimer:0};
 function renderGearWheel(role) {
@@ -2339,6 +2389,7 @@ function saveUiState(device = activeDevice) {
   profile.gearMaster = gearMasterSelect.value;
   profile.gearMasterRatio = Number(gearMasterRatio.value);
   profile.gearSlaveRatio = Number(gearSlaveRatio.value);
+  profile.gearDirection = Number(gearDirectionSelect.value || 1);
   profile.mode = modeSelect.value || 'position';
   const snapshot = JSON.stringify(profile);
   const changed = lastUiStateSnapshot[device] !== snapshot;
@@ -2373,6 +2424,7 @@ function loadUiState(device = activeDevice) {
   torqueCmd.value = profile.torqueCmd;
   gearMasterRatio.value = profile.gearMasterRatio || 1;
   gearSlaveRatio.value = profile.gearSlaveRatio || 1;
+  gearDirectionSelect.value = String(profile.gearDirection || 1);
   if (profile.gearMaster && profile.gearMaster !== device && (profile.gearMaster === 'virtual' || supportsDevice(profile.gearMaster))) {
     gearMasterSelect.value = profile.gearMaster;
   } else {
@@ -2615,11 +2667,20 @@ function refreshModeOptions() {
 }
 function refreshGearMasterOptions() {
   if (!gearMasterSelect || !gearMasterSelect.options) return;
-  gearMasterSelect.options[0].textContent = axisDisplayName('mctivity');
-  gearMasterSelect.options[1].textContent = axisDisplayName('fv3');
-  gearMasterSelect.options[1].disabled = !supportsDevice('fv3');
-  gearMasterSelect.options[1].hidden = !supportsDevice('fv3');
-  if (gearMasterSelect.options[2]) gearMasterSelect.options[2].textContent = UI_TEXT[currentLang].virtualAxis;
+  const device = activeDevice;
+  const previous = currentProfile(device).gearMaster;
+  gearMasterSelect.replaceChildren();
+  for (const master of axisDevices().filter(other => other !== device)) {
+    const option = document.createElement('option');
+    option.value = master;
+    option.textContent = axisDisplayName(master);
+    gearMasterSelect.appendChild(option);
+  }
+  const selected = supportsDevice(previous) && previous !== device ? previous : preferredGearMaster(device);
+  if (selected && Array.from(gearMasterSelect.options).some(option => option.value === selected)) {
+    gearMasterSelect.value = selected;
+    currentProfile(device).gearMaster = selected;
+  }
 }
 function refreshStaticText() {
   const text = UI_TEXT[currentLang];
@@ -3080,6 +3141,11 @@ function updateGearMaster() {
   enforceGearConstraints();
   updateSliders();
 }
+function updateGearDirection() {
+  if (isGearPanelLocked()) return;
+  currentProfile().gearDirection = Number(gearDirectionSelect.value || 1) < 0 ? -1 : 1;
+  updateSliders();
+}
 function render(s) {
   const text = UI_TEXT[currentLang];
   const reportedDevice = String(s && s.device || activeDevice).toLowerCase();
@@ -3142,6 +3208,18 @@ function render(s) {
   } else if (s.control_mode !== 'gear_cam' && !motionState.latch) {
     motionState.gearEngaged = false;
     motionState.gearStoppedLatched = false;
+  }
+  if (__GEAR_PROFILE__) {
+    const gearActive = Boolean(s.gear_group_session_active);
+    const gearLatched = Boolean(s.gear_group_safety_latched);
+    const master = s.gear_master ? axisDisplayName(String(s.gear_master)) : '轴 D';
+    const slave = s.gear_slave ? axisDisplayName(String(s.gear_slave)) : '轴 E';
+    const direction = Number(s.gear_direction || 1) < 0 ? '反向' : '同向';
+    setText('gearRuntimeStatus', gearLatched
+      ? '齿轮安全锁存：两轴保持失能，需先确认安全状态'
+      : (gearActive
+        ? `${master} 主轴 → ${slave} 从轴，${direction} ${Number(s.gear_slave_ratio || 1)}:${Number(s.gear_master_ratio || 1)}，关系误差 ${Number(s.gear_position_error || 0)} cnt`
+        : '齿轮未接合；D 主轴 / E 从轴默认同向 1:1'));
   }
   const gearEngaged = isGearEngaged(device) && s.control_mode === 'gear_cam';
   const forceGearStandstill = Boolean(motionState.gearStoppedLatched && !gearEngaged);
@@ -3462,7 +3540,8 @@ function gearPayload(cmdName) {
     cmd: cmdName,
     master: gearMasterSelect.value,
     master_ratio: Number(gearMasterRatio.value || 1),
-    slave_ratio: Number(gearSlaveRatio.value || 1)
+    slave_ratio: Number(gearSlaveRatio.value || 1),
+    direction: Number(gearDirectionSelect.value || 1)
   };
 }
 function isGearModeSelected() {
@@ -3470,6 +3549,10 @@ function isGearModeSelected() {
   return (modeSelect && modeSelect.value === 'gear_cam') || (status && status.control_mode === 'gear_cam');
 }
 function setMode() {
+  if (capabilityState.commissioningInhibit) {
+    showApiError({ok:false, error:'commissioning_inhibit'});
+    return Promise.resolve(false);
+  }
   const requested = modeSelect.value;
   const modeUi = currentModeUi();
   const previous = (currentProfile() && currentProfile().mode) || (currentStatus() && currentStatus().control_mode) || 'position';
@@ -3623,6 +3706,10 @@ function stopMotion() {
     });
 }
 async function startSinglePointMotion() {
+  if (capabilityState.commissioningInhibit) {
+    showApiError({ok:false, error:'commissioning_inhibit'});
+    return {ok:false, error:'commissioning_inhibit'};
+  }
   if (syncVelocityEnabled && modeSelect && modeSelect.value === 'velocity') {
     await refreshSyncStatuses();
     const anyMoving = syncAxesStatus().some(item => item.status && (item.status.moving || Number(item.status.jog_velocity_cps || 0) !== 0));
@@ -3874,6 +3961,7 @@ HTML = HTML.replace(
     "__ASSEMBLED_DEVICE_ORDER__",
     json.dumps(_HMI_DEVICE_ORDER, ensure_ascii=False, separators=(",", ":")),
 )
+HTML = HTML.replace("__GEAR_PROFILE__", "true" if _GEAR_PROFILE else "false")
 
 
 def motiond_command(payload, port=MOTIOND_PORT):
@@ -3921,6 +4009,7 @@ def _normalize_ui_device_state(raw):
         "torqueCmd",
         "gearMasterRatio",
         "gearSlaveRatio",
+        "gearDirection",
     )
     for field in numeric_fields:
         if field in raw:

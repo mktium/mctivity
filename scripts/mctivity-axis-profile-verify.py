@@ -65,17 +65,25 @@ def main():
             checked += 1
         if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv"} and len(axis_devices) != 1:
             raise SystemExit(f"{profile.get('profile')} profile must contain exactly one axis device")
-        if profile.get("profile") == "axis-de-uservo-pv" and len(axis_devices) != 2:
-            raise SystemExit("axis-de-uservo-pv profile must contain exactly two axis devices")
-        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv"}:
+        if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear"} and len(axis_devices) != 2:
+            raise SystemExit(f"{profile.get('profile')} profile must contain exactly two axis devices")
+        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear"}:
             modules = set(profile.get("modules", []))
             is_pv = profile.get("profile") in {"axis-d-uservo-pv", "axis-de-uservo-pv"}
+            is_gear = profile.get("profile") == "axis-de-uservo-gear"
             if not is_pv and {"feature-logic-velocity", "feature-hmi-velocity"} & modules:
                 raise SystemExit("axis-d-uservo must not expose velocity mode without a 0x60ff target-velocity PDO")
             if is_pv and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
                 raise SystemExit("axis-d-uservo-pv must expose velocity logic and HMI modules")
+            if is_gear and not {
+                "feature-logic-single-point",
+                "feature-hmi-single-point",
+                "feature-logic-electronic-gear",
+                "feature-hmi-electronic-gear",
+            } <= modules:
+                raise SystemExit("axis-de-uservo-gear must expose single-point and electronic-gear modules")
             expected_instances = ([('D', 'mctivity', 0), ('E', 'mctivity_e', 1)]
-                                  if profile.get("profile") == "axis-de-uservo-pv" else
+                                  if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear"} else
                                   [('D', 'mctivity', 0)])
             actual_instances = [
                 (str(item.get("logical_axis")), str(item.get("transport_device")), int(item.get("physical_position", -1)))
@@ -131,6 +139,15 @@ def main():
                         raise SystemExit("axis-d-uservo-pv 0x6084 deceleration and stop deceleration must match")
                     if device["default_accel_counts_s2"] <= 0 or device["stop_decel_counts_s2"] <= 0:
                         raise SystemExit("axis-d-uservo-pv resolved acceleration/deceleration invalid")
+                if is_gear:
+                    if device.get("ethercat_mode") != "csp" or device.get("ethercat_mode_code") != 8:
+                        raise SystemExit("axis-de-uservo-gear must select CiA 402 CSP mode code 8")
+                    if device.get("rxpdo_profile") != "0x1600" or device.get("txpdo_profile") != "0x1A00":
+                        raise SystemExit("axis-de-uservo-gear must select RxPDO 0x1600 and TxPDO 0x1A00")
+                    if int(device.get("gear_following_error_limit_counts", 0)) != 200:
+                        raise SystemExit("axis-de-uservo-gear must use a 200-count following-error limit")
+                    if int(device.get("gear_max_ratio", 0)) != 200:
+                        raise SystemExit("axis-de-uservo-gear must use a 200:1 maximum ratio")
         if profile.get("profile") in {"minimal", "standard", "full"} and runtime.get("axis_devices"):
             raise SystemExit(f"legacy profile polluted by axis device parameters: {profile.get('profile')}")
     if checked < 1:

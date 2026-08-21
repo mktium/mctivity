@@ -53,6 +53,7 @@ Core updates:
 - see [Assembly Quickstart](docs/assembly-quickstart.md) for profile switching and verification
 - see [Touchscreen Kiosk](docs/touchscreen-kiosk.md) for local fullscreen display deployment
 - see [Uservo Axis D](docs/axis-d-uservo.md) for topology selection and no-motion commissioning
+- see [Axis D/E Uservo Electronic Gear](docs/axis-de-uservo-gear.md) for the CSP gear profile, safety gate, and no-motion commissioning
 - see [Axis D EtherCAT Realtime Contract](docs/axis-d-ethercat-realtime.md) for official ESI parameters and the loaded no-motion stability gate
 
 ## Build and Start

@@ -34,7 +34,13 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
     launch_env = dict(source_env)
     device = axis_devices[0] if axis_devices else None
     expected_topology = str(device.get("topology")) if device else "legacy-dual"
-    if expected_topology not in {"legacy-dual", "axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv"}:
+    if expected_topology not in {
+        "legacy-dual",
+        "axis-d-uservo",
+        "axis-d-uservo-pv",
+        "axis-de-uservo-pv",
+        "axis-de-uservo-gear",
+    }:
         raise ProfileRuntimeError(f"unsupported motiond topology: {expected_topology!r}")
     if any(str(item.get("topology")) != expected_topology for item in axis_devices):
         raise ProfileRuntimeError("all assembled axes must declare the same topology")
@@ -115,6 +121,47 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
                         f"{prefix}_PV_STOP_DECEL_RPM_S": str(item["stop_decel_rpm_s"]),
                     }
                 )
+    if expected_topology == "axis-de-uservo-gear":
+        expected_contract = {
+            "vendor_id": "0x00666999",
+            "product_code": "0x00004806",
+            "revision": "0x00000001",
+            "cycle_ns": 1_000_000,
+            "rxpdo_profile": "0x1600",
+            "txpdo_profile": "0x1A00",
+            "rxpdo": ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"],
+            "txpdo": ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"],
+        }
+        for item in axis_devices:
+            for key, expected in expected_contract.items():
+                if item.get(key) != expected:
+                    raise ProfileRuntimeError(
+                        f"Uservo CSP runtime contract mismatch for {key}: expected {expected!r}, got {item.get(key)!r}"
+                    )
+            if item.get("ethercat_mode") != "csp" or int(item.get("ethercat_mode_code", 0)) != 8:
+                raise ProfileRuntimeError("Uservo gear profile must declare CiA 402 CSP mode code 8")
+            if int(item.get("gear_following_error_limit_counts", 0)) != 200:
+                raise ProfileRuntimeError("Uservo gear profile must use a 200-count default following-error limit")
+            if int(item.get("gear_max_ratio", 0)) != 200:
+                raise ProfileRuntimeError("Uservo gear profile must use a 200:1 maximum ratio")
+        expected_instances = [("D", "mctivity", 0), ("E", "mctivity_e", 1)]
+        actual_instances = [
+            (str(item.get("logical_axis")), str(item.get("transport_device")), int(item.get("physical_position", -1)))
+            for item in axis_devices
+        ]
+        if actual_instances != expected_instances:
+            raise ProfileRuntimeError(
+                f"Uservo gear axis instances mismatch: expected {expected_instances!r}, got {actual_instances!r}"
+            )
+        launch_env["MCTIVITY_USERVO_AXIS_COUNT"] = "2"
+        launch_env["MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS"] = str(
+            device["gear_following_error_limit_counts"]
+        )
+        launch_env["MCTIVITY_GEAR_MAX_RATIO"] = str(device["gear_max_ratio"])
+        for item in axis_devices:
+            axis_name = str(item["logical_axis"]).upper()
+            launch_env[f"MCTIVITY_AXIS_{axis_name}_COUNTS_PER_REV"] = str(item["counts_per_rev"])
+            launch_env[f"MCTIVITY_AXIS_{axis_name}_MAX_SPEED_RPM"] = str(item["max_speed_rpm"])
     return runtime, device, launch_env
 
 
@@ -131,6 +178,8 @@ def public_dump(runtime, device, launch_env):
         "MCTIVITY_PV_DECEL_RPM_S",
         "MCTIVITY_PV_STOP_DECEL_RPM_S",
         "MCTIVITY_USERVO_AXIS_COUNT",
+        "MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS",
+        "MCTIVITY_GEAR_MAX_RATIO",
     ]
     for axis_name in ("D", "E"):
         keys.extend(
@@ -141,6 +190,8 @@ def public_dump(runtime, device, launch_env):
                 f"MCTIVITY_AXIS_{axis_name}_PV_ACCEL_RPM_S",
                 f"MCTIVITY_AXIS_{axis_name}_PV_DECEL_RPM_S",
                 f"MCTIVITY_AXIS_{axis_name}_PV_STOP_DECEL_RPM_S",
+                f"MCTIVITY_AXIS_{axis_name}_COUNTS_PER_REV",
+                f"MCTIVITY_AXIS_{axis_name}_MAX_SPEED_RPM",
             ]
         )
     return {

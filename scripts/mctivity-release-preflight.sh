@@ -7,9 +7,11 @@ python3 scripts/mctivity-axis-profile-verify.py
 python3 mctivity_hmi/test_profile_runtime.py
 python3 mctivity_hmi/test_velocity_profile.py
 python3 mctivity_hmi/test_dual_uservo_hmi.py
+python3 mctivity_hmi/test_dual_uservo_gear_hmi.py
 python3 scripts/test_motiond_launch.py
 python3 scripts/mctivity-motiond-launch.py --profile axis-d-uservo-pv --dump >/dev/null
 python3 scripts/mctivity-motiond-launch.py --profile axis-de-uservo-pv --dump >/dev/null
+python3 scripts/mctivity-motiond-launch.py --profile axis-de-uservo-gear --dump >/dev/null
 for profile in minimal standard full axis-d-uservo; do
   python3 scripts/mctivity-motiond-launch.py --profile "$profile" --dump >/dev/null
 done

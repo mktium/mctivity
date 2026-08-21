@@ -1,0 +1,33 @@
+{
+  "profile": "axis-de-uservo-gear",
+  "topology": "axis-de-uservo-gear",
+  "domains": [
+    "axis_control_domain",
+    "device_application_domain"
+  ],
+  "modules": [
+    "axis-feedback-panel",
+    "axis-control-panel",
+    "axis-device-uservo-gear",
+    "feature-logic-single-point",
+    "feature-hmi-single-point",
+    "feature-logic-electronic-gear",
+    "feature-hmi-electronic-gear",
+    "ui-state-persist",
+    "ui-touchscreen"
+  ],
+  "axis_instances": [
+    {
+      "module": "axis-device-uservo-gear",
+      "logical_axis": "D",
+      "transport_device": "mctivity",
+      "physical_position": 0
+    },
+    {
+      "module": "axis-device-uservo-gear",
+      "logical_axis": "E",
+      "transport_device": "mctivity_e",
+      "physical_position": 1
+    }
+  ]
+}
