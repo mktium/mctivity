@@ -156,3 +156,15 @@ guard after its healthy window, and retained
 recorded 60/60 healthy samples with both axes fault-free, disabled, stationary,
 controlword/target zero, and deadline miss/skip `0/0`. No enable, velocity, or
 motion command was issued during deployment acceptance.
+
+## Operator synchronized-velocity acceptance
+
+On 2026-08-21 the operator completed the D/E synchronized-velocity test through
+the mctivity web HMI and explicitly reported that speed synchronization worked.
+This accepts the deployed atomic PV group path from the HMI through motiond to
+the combined EtherCAT PDO frame. The accepted scope is simultaneous velocity
+enable/start/stop behavior; it does not establish encoder phase or position
+synchronization. Exact run duration and sampled speed-error traces were not
+captured, so they are not inferred in this record. D/E position synchronization
+remains a separate future commissioning task with its own design, safety gate,
+and operator-approved motion plan.
