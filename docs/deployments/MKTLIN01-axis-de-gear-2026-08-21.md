@@ -193,3 +193,38 @@ timing counters remained healthy. However, both D and E reported a drive fault
 after the restart transition. Per the fault policy, no automatic reset was
 performed and the next read-only acceptance is paused until the operator
 resets both faults and they are independently confirmed clear.
+
+## HMI gear-master selector fix
+
+The operator reported that after switching to the E page and selecting
+electronic gearing, the master selector could show E itself. The backend was
+already correct (`gear_master=mctivity`, the D axis); the defect was in the HMI
+page-switch path. `refreshGearMasterOptions()` rebuilt the selector during
+initial language/bootstrap handling, but `switchAxis()` did not rebuild it
+when changing from D to E, so the previous page's peer list remained visible.
+
+Source commit `37a92de` (`Refresh gear master on axis switch`) was pushed to
+`mktium/mctivity:feature/v1.4.1-axis-d-uservo`. It adds the refresh before
+loading the selected axis UI state and adds a regression assertion. The full
+release preflight passed, including Python, JavaScript, JSON, shell, HMI, and
+C unit tests.
+
+This was deployed as an HMI-only release:
+
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-gear-hmi-37a92de`;
+- HMI source SHA-256:
+  `186828ee280bd2c869b48a03ffa5aa3f3e1e6711efa12a5740ad2f2b8a403210`;
+- pre-switch backup:
+  `/var/backups/mctivity/pre-axis-de-gear-hmi-37a92de-20260821T170137`.
+
+Only `mctivity-hmi.service` was restarted; `mctivity-motiond.service` was not
+restarted and its active timestamp was unchanged. The served page contains the
+new refresh call. After deployment, a 60-second read-only gate passed 60/60:
+D/E remained fault-free, OP with WC `6/6`, disabled, stationary, `cw=0`, with
+targets equal to actual positions (D `1`, E `-1342`), no gear session or latch,
+and realtime deadline miss/skip `0/0`. No enable, gear-start, stop, or motion
+command was sent by the deployment.
+
+After a page reload, the expected selector is D-only on the E page and E-only
+on the D page. First enable and first-motion acceptance remain separately
+authorized activities.
