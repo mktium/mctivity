@@ -13,8 +13,9 @@ fault reset, or motion testing.
 - repository: `mktium/mctivity`;
 - branch: `feature/v1.4.1-axis-d-uservo`;
 - implementation commit: `c6575a5` (`Add combined D/E Uservo velocity and gear profile`);
-- source archive: `/tmp/mctivity-c6575a5.tar.gz`;
-- source archive SHA-256: `2b162674be84b4d638a55d86f381353c5c04ac18d0b607ce5bd8b7dfe041b41c`;
+- deployable source/documentation commit: `1ab2898`;
+- source archive: `/tmp/mctivity-1ab2898.tar.gz`;
+- source archive SHA-256: `177522179ed89fde849d7d452f7a404bc679e7e8762dcf40482ded142b1245b5`;
 - CYMG documentation commit: `a26fe06` (local-only);
 - release preflight: passed;
 - profile/PDO contract validation: passed;
