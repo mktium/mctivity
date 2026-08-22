@@ -13,9 +13,9 @@ fault reset, or motion testing.
 - repository: `mktium/mctivity`;
 - branch: `feature/v1.4.1-axis-d-uservo`;
 - implementation commit: `c6575a5` (`Add combined D/E Uservo velocity and gear profile`);
-- deployable source/documentation commit: `1ab2898`;
-- source archive: `/tmp/mctivity-1ab2898.tar.gz`;
-- source archive SHA-256: `177522179ed89fde849d7d452f7a404bc679e7e8762dcf40482ded142b1245b5`;
+- deployable source/documentation commit: `34c6fff`;
+- source archive: `/tmp/mctivity-34c6fff.tar.gz`;
+- source archive SHA-256: `b12f7bafbf8623c4bac4d9a3d110f03dd36245b7cbde5cf4fcf83df9be83670f`;
 - CYMG documentation commit: `a26fe06` (local-only);
 - release preflight: passed;
 - profile/PDO contract validation: passed;
@@ -30,26 +30,22 @@ The new `axis-de-uservo-combined` profile retains the verified CSP map:
 - velocity mode uses bounded software position increments over CSP `0x607A`;
 - native `axis-de-uservo-pv` and CSP `axis-de-uservo-gear` profiles remain rollback targets.
 
-## Target status
+## Target deployment
 
-Read-only `GET /api/capabilities` at `192.168.1.201:2015` still reports the
-previous `axis-de-uservo-gear` release and no velocity feature. The target was
-not changed in this stage.
+SSH access to MKTLIN01 was restored. The source archive was already transferred
+and the target rebuilt `mctivity_motiond` against the real `/opt/etherlab` with
+`-O2 -Wall -Wextra -Werror`.
 
-Direct SSH attempts to `192.168.1.201` using the available local identities
-were rejected with `Permission denied (publickey,password)`. Therefore the
-following steps remain pending and are intentionally not claimed:
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-34c6fff`;
+- target motiond SHA-256: `4465795e9866e85ffddd024b761771f775c7085418ae89ff023cdfabfd6cf230`;
+- pre-deploy backup: `/var/backups/mctivity/pre-axis-de-combined-34c6fff-20260822T015100Z`;
+- active link: `/opt/mctivity` resolves to the combined release;
+- `/etc/mctivity/axis.env`: `MCTIVITY_PROFILE=axis-de-uservo-combined`,
+  `MCTIVITY_COMMISSIONING_INHIBIT=0` (the operator's current setting was preserved);
+- motiond and HMI restarted successfully and are `active`;
+- read-only capabilities gate passed: D=P0, E=P1, velocity and electronic-gear
+  features present, gear control available, and velocity execute capability present.
 
-1. copy the source archive to MKTLIN01;
-2. compile `mctivity_motiond` against the target's real `/opt/etherlab` using
-   `-O2 -Wall -Wextra -Werror`;
-3. record the target binary SHA-256;
-4. back up `/etc/mctivity`, systemd units and the active release link;
-5. install and select `axis-de-uservo-combined`;
-6. restart only the required services with no control commands;
-7. perform the software/profile read-only gate while the drive power remains disconnected.
-
-No HMI or motion API control request was sent during this stage. Once target
-SSH authorization is restored, deployment must preserve the operator's current
-commissioning-inhibit setting and must still wait for explicit authorization
-before any enable or motion operation.
+No enable, mode, gear start/stop, fault reset, or motion command was sent. The
+drive-power/electrical and PDO/OP motion validation remains intentionally out of
+scope; first enable and first motion require a separate explicit authorization.
