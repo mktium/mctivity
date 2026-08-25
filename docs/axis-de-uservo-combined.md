@@ -41,3 +41,10 @@ disconnected, so no EtherCAT electrical/PDO/OP validation or motion test is
 claimed. Deployment may restart services and verify profile/API assembly, but
 must not send enable, mode, gear-start, stop, fault-reset, or motion commands.
 The old CSP gear and native PV profiles remain rollback targets.
+
+The realtime status separates host scheduler jitter from EtherCAT communication
+health. A single or two-cycle host wake-up slip is counted but does not latch a
+communication fault; three consecutive skipped 1 ms periods during active
+Uservo control latch `rt_schedule_timing_fault` and fail closed. OP/WC/link
+losses retain immediate fail-closed behavior. The status API exposes the
+`rt_consecutive_schedule_misses` streak and `rt_schedule_timing_fault` flag.

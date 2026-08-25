@@ -7,14 +7,18 @@ LDLIBS ?= -lethercat
 
 all: mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond
 
-test: test_realtime_schedule test_communication_guard test_electronic_gear
+test: test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear
 	./test_realtime_schedule
+	./test_realtime_guard
 	./test_communication_guard
 	./test_electronic_gear
 	$(MAKE) clean-test
 
 test_realtime_schedule: test_realtime_schedule.c realtime_schedule.h
 	$(CC) $(CFLAGS) -Werror -o $@ test_realtime_schedule.c
+
+test_realtime_guard: test_realtime_guard.c realtime_guard.h
+	$(CC) $(CFLAGS) -Werror -o $@ test_realtime_guard.c
 
 test_communication_guard: test_communication_guard.c communication_guard.h
 	$(CC) $(CFLAGS) -Werror -o $@ test_communication_guard.c
@@ -38,9 +42,9 @@ mctivity_motiond: mctivity_motiond.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -lm
 
 clean:
-	rm -f mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond test_realtime_schedule test_communication_guard test_electronic_gear
+	rm -f mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear
 
 clean-test:
-	rm -f test_realtime_schedule test_communication_guard test_electronic_gear
+	rm -f test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear
 
 .PHONY: all clean clean-test test

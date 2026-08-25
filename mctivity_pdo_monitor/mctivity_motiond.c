@@ -19,6 +19,7 @@
 #include "communication_guard.h"
 #include "electronic_gear.h"
 #include "realtime_schedule.h"
+#include "realtime_guard.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
@@ -101,6 +102,7 @@ typedef struct {
     int have_previous_wc;
     int timing_guard_armed;
     int communication_timing_fault;
+    mctivity_schedule_guard_t schedule_guard;
     int memory_locked;
     int scheduler_policy;
     int scheduler_priority;
@@ -554,6 +556,14 @@ static int sleep_until_ns(uint64_t deadline_ns)
     return 0;
 }
 
+static int dual_control_active(void)
+{
+    return sync_group_session_active || sync_group_motion_active || gear_group_session_active ||
+        axes[AXIS_MCTIVITY].st.servo_request || axes[AXIS_MCTIVITY].st.enabled ||
+        axes[AXIS_MCTIVITY].st.moving || axes[AXIS_FV3].st.servo_request ||
+        axes[AXIS_FV3].st.enabled || axes[AXIS_FV3].st.moving;
+}
+
 static void record_axis_d_skipped_periods(uint64_t skipped_periods)
 {
     if (skipped_periods == 0) {
@@ -562,7 +572,15 @@ static void record_axis_d_skipped_periods(uint64_t skipped_periods)
     realtime_status.deadline_miss_count++;
     realtime_status.skipped_periods += skipped_periods;
     realtime_status.consecutive_good_cycles = 0;
-    if (realtime_status.timing_guard_armed) {
+    if (uservo_axis_d_topology) {
+        mctivity_schedule_guard_note_miss(
+            &realtime_status.schedule_guard,
+            skipped_periods,
+            dual_control_active());
+    } else if (realtime_status.timing_guard_armed) {
+        realtime_status.communication_timing_fault = 1;
+    }
+    if (realtime_status.schedule_guard.fault_latched) {
         realtime_status.communication_timing_fault = 1;
     }
 }
@@ -573,7 +591,11 @@ static int wait_for_axis_d_cycle(uint64_t *previous_deadline_ns, uint64_t *sched
     mctivity_schedule_step_t step =
         mctivity_schedule_next(*previous_deadline_ns, now_ns, PERIOD_NS);
 
-    record_axis_d_skipped_periods(step.skipped_periods);
+    if (step.skipped_periods > 0) {
+        record_axis_d_skipped_periods(step.skipped_periods);
+    } else if (uservo_axis_d_topology) {
+        mctivity_schedule_guard_note_good_cycle(&realtime_status.schedule_guard);
+    }
     *previous_deadline_ns = step.deadline_ns;
 
     for (;;) {
@@ -1461,6 +1483,7 @@ static void send_status_fd(int fd, int axis)
         "\"torque_feedback\":%d,\"homed\":%s,\"cycles\":%u,"
         "\"rt_memory_locked\":%s,\"rt_scheduler_policy\":%d,\"rt_scheduler_priority\":%d,"
         "\"rt_deadline_miss_count\":%llu,\"rt_skipped_periods\":%llu,"
+        "\"rt_consecutive_schedule_misses\":%u,\"rt_schedule_timing_fault\":%s,"
         "\"rt_last_wake_lateness_ns\":%llu,\"rt_max_wake_lateness_ns\":%llu,"
         "\"rt_last_cycle_runtime_ns\":%llu,\"rt_max_cycle_runtime_ns\":%llu,"
         "\"wc_change_count\":%llu,\"wc_incomplete_cycles\":%llu,"
@@ -1485,6 +1508,8 @@ static void send_status_fd(int fd, int axis)
         realtime_status.scheduler_priority,
         (unsigned long long)realtime_status.deadline_miss_count,
         (unsigned long long)realtime_status.skipped_periods,
+        realtime_status.schedule_guard.consecutive_misses,
+        realtime_status.schedule_guard.fault_latched ? "true" : "false",
         (unsigned long long)realtime_status.last_wake_lateness_ns,
         (unsigned long long)realtime_status.max_wake_lateness_ns,
         (unsigned long long)realtime_status.last_cycle_runtime_ns,
@@ -2846,7 +2871,13 @@ static void update_axis_d_communication_guard(axis_runtime_t *axis)
         s->cw = 0;
         s->target_raw = s->pos_raw;
         s->target_user = s->pos_user;
-        snprintf(s->message, sizeof(s->message), "communication timing fault latched; restart required");
+        snprintf(
+            s->message,
+            sizeof(s->message),
+            "%s; restart required",
+            realtime_status.schedule_guard.fault_latched
+                ? "realtime schedule fault latched"
+                : "communication timing fault latched");
     }
 }
 
@@ -2869,7 +2900,13 @@ static void clear_axis_for_communication_fault(axis_runtime_t *axis)
     s->cw = 0;
     s->target_raw = s->pos_raw;
     s->target_user = s->pos_user;
-    snprintf(s->message, sizeof(s->message), "communication timing fault latched; restart required");
+    snprintf(
+        s->message,
+        sizeof(s->message),
+        "%s; restart required",
+        realtime_status.schedule_guard.fault_latched
+            ? "realtime schedule fault latched"
+            : "communication timing fault latched");
 }
 
 static void update_dual_uservo_communication_guard(
@@ -2880,10 +2917,7 @@ static void update_dual_uservo_communication_guard(
 {
     int healthy = wc_complete && slaves_responding == AXIS_COUNT && master_link_up &&
         axes[AXIS_MCTIVITY].st.operational && axes[AXIS_FV3].st.operational;
-    int control_active = sync_group_session_active || sync_group_motion_active || gear_group_session_active ||
-        axes[AXIS_MCTIVITY].st.servo_request || axes[AXIS_MCTIVITY].st.enabled ||
-        axes[AXIS_MCTIVITY].st.moving || axes[AXIS_FV3].st.servo_request ||
-        axes[AXIS_FV3].st.enabled || axes[AXIS_FV3].st.moving;
+    int control_active = dual_control_active();
     if (realtime_status.have_previous_wc && realtime_status.previous_wc != wc) {
         realtime_status.wc_change_count++;
     }

@@ -38,6 +38,7 @@ def assert_safe(status):
         "rt_scheduler_policy": 1,
         "timing_guard_armed": True,
         "communication_timing_fault": False,
+        "rt_schedule_timing_fault": False,
     }
     for key, value in expected.items():
         if status.get(key) != value:

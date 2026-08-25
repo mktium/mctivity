@@ -58,16 +58,20 @@ The Axis D scheduler never sends catch-up cycles. If a deadline has expired, eve
 
 The command socket has fixed per-cycle budgets: at most one newly accepted connection, one read per client, and two commands total. A nonblocking setup failure closes the client instead of allowing the realtime loop to block.
 
-After 1000 consecutive OP/WC-complete cycles, the timing guard arms. A missed
-host deadline still latches `communication_timing_fault`. In the dual-Uservo
-topology, a non-OP state or incomplete working counter while both axes are
-disabled and stationary instead disarms the enable gate and requires another
-1000 healthy cycles; no restart is needed. If either dual axis has an enable
-request, enabled feedback, motion, or an active synchronized session, the same
-communication loss immediately latches the fault and clears both axes. The
-latch cannot be cleared through a motion or fault-reset command; the daemon
-must be restarted under a verified stable configuration. Single-axis Uservo
-profiles retain their existing fail-closed latch behavior.
+After 1000 consecutive OP/WC-complete cycles, the timing guard arms. A host
+scheduler slip is tracked separately from EtherCAT communication health: one
+or two consecutive skipped 1 ms periods while Uservo control is active do not
+masquerade as a communication fault. Three or more consecutive skipped periods
+latch `rt_schedule_timing_fault` and fail closed; a good cycle resets the
+streak. In the dual-Uservo topology, a non-OP state or incomplete working
+counter while both axes are disabled and stationary disarms the enable gate and
+requires another 1000 healthy cycles; no restart is needed. If either dual axis
+has an enable request, enabled feedback, motion, or an active synchronized
+session, an actual OP/WC/link communication loss still immediately latches the
+communication fault and clears both axes. Any latched communication or severe
+scheduler fault requires a daemon restart under a verified stable
+configuration. Single-axis Uservo profiles use the same scheduler-jitter
+separation.
 
 ## No-motion acceptance
 

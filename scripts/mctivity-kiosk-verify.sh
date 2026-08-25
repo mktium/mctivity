@@ -74,6 +74,8 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-d
         assert int(status.get("rt_scheduler_priority", 0)) > 0, status
         assert status.get("timing_guard_armed") is True, status
         assert status.get("communication_timing_fault") is False, status
+        assert status.get("rt_schedule_timing_fault") is False, status
+        assert int(status.get("rt_consecutive_schedule_misses", 0)) == 0, status
         assert status.get("rt_deadline_miss_count") == 0, status
         assert status.get("rt_skipped_periods") == 0, status
     if profile in {"axis-d-uservo-pv", "axis-de-uservo-pv"}:
