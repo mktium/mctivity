@@ -14,10 +14,11 @@ fault reset, or motion testing.
 - branch: `feature/v1.4.1-axis-d-uservo`;
 - implementation commit: `c6575a5` (`Add combined D/E Uservo velocity and gear profile`);
 - realtime scheduler-fault fix commit: `0f19476` (`Separate scheduler jitter from EtherCAT faults`);
-- deployable source/documentation commit: `0f19476`;
+- deployed source commit: `0f19476`;
+- latest deployment-documentation commit: `a8d940c`;
 - source archive: `/tmp/mctivity-0f19476.tar.gz`;
 - source archive SHA-256: `f787e864ca6c136882167c66709095aeca1a597ead35378cdc9e45b73116d038`;
-- CYMG documentation commit: `a26fe06` (local-only);
+- CYMG documentation commits: `a26fe06`, `26b69f1`, `3f602ba` (local-only);
 - release preflight: passed;
 - profile/PDO contract validation: passed;
 - HMI, launcher, Python, JavaScript, shell, JSON and C unit checks: passed;
