@@ -13,14 +13,16 @@ fault reset, or motion testing.
 - repository: `mktium/mctivity`;
 - branch: `feature/v1.4.1-axis-d-uservo`;
 - implementation commit: `c6575a5` (`Add combined D/E Uservo velocity and gear profile`);
-- deployable source/documentation commit: `34c6fff`;
-- source archive: `/tmp/mctivity-34c6fff.tar.gz`;
-- source archive SHA-256: `b12f7bafbf8623c4bac4d9a3d110f03dd36245b7cbde5cf4fcf83df9be83670f`;
+- realtime scheduler-fault fix commit: `0f19476` (`Separate scheduler jitter from EtherCAT faults`);
+- deployable source/documentation commit: `0f19476`;
+- source archive: `/tmp/mctivity-0f19476.tar.gz`;
+- source archive SHA-256: `f787e864ca6c136882167c66709095aeca1a597ead35378cdc9e45b73116d038`;
 - CYMG documentation commit: `a26fe06` (local-only);
 - release preflight: passed;
 - profile/PDO contract validation: passed;
 - HMI, launcher, Python, JavaScript, shell, JSON and C unit checks: passed;
-- local real-EtherLab motiond build: not available because this workstation has no `/opt/etherlab`.
+- local real-EtherLab motiond build: not available because this workstation has no `/opt/etherlab`;
+- MKTLIN01 real-EtherLab build: passed with `-O2 -Wall -Wextra -Werror`.
 
 The new `axis-de-uservo-combined` profile retains the verified CSP map:
 
@@ -49,3 +51,27 @@ and the target rebuilt `mctivity_motiond` against the real `/opt/etherlab` with
 No enable, mode, gear start/stop, fault reset, or motion command was sent. The
 drive-power/electrical and PDO/OP motion validation remains intentionally out of
 scope; first enable and first motion require a separate explicit authorization.
+
+## 2026-08-25 scheduler-jitter fix deployment
+
+The combined release was rebuilt and redeployed after a field stop showed that
+one host scheduler slip was being mislabeled as an EtherCAT communication fault.
+The fix counts host deadline skips separately: one or two consecutive skipped
+1 ms periods do not latch; three consecutive skipped periods while control is
+active latch `rt_schedule_timing_fault`. Real OP/WC/link failures remain
+immediate fail-closed conditions.
+
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-0f19476`;
+- target motiond SHA-256: `54004b47d544878ee57548e8135be953647819b2f87a5d1135986157a71f8019`;
+- pre-deploy backup: `/var/backups/mctivity/pre-axis-de-combined-0f19476-20260825T085610Z`;
+- motiond and HMI restarted successfully and are `active`;
+- combined capability gate passed; `MCTIVITY_COMMISSIONING_INHIBIT=0` was preserved;
+- read-only post-deploy state: both axes OP/WC `6/6`, disabled, stationary,
+  `cw=0`, position targets equal actual positions, and both timing-fault flags
+  false immediately after restart.
+
+The subsequent read-only check found D/E drive fault bits set after the service
+restart (`sw=0x0218` and `sw=0x1218` respectively), while OP/WC remained healthy.
+No automatic fault reset was attempted. Therefore motion regression and the
+60-second no-motion acceptance gate are paused pending separate operator fault
+handling; no enable, mode, gear, stop, reset, or motion command was sent.
