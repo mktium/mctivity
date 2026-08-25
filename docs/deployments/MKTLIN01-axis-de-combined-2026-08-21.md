@@ -87,6 +87,25 @@ it cannot execute arbitrary root commands and does not reset drive faults.
 
 The implementation was tested offline, including blocked enabled/moving/gear
 states, non-zero controlword, exact permission dry-run, safe execution path,
-and disabled-feature behavior. Target deployment is still pending the release
-commit and the no-motion read-only verification; the existing D/E drive fault
-state remains unchanged and no reset or motion command is authorized.
+and disabled-feature behavior.
+
+The target build and staged deployment were completed:
+
+- source commit: `d380071` (pushed to `mktium/mctivity`);
+- source archive: `/tmp/mctivity-d380071.tar.gz`;
+- source archive SHA-256: `22f0dc344de3ae6c4b7ede94c13524ab11af0be03df00c17378240c001463541`;
+- target build: `/opt/mctivity-releases/v1.4.1-axis-de-combined-d380071`;
+- target-built motiond SHA-256: `54004b47d544878ee57548e8135be953647819b2f87a5d1135986157a71f8019`;
+- pre-deploy backup: `/var/backups/mctivity/pre-axis-de-combined-d380071-20260825T093201Z`;
+- real `/opt/etherlab` build with `-O2 -Wall -Wextra -Werror`: passed;
+- exact `iiru` sudoers rule and `visudo` validation: passed;
+- HMI restart: passed; motiond PID remained `14417`, so motiond was not restarted.
+
+The read-only OP/WC gate initially passed, but during the 60-second check both
+axes changed to `al_state=0`, `operational=0`, `wc=0`, and
+`wc_complete=false`. The check was stopped immediately. Per the rollback rule,
+the active link and HMI configuration were restored to
+`v1.4.1-axis-de-combined-0f19476`; the new release was retained and not
+deleted. No enable, mode, gear, reset, stop, or motion command was sent. The
+EtherCAT service remained active, but the PDO/OP condition is currently not
+acceptable for commissioning and requires separate field investigation.
