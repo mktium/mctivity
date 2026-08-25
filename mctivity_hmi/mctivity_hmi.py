@@ -114,6 +114,14 @@ SYSTEM_POWEROFF_COMMAND = os.environ.get(
     "/usr/bin/sudo -n /usr/bin/systemctl --no-block start mctivity-poweroff.service",
 ).strip()
 SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC = _env_float("MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC", 5.0)
+SYSTEM_MOTIOND_RESTART_ENABLED = _env_bool("MCTIVITY_SYSTEM_MOTIOND_RESTART_ENABLED", False)
+SYSTEM_MOTIOND_RESTART_COMMAND = os.environ.get(
+    "MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND",
+    "/usr/bin/sudo -n /usr/bin/systemctl restart mctivity-motiond.service",
+).strip()
+SYSTEM_MOTIOND_RESTART_COMMAND_TIMEOUT_SEC = _env_float(
+    "MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND_TIMEOUT_SEC", 10.0
+)
 UI_STATE_PATH = os.environ.get(
     "MCTIVITY_UI_STATE_PATH",
     _default_ui_state_path(),
@@ -452,6 +460,11 @@ def capability_manifest():
             "max_ratio": MAX_GEAR_RATIO,
             "following_error_limit_counts": 200 if _GEAR_PROFILE else None,
             "commands": ["gear_config", "gear_start", "gear_stop"] if _GEAR_PROFILE else [],
+        },
+        "motiond_restart_control": {
+            "available": SYSTEM_MOTIOND_RESTART_ENABLED,
+            "command": "restart_motiond",
+            "requires_all_axes_stopped": True,
         },
         "warnings": _MODULE_RUNTIME.get("warnings", []),
         "enabled_feature_keys": sorted(_ENABLED_FEATURE_KEYS),
@@ -922,6 +935,14 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .poweroff-status { min-height:22px; color:#5d6670; font-size:12px; line-height:1.35; font-weight:800; }
 .poweroff-status.bad { color:var(--bad); }
 .poweroff-status.good { color:var(--ok); }
+.motiond-restart-card { max-width:420px; }
+.motiond-restart-copy { margin:0; color:#4c5966; font-size:14px; line-height:1.45; font-weight:800; }
+.motiond-restart-confirm { width:100%; min-height:52px; border-radius:12px; background:var(--theme-deep); color:#fff; box-shadow:0 12px 26px rgba(37,74,110,.22); }
+.motiond-restart-confirm:hover { transform:none; box-shadow:0 12px 26px rgba(37,74,110,.22); }
+.motiond-restart-confirm:disabled { opacity:.72; cursor:default; }
+.motiond-restart-status { min-height:22px; color:#5d6670; font-size:12px; line-height:1.35; font-weight:800; }
+.motiond-restart-status.bad { color:var(--bad); }
+.motiond-restart-status.good { color:var(--ok); }
 .diag-body { max-height:min(56dvh,460px); overflow:auto; border:1px solid rgba(166,166,166,.28); border-radius:10px; background:#f8fafc; padding:10px; color:#304050; font-size:12px; line-height:1.5; font-weight:700; white-space:pre-wrap; }
 @media (max-width:1180px) { .feedback-card.encoder { grid-template-columns:128px minmax(0,1fr); column-gap:8px; } .feedback-card.encoder .feedback-metrics { min-width:0; max-width:100%; } .feedback-metric { grid-template-columns:minmax(0,1fr) minmax(0,9.5ch); gap:6px; padding:7px 8px; min-height:48px; } .feedback-metric .label { font-size:10px; min-width:0; overflow-wrap:anywhere; word-break:break-word; } .feedback-metric .value { min-width:0; max-width:100%; font-size:15px; white-space:normal; overflow-wrap:anywhere; word-break:break-word; align-self:start; } .feedback-metric.vertical { min-height:70px; } }
 @media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .protocol-chip { font-size:24px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .position-param { --side-width:108px; --slider-top-offset:114px; --slider-track-height:150px; } .axis-control { min-height:324px; } .vertical-sliders { min-height:188px; } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
@@ -941,6 +962,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
         <button id="langZhBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('zh')">中文</button>
         <button id="langEnBtn" class="lang-option" type="button" role="menuitem" onclick="setLanguage('en')">English</button>
         <div class="menu-divider" role="separator"></div>
+        <button id="motiondRestartMenuBtn" class="lang-option" type="button" role="menuitem" onclick="openMotiondRestartModal()">重启 motiond</button>
         <button id="poweroffMenuBtn" class="lang-option shutdown-option" type="button" role="menuitem" onclick="openPoweroffModal()">关机</button>
       </div>
     </div>
@@ -1318,6 +1340,17 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
     </div>
   </div>
 </div>
+<div id="motiondRestartModal" class="modal-shell" onclick="maybeCloseMotiondRestartModal(event)">
+  <div class="modal-card motiond-restart-card" onclick="event.stopPropagation()">
+    <h3 id="motiondRestartModalTitle" class="modal-title">重启 motiond</h3>
+    <p id="motiondRestartModalBody" class="motiond-restart-copy">仅在 D/E 均失能、静止、控制字为 0 且无齿轮会话时可用。重启期间状态会短暂中断。</p>
+    <button id="motiondRestartConfirmBtn" class="motiond-restart-confirm" type="button" onclick="confirmMotiondRestart()">确认重启 motiond</button>
+    <div id="motiondRestartStatusText" class="motiond-restart-status" aria-live="polite"></div>
+    <div class="modal-actions">
+      <button id="motiondRestartCancelBtn" class="neutral" type="button" onclick="closeMotiondRestartModal()">取消</button>
+    </div>
+  </div>
+</div>
 <script>
 __MOTION_CURVE_EDITOR_BLOCK__
 </script>
@@ -1481,6 +1514,18 @@ const UI_TEXT = {
     poweroffPermissionFailed:'关机权限检查失败。',
     poweroffFailed:'关机请求失败。',
     poweroffCancel:'取消',
+    motiondRestart:'重启 motiond',
+    motiondRestartTitle:'重启 motiond',
+    motiondRestartBody:'仅在 D/E 均失能、静止、控制字为 0 且无齿轮会话时可用。重启期间状态会短暂中断。',
+    motiondRestartConfirm:'确认重启 motiond',
+    motiondRestartChecking:'正在检查 motiond 重启条件...',
+    motiondRestartSent:'motiond 重启请求已发送',
+    motiondRestartDisabled:'motiond 重启功能未启用。',
+    motiondRestartBlocked:'D/E 尚未满足重启条件，请先确认两轴失能、静止且无齿轮会话。',
+    motiondRestartStatusUnavailable:'无法读取 D/E 状态，已阻止重启。',
+    motiondRestartPermissionFailed:'motiond 重启权限检查失败。',
+    motiondRestartFailed:'motiond 重启请求失败。',
+    motiondRestartCancel:'取消',
     revUnit:'rev'
   },
   en: {
@@ -1607,6 +1652,18 @@ const UI_TEXT = {
     poweroffPermissionFailed:'Poweroff permission check failed.',
     poweroffFailed:'Poweroff request failed.',
     poweroffCancel:'Cancel',
+    motiondRestart:'Restart motiond',
+    motiondRestartTitle:'Restart motiond',
+    motiondRestartBody:'Available only when D/E are disabled and stopped, controlword is 0, and no gearing session is active. Status briefly pauses during restart.',
+    motiondRestartConfirm:'Confirm motiond restart',
+    motiondRestartChecking:'Checking motiond restart conditions...',
+    motiondRestartSent:'motiond restart request sent',
+    motiondRestartDisabled:'motiond restart is not enabled.',
+    motiondRestartBlocked:'D/E are not in a safe restart state. Disable and stop both axes with no gearing session.',
+    motiondRestartStatusUnavailable:'D/E status is unavailable. Restart was blocked.',
+    motiondRestartPermissionFailed:'motiond restart permission check failed.',
+    motiondRestartFailed:'motiond restart request failed.',
+    motiondRestartCancel:'Cancel',
     revUnit:'rev'
   }
 };
@@ -1677,7 +1734,8 @@ const capabilityState = {
   warnings:[],
   generatedAt:'',
   commissioningInhibit:false,
-  syncVelocityAvailable:false
+  syncVelocityAvailable:false,
+  motiondRestartAvailable:false
 };
 let syncVelocityEnabled = false;
 let diagModalText = '';
@@ -2700,6 +2758,7 @@ function refreshStaticText() {
   const langZhBtn = document.getElementById('langZhBtn');
   const langEnBtn = document.getElementById('langEnBtn');
   const poweroffMenuBtn = document.getElementById('poweroffMenuBtn');
+  const motiondRestartMenuBtn = document.getElementById('motiondRestartMenuBtn');
   const apiTokenInput = document.getElementById('apiTokenInput');
   if (apiTokenInput) {
     apiTokenInput.placeholder = text.apiToken;
@@ -2711,10 +2770,15 @@ function refreshStaticText() {
     langToggleBtn.title = text.systemMenu;
   }
   if (poweroffMenuBtn) poweroffMenuBtn.textContent = text.poweroff;
+  if (motiondRestartMenuBtn) motiondRestartMenuBtn.textContent = text.motiondRestart;
   setText('poweroffModalTitle', text.poweroffTitle);
   setText('poweroffModalBody', text.poweroffBody);
   setText('poweroffHoldText', text.poweroffHold);
   setText('poweroffCancelBtn', text.poweroffCancel);
+  setText('motiondRestartModalTitle', text.motiondRestartTitle);
+  setText('motiondRestartModalBody', text.motiondRestartBody);
+  setText('motiondRestartConfirmBtn', text.motiondRestartConfirm);
+  setText('motiondRestartCancelBtn', text.motiondRestartCancel);
   if (langZhBtn) langZhBtn.classList.toggle('active', currentLang === 'zh');
   if (langEnBtn) langEnBtn.classList.toggle('active', currentLang === 'en');
   const leftCard = document.querySelector('.left-stack .card h2');
@@ -2906,6 +2970,75 @@ function closePoweroffModal() {
 }
 function maybeClosePoweroffModal(event) {
   if (event && event.target && event.target.id === 'poweroffModal') closePoweroffModal();
+}
+function motiondRestartElements() {
+  return {
+    modal: document.getElementById('motiondRestartModal'),
+    confirmBtn: document.getElementById('motiondRestartConfirmBtn'),
+    status: document.getElementById('motiondRestartStatusText')
+  };
+}
+function setMotiondRestartStatus(message, state) {
+  const els = motiondRestartElements();
+  if (!els.status) return;
+  els.status.textContent = message || '';
+  els.status.classList.toggle('bad', state === 'bad');
+  els.status.classList.toggle('good', state === 'good');
+}
+function refreshMotiondRestartMenu() {
+  const button = document.getElementById('motiondRestartMenuBtn');
+  if (button) button.hidden = capabilityState.loaded && !capabilityState.motiondRestartAvailable;
+}
+function openMotiondRestartModal() {
+  closeLanguageMenu();
+  setMotiondRestartStatus('', '');
+  const els = motiondRestartElements();
+  if (els.confirmBtn) {
+    els.confirmBtn.disabled = false;
+    els.confirmBtn.textContent = UI_TEXT[currentLang].motiondRestartConfirm;
+  }
+  if (els.modal) els.modal.classList.add('open');
+  return false;
+}
+function closeMotiondRestartModal() {
+  const els = motiondRestartElements();
+  if (els.modal) els.modal.classList.remove('open');
+}
+function maybeCloseMotiondRestartModal(event) {
+  if (event && event.target && event.target.id === 'motiondRestartModal') closeMotiondRestartModal();
+}
+function motiondRestartErrorText(error) {
+  const text = UI_TEXT[currentLang];
+  if (error === 'motiond_restart_blocked') return text.motiondRestartBlocked;
+  if (error === 'motiond_restart_disabled') return text.motiondRestartDisabled;
+  if (error === 'status_unavailable') return text.motiondRestartStatusUnavailable;
+  if (error === 'motiond_restart_permission_failed') return text.motiondRestartPermissionFailed;
+  return text.motiondRestartFailed;
+}
+async function confirmMotiondRestart() {
+  const els = motiondRestartElements();
+  if (els.confirmBtn) {
+    els.confirmBtn.disabled = true;
+    els.confirmBtn.textContent = UI_TEXT[currentLang].motiondRestartChecking;
+  }
+  setMotiondRestartStatus(UI_TEXT[currentLang].motiondRestartChecking, '');
+  try {
+    const res = await fetch('/api/system/restart_motiond', {
+      method:'POST',
+      headers:apiHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({confirm:'restart_motiond'})
+    });
+    const data = await res.json().catch(() => ({ok:false, error:'invalid_response'}));
+    if (!res.ok || !data.ok) throw new Error(motiondRestartErrorText(data.error));
+    setMotiondRestartStatus(UI_TEXT[currentLang].motiondRestartSent, 'good');
+    if (els.confirmBtn) els.confirmBtn.textContent = UI_TEXT[currentLang].motiondRestartSent;
+  } catch (err) {
+    setMotiondRestartStatus(err.message || UI_TEXT[currentLang].motiondRestartFailed, 'bad');
+    if (els.confirmBtn) {
+      els.confirmBtn.disabled = false;
+      els.confirmBtn.textContent = UI_TEXT[currentLang].motiondRestartConfirm;
+    }
+  }
 }
 function poweroffErrorText(error) {
   const text = UI_TEXT[currentLang];
@@ -3890,6 +4023,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     closeDiagModal();
     closeTransmissionDialog();
+    closeMotiondRestartModal();
   }
 });
 async function bootstrapUi() {
@@ -3910,11 +4044,13 @@ async function bootstrapUi() {
       capabilityState.generatedAt = data.generated_at || '';
       capabilityState.commissioningInhibit = Boolean(data.commissioning_inhibit);
       capabilityState.syncVelocityAvailable = Boolean(data.sync_velocity_control && data.sync_velocity_control.available && capabilityState.capabilities.has('axis.group.velocity.sync'));
+      capabilityState.motiondRestartAvailable = Boolean(data.motiond_restart_control && data.motiond_restart_control.available);
     }
   } catch (err) {
     console.error(err);
   }
   refreshDeviceTabs();
+  refreshMotiondRestartMenu();
   const enableToggle = document.getElementById('enableToggle');
   if (enableToggle && capabilityState.commissioningInhibit) {
     enableToggle.disabled = true;
@@ -4401,6 +4537,103 @@ def system_poweroff_request(payload):
     return {"ok": True, "dry_run": False, "status": "poweroff_requested"}, 200
 
 
+def _read_motiond_restart_device_statuses():
+    devices = list(_HMI_DEVICE_ORDER)
+    statuses = []
+    blocked = []
+    unsafe_fields = (
+        "moving",
+        "gear_running",
+        "enabled",
+        "servo_request",
+        "sync_group_session_active",
+        "sync_group_motion_active",
+        "gear_group_session_active",
+    )
+    for device in devices:
+        try:
+            rsp = fv3_status() if device == "fv3" else motiond_command({"cmd": "status", "device": device})
+        except Exception as exc:
+            return None, {"device": device, "error": str(exc)}
+        if not isinstance(rsp, dict) or not rsp.get("ok"):
+            return None, {"device": device, "error": (rsp or {}).get("error", "status_unavailable")}
+        status = rsp.get("status", {})
+        if not isinstance(status, dict):
+            return None, {"device": device, "error": "invalid_status"}
+        reasons = [field for field in unsafe_fields if bool(status.get(field))]
+        try:
+            controlword = int(status.get("cw", 0))
+        except (TypeError, ValueError):
+            return None, {"device": device, "error": "invalid_controlword"}
+        if controlword != 0:
+            reasons.append("controlword")
+        item = {
+            "device": device,
+            "enabled": bool(status.get("enabled")),
+            "servo_request": bool(status.get("servo_request")),
+            "moving": bool(status.get("moving")),
+            "gear_running": bool(status.get("gear_running")),
+            "controlword": controlword,
+            "fault": bool(status.get("fault")),
+            "blocked_reasons": reasons,
+        }
+        statuses.append(item)
+        if reasons:
+            blocked.append(item)
+    return {"statuses": statuses, "blocked": blocked}, None
+
+
+def motiond_restart_request(payload):
+    if str(payload.get("confirm", "")).strip().lower() != "restart_motiond":
+        return {"ok": False, "error": "invalid_confirm"}, 400
+    dry_run = bool(payload.get("dry_run"))
+    if not SYSTEM_MOTIOND_RESTART_ENABLED:
+        return {"ok": False, "error": "motiond_restart_disabled", "dry_run": dry_run}, 403
+
+    machine, status_error = _read_motiond_restart_device_statuses()
+    if status_error is not None:
+        return {"ok": False, "error": "status_unavailable", "detail": status_error, "dry_run": dry_run}, 503
+    if machine["blocked"]:
+        return {
+            "ok": False,
+            "error": "motiond_restart_blocked",
+            "blocked": machine["blocked"],
+            "dry_run": dry_run,
+        }, 409
+
+    restart_command = _parse_poweroff_command(SYSTEM_MOTIOND_RESTART_COMMAND)
+    if not restart_command:
+        return {"ok": False, "error": "motiond_restart_command_invalid", "dry_run": dry_run}, 503
+    check_ok, check_detail = _run_poweroff_permission_checks([restart_command])
+    if not check_ok:
+        return {
+            "ok": False,
+            "error": "motiond_restart_permission_failed",
+            "detail": check_detail,
+            "dry_run": dry_run,
+        }, 503
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "statuses": machine["statuses"],
+            "permission": "ok",
+            "trigger_command": " ".join(restart_command),
+        }, 200
+
+    restart_ok, restart_detail = _run_command(
+        restart_command, timeout_sec=SYSTEM_MOTIOND_RESTART_COMMAND_TIMEOUT_SEC
+    )
+    if not restart_ok:
+        return {
+            "ok": False,
+            "error": "motiond_restart_command_failed",
+            "detail": restart_detail,
+            "dry_run": False,
+        }, 503
+    return {"ok": True, "dry_run": False, "status": "motiond_restart_requested"}, 200
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -4574,7 +4807,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/api/command", "/api/ui_state", "/api/system/poweroff"):
+        if path not in (
+            "/api/command",
+            "/api/ui_state",
+            "/api/system/poweroff",
+            "/api/system/restart_motiond",
+        ):
             self.send_error(404)
             return
         if not self._require_allowed_host():
@@ -4599,6 +4837,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "state": load_ui_state()})
             elif path == "/api/system/poweroff":
                 response, status = system_poweroff_request(payload)
+                self.send_json(response, status)
+            elif path == "/api/system/restart_motiond":
+                response, status = motiond_restart_request(payload)
                 self.send_json(response, status)
             else:
                 cmd = _normalize_command_name(payload)

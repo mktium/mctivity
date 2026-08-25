@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import unittest
+from pathlib import Path
 
 
 os.environ["MCTIVITY_PROFILE"] = "axis-de-uservo-combined"
@@ -18,6 +19,7 @@ class DualUservoCombinedHmiTests(unittest.TestCase):
         self.assertIn("axis.mode.velocity.execute", manifest["capabilities"])
         self.assertIn("axis.mode.gear_cam.execute", manifest["capabilities"])
         self.assertFalse(manifest["sync_velocity_control"]["available"])
+        self.assertTrue(manifest["motiond_restart_control"]["available"] is False)
         self.assertEqual(manifest["active_features"].count("feature-hmi-velocity"), 1)
         self.assertEqual(manifest["active_features"].count("feature-hmi-electronic-gear"), 1)
 
@@ -28,6 +30,9 @@ class DualUservoCombinedHmiTests(unittest.TestCase):
         self.assertIn("modeRequiredHmiModule", html)
         self.assertIn("jog_velocity", html)
         self.assertIn("gearPayload('gear_start')", html)
+        self.assertIn("id=\"motiondRestartMenuBtn\"", html)
+        self.assertIn("/api/system/restart_motiond", html)
+        self.assertIn("MCTIVITY_SYSTEM_MOTIOND_RESTART_ENABLED", Path(mctivity_hmi.__file__).read_text())
 
 
 if __name__ == "__main__":

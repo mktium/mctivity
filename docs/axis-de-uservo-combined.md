@@ -48,3 +48,20 @@ communication fault; three consecutive skipped 1 ms periods during active
 Uservo control latch `rt_schedule_timing_fault` and fail closed. OP/WC/link
 losses retain immediate fail-closed behavior. The status API exposes the
 `rt_consecutive_schedule_misses` streak and `rt_schedule_timing_fault` flag.
+
+## Restricted HMI motiond restart
+
+The combined HMI can expose a `重启 motiond` action when
+`MCTIVITY_SYSTEM_MOTIOND_RESTART_ENABLED=1`. The server accepts it only when
+every assembled axis is disabled and stationary, has `servo_request=false`,
+has no gear or sync session, and reports controlword `0`. A drive fault is not
+reset or cleared by this action. The server first checks the exact configured
+command with `sudo -n -l` and then runs only
+`/usr/bin/systemctl restart mctivity-motiond.service` through a matching
+`/etc/sudoers.d/mctivity-motiond-restart` rule. Any failed status, permission,
+or safety check blocks the request.
+
+The installer writes the restart variables and validates the sudoers file with
+`visudo`. The button is a narrowly scoped service-recovery control; it does
+not enable a drive, change mode, reset a fault, start gearing, or issue a
+motion command.

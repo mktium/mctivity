@@ -9,6 +9,7 @@ python3 mctivity_hmi/test_velocity_profile.py
 python3 mctivity_hmi/test_dual_uservo_hmi.py
 python3 mctivity_hmi/test_dual_uservo_gear_hmi.py
 python3 mctivity_hmi/test_dual_uservo_combined_hmi.py
+python3 mctivity_hmi/test_motiond_restart.py
 python3 scripts/test_motiond_launch.py
 python3 scripts/mctivity-motiond-launch.py --profile axis-d-uservo-pv --dump >/dev/null
 python3 scripts/mctivity-motiond-launch.py --profile axis-de-uservo-pv --dump >/dev/null

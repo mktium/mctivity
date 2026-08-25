@@ -76,3 +76,17 @@ restart (`sw=0x0218` and `sw=0x1218` respectively), while OP/WC remained healthy
 No automatic fault reset was attempted. Therefore motion regression and the
 60-second no-motion acceptance gate are paused pending separate operator fault
 handling; no enable, mode, gear, stop, reset, or motion command was sent.
+
+## 2026-08-25 — restricted HMI motiond restart upgrade
+
+The HMI was upgraded with a `重启 motiond` action for service recovery. The
+action is server-gated on both assembled axes being disabled and stationary,
+`servo_request=false`, no gear/sync session, and controlword `0`. It uses the
+exact systemd command through a dedicated sudoers rule for the HMI service user;
+it cannot execute arbitrary root commands and does not reset drive faults.
+
+The implementation was tested offline, including blocked enabled/moving/gear
+states, non-zero controlword, exact permission dry-run, safe execution path,
+and disabled-feature behavior. Target deployment is still pending the release
+commit and the no-motion read-only verification; the existing D/E drive fault
+state remains unchanged and no reset or motion command is authorized.

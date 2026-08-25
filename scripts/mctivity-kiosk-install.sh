@@ -30,6 +30,9 @@ ENABLE_POWEROFF="${MCTIVITY_ENABLE_POWEROFF:-0}"
 SYSTEMCTL_PATH="${MCTIVITY_SYSTEMCTL_PATH:-/usr/bin/systemctl}"
 POWEROFF_COMMAND="${MCTIVITY_SYSTEM_POWEROFF_COMMAND:-/usr/bin/sudo -n ${SYSTEMCTL_PATH} --no-block start mctivity-poweroff.service}"
 POWEROFF_TIMEOUT="${MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC:-5}"
+ENABLE_MOTIOND_RESTART="${MCTIVITY_ENABLE_MOTIOND_RESTART:-0}"
+MOTIOND_RESTART_COMMAND="${MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND:-/usr/bin/sudo -n ${SYSTEMCTL_PATH} restart mctivity-motiond.service}"
+MOTIOND_RESTART_TIMEOUT="${MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND_TIMEOUT_SEC:-10}"
 POWEROFF_STOP_UNITS="${MCTIVITY_POWEROFF_STOP_UNITS:-mctivity-kiosk.service mctivity-hmi.service mctivity-motiond.service ethercat.service}"
 POWEROFF_STOP_TIMEOUT="${MCTIVITY_POWEROFF_STOP_TIMEOUT_SEC:-45}"
 POWEROFF_FINAL_COMMAND="${MCTIVITY_POWEROFF_FINAL_COMMAND:-${SYSTEMCTL_PATH} poweroff}"
@@ -83,6 +86,7 @@ for path in \
   /etc/systemd/system/mctivity-hmi.service \
   /etc/systemd/system/mctivity-kiosk.service \
   /etc/systemd/system/mctivity-poweroff.service \
+  /etc/sudoers.d/mctivity-motiond-restart \
   /etc/systemd/system/mctivity-motiond.service.d/10-axis-d-realtime.conf; do
   if [ -e "$path" ]; then
     saved="$(printf '%s' "$path" | tr '/' '_')"
@@ -126,6 +130,9 @@ chmod 0644 /etc/mctivity/axis.env
   printf 'MCTIVITY_SYSTEM_POWEROFF_ENABLED=%s\n' "$ENABLE_POWEROFF"
   printf 'MCTIVITY_SYSTEM_POWEROFF_COMMAND="%s"\n' "$POWEROFF_COMMAND"
   printf 'MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC=%s\n' "$POWEROFF_TIMEOUT"
+  printf 'MCTIVITY_SYSTEM_MOTIOND_RESTART_ENABLED=%s\n' "$ENABLE_MOTIOND_RESTART"
+  printf 'MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND="%s"\n' "$MOTIOND_RESTART_COMMAND"
+  printf 'MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND_TIMEOUT_SEC=%s\n' "$MOTIOND_RESTART_TIMEOUT"
 } >/etc/mctivity/hmi.env
 chmod 0644 /etc/mctivity/hmi.env
 
@@ -222,6 +229,28 @@ if [ "$ENABLE_POWEROFF" = "1" ]; then
   rm -f "$sudoers_tmp"
 else
   rm -f /etc/sudoers.d/mctivity-poweroff
+fi
+
+if [ "$ENABLE_MOTIOND_RESTART" = "1" ]; then
+  if [ ! -x /usr/bin/sudo ]; then
+    echo "sudo is required for motiond restart support" >&2
+    exit 1
+  fi
+  if [ ! -x "$SYSTEMCTL_PATH" ]; then
+    echo "systemctl not found or not executable: $SYSTEMCTL_PATH" >&2
+    exit 1
+  fi
+  if [ ! -x /usr/sbin/visudo ]; then
+    echo "visudo is required for motiond restart sudoers validation" >&2
+    exit 1
+  fi
+  sudoers_tmp="$(mktemp)"
+  printf '%s ALL=(root) NOPASSWD: %s restart mctivity-motiond.service\n' "$SERVICE_USER" "$SYSTEMCTL_PATH" >"$sudoers_tmp"
+  /usr/sbin/visudo -cf "$sudoers_tmp"
+  install -m 0440 "$sudoers_tmp" /etc/sudoers.d/mctivity-motiond-restart
+  rm -f "$sudoers_tmp"
+else
+  rm -f /etc/sudoers.d/mctivity-motiond-restart
 fi
 
 systemctl daemon-reload
