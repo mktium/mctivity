@@ -109,3 +109,39 @@ the active link and HMI configuration were restored to
 deleted. No enable, mode, gear, reset, stop, or motion command was sent. The
 EtherCAT service remained active, but the PDO/OP condition is currently not
 acceptable for commissioning and requires separate field investigation.
+
+## 2026-08-27 — native PV velocity in the combined profile
+
+The combined profile was updated so its HMI velocity mode uses the Uservo
+native PV command path while position and electronic gear remain CSP. The
+standalone `axis-de-uservo-pv` and `axis-de-uservo-gear` profiles were not
+changed.
+
+- implementation commits: `8236845`, `1f3e906` (pushed to `mktium/mctivity`);
+- final source archive: `/tmp/mctivity-1f3e906.tar.gz`;
+- source archive SHA-256: `a6a84d672ab629437a9e69d635e34651450805712f4909fc75e41bdf9926b3db`;
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-1f3e906`;
+- target-built motiond SHA-256: `58c486d50019deefc2412e36774278c72633b60b562722317565fbd2e0497592`;
+- build: real `/opt/etherlab`, `gcc -O2 -Wall -Wextra -Werror` passed;
+- pre-deploy backup: `/var/backups/mctivity/axis-de-combined-20260827T120000Z-1f3e906`;
+- active link: `/opt/mctivity` resolves to the new release;
+- HMI and motiond profiles: `axis-de-uservo-combined`, topology
+  `axis-de-uservo-gear`, `MCTIVITY_COMMISSIONING_INHIBIT=1`;
+- HMI was restarted after synchronizing its inhibit value to `1`; motiond was
+  not restarted again for that configuration-only change.
+
+The target accepted the combined PDO assignment on both Uservo slaves:
+
+- RxPDO `0x1600`: `6040/6060/607A/60FF/60FE:01`;
+- TxPDO `0x1A00`: `6041/6061/6064/606C/60FD`;
+- Domain0 size `60`, working counter `6/6`, both slaves OP, D is the DC
+  reference.
+
+The read-only post-deploy HMI gate confirmed D/E mapping, velocity and gear
+capabilities, `commanded_mode=0`, `cw=0`, disabled, no servo request, no
+motion, no gear session, and target position equal to actual position. Both
+axes nevertheless reported drive status word `0x0218` (`fault=true`) while
+OP/WC remained healthy. No fault reset was attempted, so the 60-second
+no-motion acceptance and any motion test are paused for separate operator
+fault handling. No enable, mode, gear, stop, reset, or motion command was
+sent.
