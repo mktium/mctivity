@@ -294,6 +294,36 @@ gear, stop, reset, or motion command was sent. The new gear-speed fix remains
 unaccepted in the field until the restart/ EtherCAT transition fault is
 handled separately.
 
+## 2026-08-27 — debounce combined gear following-error trip
+
+The field run at 140 rpm stopped because a single 1 ms sample reported a
+follower position error of `218 counts`, only 18 counts above the existing
+200-count limit. The combined profile now treats 200 counts as a sustained
+threshold: the error must remain above it for three consecutive 1 ms cycles
+before tripping. A 600-count hard limit still trips immediately. The speed
+ceiling remains 999 rpm; communication/WC/OP, target-step, overflow, and
+fail-closed output protections remain immediate. The standalone CSP gear
+profile retains its original immediate 200-count trip.
+
+- source commit: `220ca12` (pushed to `mktium/mctivity:feature/v1.4.1-axis-d-uservo`);
+- source archive: `/tmp/mctivity-220ca12.tar.gz`;
+- source archive SHA-256: `774e7e0b1c51e2ca89c3980fe081f094f11e985a7759f19f73598c6a9197b8d8`;
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-220ca12`;
+- pre-deploy backup: `/var/backups/mctivity/pre-axis-de-combined-gear-debounce-220ca12-20260827T110801Z`;
+- target build used real `/opt/etherlab` and `gcc -O2 -Wall -Wextra -Werror`;
+- target motiond SHA-256: `141bab594f00c6a5a43132a6b4b0539ef736d417c25c56fcd4449790eadfe9b6`;
+- local HMI/profile/launcher tests, C tests, and release preflight passed;
+- target launcher and motiond startup log confirmed max speed `999`, default
+  `222`, soft error `200`, trip cycles `3`, and hard error `600`.
+
+The release is active and all three services are active. Immediately after
+restart the EtherCAT domain briefly reported SAFEOP/WC `0`; it recovered to
+both slaves OP with WC `6/6` during the read-only follow-up. E reported a
+drive fault after the restart transition, while outputs remained disabled
+with `cw=0`, stationary, and targets held at actual positions. No fault
+reset, enable, mode, gear, stop, or motion command was sent. Motion acceptance
+remains paused pending separate operator fault handling.
+
 ## 2026-08-27 — combined speed ceiling aligned with native PV
 
 The combined D/E profile previously exposed a `222 rpm` maximum, even though
