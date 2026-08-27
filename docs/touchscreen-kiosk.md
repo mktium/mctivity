@@ -51,6 +51,9 @@ MCTIVITY_WEB_PORT=2015
 MCTIVITY_SYSTEM_POWEROFF_ENABLED=0
 MCTIVITY_SYSTEM_POWEROFF_COMMAND="/usr/bin/sudo -n /usr/bin/systemctl --no-block start mctivity-poweroff.service"
 MCTIVITY_SYSTEM_POWEROFF_COMMAND_TIMEOUT_SEC=5
+MCTIVITY_SYSTEM_MOTIOND_RESTART_ENABLED=0
+MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND="/usr/bin/sudo -n /usr/bin/systemctl restart mctivity-motiond.service"
+MCTIVITY_SYSTEM_MOTIOND_RESTART_COMMAND_TIMEOUT_SEC=10
 MCTIVITY_POWEROFF_STOP_UNITS="mctivity-kiosk.service mctivity-hmi.service mctivity-motiond.service ethercat.service"
 MCTIVITY_POWEROFF_STOP_TIMEOUT_SEC=45
 MCTIVITY_POWEROFF_FINAL_COMMAND="/usr/bin/systemctl poweroff"
@@ -95,6 +98,13 @@ iiru ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start mctivity-poweroff.
 The HMI service sets `NoNewPrivileges=false` so the constrained sudoers command
 can elevate. The sudoers rule still limits the HMI user to starting only the
 dedicated staged poweroff service.
+
+The optional HMI `重启 motiond` action is enabled by running the installer with
+`MCTIVITY_ENABLE_MOTIOND_RESTART=1`. It writes a separate rule allowing only
+`/usr/bin/systemctl restart mctivity-motiond.service`. The HMI checks that all
+assembled axes are disabled, stationary, outside any gear or sync session, and
+have controlword `0` before it invokes the command. This action does not reset
+drive faults or issue motion commands.
 
 The HMI exposes:
 

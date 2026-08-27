@@ -160,3 +160,28 @@ but both drives reported `sw=0x0218` and `fault=true`; `cw=0`,
 `commanded_mode=0`, `enabled=false`, `servo_request=false`, and `moving=false`.
 The current “velocity cannot run” report is therefore a drive-fault gate, not
 the commissioning inhibit. No automatic fault reset was performed.
+
+## 2026-08-27 — restore restricted HMI motiond restart action
+
+The operator requested that the previously implemented HMI service-recovery
+action be made available again. The implementation was already present in the
+active source release; this deployment restored its target configuration and
+the matching least-privilege sudoers rule. It does not reset a drive fault and
+does not enable, change mode, start gearing, stop, or move an axis.
+
+- active release remained `/opt/mctivity-releases/v1.4.1-axis-de-combined-1f3e906`;
+- `/etc/mctivity/hmi.env` now contains
+  `MCTIVITY_SYSTEM_MOTIOND_RESTART_ENABLED=1`, the exact restart command, and
+  a 10-second timeout;
+- `/etc/sudoers.d/mctivity-motiond-restart` was restored for `iiru` and passed
+  `/usr/sbin/visudo -cf`;
+- pre-change backup: `/var/backups/mctivity/motiond-restart-enable-20260827T072643Z`;
+- only `mctivity-hmi.service` was restarted; `mctivity-motiond.service` was
+  not restarted by deployment; all three services (`motiond`, `hmi`, and
+  `ethercat`) were active afterward.
+
+The read-only capability check reports
+`motiond_restart_control.available=true`. The HMI `dry_run` check passed with
+both D/E disabled, stationary, `servo_request=false`, `gear_running=false`,
+and controlword `0`; the permission check also passed. No actual restart or
+drive control command was issued.
