@@ -2187,8 +2187,14 @@ static void handle_command(int fd, const char *line)
             return;
         }
         if (uservo_dual_combined_topology &&
-            ((s->moving || s->jog_velocity_cps != 0 || ax->stop_velocity_cps != 0) ||
-             (gear_group_session_active && strcmp(mode, "gear_cam") != 0))) {
+            mctivity_gear_mode_change_requires_stop(
+                gear_group_session_active,
+                axis,
+                gear_group_master_axis,
+                strcmp(mode, "gear_cam") == 0,
+                s->moving,
+                s->jog_velocity_cps != 0,
+                ax->stop_velocity_cps != 0)) {
             send_error_fd(fd, "combined_mode_change_requires_stop");
             return;
         }

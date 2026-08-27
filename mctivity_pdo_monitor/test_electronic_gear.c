@@ -25,6 +25,11 @@ int main(void)
     assert(mctivity_gear_target(&gear, INT32_MIN, &target) && target == 0);
     assert(mctivity_gear_target(&gear, INT32_MIN + 1, &target) && target == 1);
     assert(mctivity_gear_abs_error(-100, 100) == 200);
+    assert(!mctivity_gear_mode_change_requires_stop(1, 0, 0, 0, 0, 0, 0));
+    assert(mctivity_gear_mode_change_requires_stop(1, 1, 0, 0, 0, 0, 0));
+    assert(!mctivity_gear_mode_change_requires_stop(1, 1, 0, 1, 0, 0, 0));
+    assert(mctivity_gear_mode_change_requires_stop(1, 0, 0, 0, 1, 0, 0));
+    assert(!mctivity_gear_mode_change_requires_stop(0, 1, 0, 0, 0, 0, 0));
     assert(!mctivity_gear_configure(&gear, 0, 1, 1));
     assert(!mctivity_gear_configure(&gear, 1, 0, 1));
     assert(!mctivity_gear_configure(&gear, 1, 201, 1));

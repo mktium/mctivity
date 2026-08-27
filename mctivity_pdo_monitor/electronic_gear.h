@@ -6,6 +6,26 @@
 #define MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS 200
 #define MCTIVITY_GEAR_DEFAULT_MAX_RATIO 200
 
+/*
+ * During an active D/E gear session the follower must remain in gear_cam,
+ * while the master is still allowed to receive its normal control mode.
+ * Motion already in progress is always a reason to reject a mode change.
+ */
+static inline int mctivity_gear_mode_change_requires_stop(
+    int gear_session_active,
+    int axis,
+    int gear_master_axis,
+    int requested_gear_mode,
+    int moving,
+    int jog_velocity_active,
+    int stop_velocity_active)
+{
+    if (moving || jog_velocity_active || stop_velocity_active) {
+        return 1;
+    }
+    return gear_session_active && axis != gear_master_axis && !requested_gear_mode;
+}
+
 typedef struct {
     int initialized;
     int direction;
