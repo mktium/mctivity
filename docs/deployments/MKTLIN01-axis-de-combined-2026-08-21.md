@@ -353,3 +353,33 @@ enable, mode, gear, stop, reset, or motion command was sent. D/E reported a
 drive fault again after the restart transition, so no fault reset or motion
 acceptance was attempted. The fault and transition risk remain for separate
 operator handling; the new release is retained for diagnosis and rollback.
+
+## 2026-08-27 — combined gear position error changed to alarm-only
+
+The combined D/E gear profile no longer stops the axis group when the follower
+position relation exceeds the configured `200 counts` warning threshold. The
+current relation error remains monitored and is exposed in the HMI as the
+current/last relation error in counts and degrees, with an explicit
+`位置误差告警（不停机）` indicator. Communication/WC/OP faults, drive faults,
+target-speed violations, arithmetic overflow, and other fail-closed guards are
+unchanged. The standalone CSP gear profile retains its immediate position
+error trip behavior.
+
+- source commit: `ecdbc9c` (pushed to `mktium/mctivity:feature/v1.4.1-axis-d-uservo`);
+- source archive: `/tmp/mctivity-ecdbc9c.tar.gz`;
+- source archive SHA-256:
+  `6d2652abaf55b613579634d2e14095e8ba9057416b9e67d37bc59d0571286135`;
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-ecdbc9c`;
+- pre-deploy backup:
+  `/var/backups/mctivity/pre-axis-de-combined-gear-alarm-only-ecdbc9c-20260827T112659Z`;
+- target build used real `/opt/etherlab` and `gcc -O2 -Wall -Wextra -Werror`;
+- target motiond SHA-256:
+  `fa9a17db7b92c8cb29e3b6a06f9abb8a49880ae637595ef840dbcb0336c31db9`;
+- local HMI/profile/launcher tests, C tests, and release preflight passed.
+
+After deployment and read-only follow-up, motiond and HMI remained active;
+both D/E remained OP with WC `6/6` for the observed samples. Both axes were
+disabled and stationary with `cw=0`, `servo_request=false`,
+`gear_running=false`, and no active position-error alarm. No enable, mode,
+gear, stop, reset, or motion command was sent. This is a configuration and
+read-only deployment check; first-motion acceptance is not included.
