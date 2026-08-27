@@ -162,6 +162,10 @@ def main():
                         raise SystemExit("axis-de-uservo-combined must select the combined 0x1600/0x1A00 PDO map")
                     if int(device.get("gear_following_error_limit_counts", 0)) != 200:
                         raise SystemExit("axis-de-uservo-combined must use a 200-count following-error limit")
+                    if int(device.get("gear_following_error_trip_cycles", 0)) != 3:
+                        raise SystemExit("axis-de-uservo-combined must use a 3-cycle following-error trip")
+                    if int(device.get("gear_hard_following_error_limit_counts", 0)) != 600:
+                        raise SystemExit("axis-de-uservo-combined must use a 600-count hard following-error limit")
                     if int(device.get("gear_max_ratio", 0)) != 200:
                         raise SystemExit("axis-de-uservo-combined must use a 200:1 maximum ratio")
         if profile.get("profile") in {"minimal", "standard", "full"} and runtime.get("axis_devices"):

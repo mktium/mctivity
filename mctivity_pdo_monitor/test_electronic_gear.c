@@ -31,6 +31,11 @@ int main(void)
     assert(mctivity_gear_max_target_step_counts(37000, 1) == 39);
     assert(mctivity_gear_max_target_step_counts(37000, 2) == 76);
     assert(mctivity_gear_max_target_step_counts(37000, 3) == 113);
+    assert(!mctivity_gear_error_trip_required(218, 200, 600, 1, 3));
+    assert(!mctivity_gear_error_trip_required(218, 200, 600, 2, 3));
+    assert(mctivity_gear_error_trip_required(218, 200, 600, 3, 3));
+    assert(mctivity_gear_error_trip_required(601, 200, 600, 0, 3));
+    assert(!mctivity_gear_error_trip_required(200, 200, 600, 99, 3));
     assert(!mctivity_gear_mode_change_requires_stop(1, 0, 0, 0, 0, 0, 0));
     assert(mctivity_gear_mode_change_requires_stop(1, 1, 0, 0, 0, 0, 0));
     assert(!mctivity_gear_mode_change_requires_stop(1, 1, 0, 1, 0, 0, 0));

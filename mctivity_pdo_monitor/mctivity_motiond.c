@@ -69,6 +69,8 @@ static int commissioning_inhibit = 0;
 static int require_realtime = 0;
 static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
 static uint32_t gear_following_error_limit_counts = MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS;
+static uint32_t gear_following_error_trip_cycles = 1U;
+static uint32_t gear_hard_following_error_limit_counts = MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS;
 static uint32_t gear_max_ratio = MCTIVITY_GEAR_DEFAULT_MAX_RATIO;
 static uint32_t gear_max_velocity_cps[AXIS_COUNT] = {37000U, 37000U};
 static char gear_last_trip_reason[96];
@@ -422,6 +424,7 @@ typedef struct {
     int32_t gear_last_master_pos_raw;
     uint32_t gear_last_master_cycle;
     int64_t gear_position_error;
+    uint32_t gear_error_over_limit_cycles;
     int64_t gear_last_step_counts;
     uint32_t gear_last_elapsed_cycles;
     int gear_safety_latched;
@@ -1122,6 +1125,8 @@ static int load_axis_profile_parameters(void)
 {
     uint32_t configured_counts_per_rev;
     uint32_t configured_axis_count;
+    gear_following_error_trip_cycles = 1U;
+    gear_hard_following_error_limit_counts = MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS;
     if (!uservo_axis_d_topology) {
         counts_per_rev = LEGACY_COUNTS_PER_REV;
         return 0;
@@ -1137,9 +1142,12 @@ static int load_axis_profile_parameters(void)
             return -1;
         }
         if (env_u32_required("MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS", &gear_following_error_limit_counts) < 0 ||
+            env_u32_required("MCTIVITY_GEAR_FOLLOWING_ERROR_TRIP_CYCLES", &gear_following_error_trip_cycles) < 0 ||
+            env_u32_required("MCTIVITY_GEAR_HARD_FOLLOWING_ERROR_LIMIT_COUNTS", &gear_hard_following_error_limit_counts) < 0 ||
             env_u32_required("MCTIVITY_GEAR_MAX_RATIO", &gear_max_ratio) < 0 ||
             gear_following_error_limit_counts == 0 || gear_max_ratio == 0 ||
-            gear_max_ratio > MCTIVITY_GEAR_DEFAULT_MAX_RATIO) {
+            gear_max_ratio > MCTIVITY_GEAR_DEFAULT_MAX_RATIO || gear_following_error_trip_cycles == 0 ||
+            gear_hard_following_error_limit_counts <= gear_following_error_limit_counts) {
             fprintf(stderr, "axis-de-uservo-combined safety parameters are invalid\n");
             return -1;
         }
@@ -1561,6 +1569,7 @@ static void send_status_fd(int fd, int axis)
         "\"gear_group_session_active\":%s,\"gear_group_safety_latched\":%s,"
         "\"gear_master\":\"%s\",\"gear_slave\":\"%s\",\"gear_direction\":%d,"
         "\"gear_master_ratio\":%d,\"gear_slave_ratio\":%d,\"gear_position_error\":%lld,"
+        "\"gear_error_over_limit_cycles\":%u,\"gear_error_trip_cycles\":%u,\"gear_hard_error_limit\":%u,"
         "\"gear_last_trip_reason\":\"%s\",\"gear_last_trip_position_error\":%lld,"
         "\"gear_last_trip_step_counts\":%lld,\"gear_last_trip_elapsed_cycles\":%u,"
         "\"gear_last_trip_target_raw\":%d,\"gear_last_trip_actual_raw\":%d,\"gear_last_trip_master_raw\":%d,"
@@ -1600,6 +1609,9 @@ static void send_status_fd(int fd, int axis)
         gear_slave->gear_direction,
         gear_slave->gear_master_ratio, gear_slave->gear_slave_ratio,
         (long long)gear_slave->gear_position_error,
+        gear_slave->gear_error_over_limit_cycles,
+        gear_following_error_trip_cycles,
+        gear_hard_following_error_limit_counts,
         gear_last_trip_reason,
         (long long)gear_last_trip_position_error,
         (long long)gear_last_trip_step_counts,
@@ -1692,6 +1704,7 @@ static void gear_group_clear_runtime(int disable)
         runtime->gear_has_last_master_pos = 0;
         runtime->gear_last_master_cycle = 0;
         runtime->gear_position_error = 0;
+        runtime->gear_error_over_limit_cycles = 0;
         runtime->gear_last_step_counts = 0;
         runtime->gear_last_elapsed_cycles = 0;
         runtime->gear_math.initialized = 0;
@@ -1770,6 +1783,7 @@ static int gear_group_start(int slave_axis, const char **reason)
     slave->gear_has_last_master_pos = 1;
     slave->gear_last_master_cycle = master->st.cycles;
     slave->gear_position_error = 0;
+    slave->gear_error_over_limit_cycles = 0;
     set_control_mode(slave, "gear_cam");
     slave->commanded_mode = mode_code_for_name("position");
     snprintf(master->st.message, sizeof(master->st.message), "%s is electronic-gear master", axis_label(master->gear_master_axis));
@@ -2815,8 +2829,22 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
                 s->target_user = s->target_raw - s->soft_zero_raw;
                 ax->gear_position_error = mctivity_gear_abs_error(s->target_raw, s->pos_raw);
                 s->following_error = clamp_i64_to_i32((int64_t)s->target_raw - (int64_t)s->pos_raw);
-                if ((uint64_t)ax->gear_position_error > (uint64_t)gear_following_error_limit_counts) {
-                    gear_group_trip("follower position error exceeded limit");
+                if (ax->gear_position_error > (int64_t)gear_following_error_limit_counts) {
+                    if (ax->gear_error_over_limit_cycles < UINT32_MAX) {
+                        ax->gear_error_over_limit_cycles++;
+                    }
+                } else {
+                    ax->gear_error_over_limit_cycles = 0;
+                }
+                if (mctivity_gear_error_trip_required(
+                        (uint64_t)ax->gear_position_error,
+                        gear_following_error_limit_counts,
+                        gear_hard_following_error_limit_counts,
+                        ax->gear_error_over_limit_cycles,
+                        gear_following_error_trip_cycles)) {
+                    gear_group_trip(ax->gear_position_error > (int64_t)gear_hard_following_error_limit_counts
+                                        ? "follower hard position error exceeded limit"
+                                        : "follower position error exceeded limit");
                     gear_tracking_active = 0;
                 } else {
                     gear_tracking_active = 1;
@@ -3128,8 +3156,15 @@ static void enforce_gear_group_interlock_before_output(void)
     } else if (!axes[gear_group_master_axis].st.servo_request || !axes[gear_group_master_axis].st.enabled ||
                !slave->st.servo_request || !slave->st.enabled || slave->st.enable_settle_cycles != 0) {
         reason = "gear axis no longer enabled and settled";
-    } else if (slave->gear_position_error > (int64_t)gear_following_error_limit_counts) {
-        reason = "follower position error exceeded limit";
+    } else if (mctivity_gear_error_trip_required(
+                   (uint64_t)slave->gear_position_error,
+                   gear_following_error_limit_counts,
+                   gear_hard_following_error_limit_counts,
+                   slave->gear_error_over_limit_cycles,
+                   gear_following_error_trip_cycles)) {
+        reason = slave->gear_position_error > (int64_t)gear_hard_following_error_limit_counts
+            ? "follower hard position error exceeded limit"
+            : "follower position error exceeded limit";
     }
     if (reason) {
         gear_group_trip(reason);
@@ -3308,13 +3343,15 @@ static int run_uservo_axes_de_gear(void)
                  "%s commissioning inhibit active", axis_label(axis));
     }
     printf(
-        "Axis D/E dual Uservo %s daemon listening on 127.0.0.1:%d (inhibit=%s, D counts/rev=%u, E counts/rev=%u, error-limit=%u)\n",
+        "Axis D/E dual Uservo %s daemon listening on 127.0.0.1:%d (inhibit=%s, D counts/rev=%u, E counts/rev=%u, error-limit=%u, error-trip=%u, error-hard=%u)\n",
         combined ? "combined PV/CSP gear" : "CSP gear",
         SERVER_PORT,
         commissioning_inhibit ? "on" : "off",
         uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev,
         uservo_pv_profiles[AXIS_FV3].counts_per_rev,
-        gear_following_error_limit_counts);
+        gear_following_error_limit_counts,
+        gear_following_error_trip_cycles,
+        gear_hard_following_error_limit_counts);
     fflush(stdout);
 
     deadline_ns = monotonic_now_ns();

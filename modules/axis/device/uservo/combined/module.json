@@ -58,6 +58,8 @@
       "0x60fd:00/32"
     ],
     "gear_following_error_limit_counts": 200,
+    "gear_following_error_trip_cycles": 3,
+    "gear_hard_following_error_limit_counts": 600,
     "gear_max_ratio": 200
   }
 }

@@ -150,6 +150,10 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
                 )
             if int(item.get("gear_following_error_limit_counts", 0)) != 200:
                 raise ProfileRuntimeError("Uservo gear profile must use a 200-count default following-error limit")
+            if is_combined and int(item.get("gear_following_error_trip_cycles", 0)) != 3:
+                raise ProfileRuntimeError("Uservo combined profile must use a 3-cycle following-error trip")
+            if is_combined and int(item.get("gear_hard_following_error_limit_counts", 0)) != 600:
+                raise ProfileRuntimeError("Uservo combined profile must use a 600-count hard following-error limit")
             if int(item.get("gear_max_ratio", 0)) != 200:
                 raise ProfileRuntimeError("Uservo gear profile must use a 200:1 maximum ratio")
         expected_instances = [("D", "mctivity", 0), ("E", "mctivity_e", 1)]
@@ -165,6 +169,13 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
         launch_env["MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS"] = str(
             device["gear_following_error_limit_counts"]
         )
+        if is_combined:
+            launch_env["MCTIVITY_GEAR_FOLLOWING_ERROR_TRIP_CYCLES"] = str(
+                device["gear_following_error_trip_cycles"]
+            )
+            launch_env["MCTIVITY_GEAR_HARD_FOLLOWING_ERROR_LIMIT_COUNTS"] = str(
+                device["gear_hard_following_error_limit_counts"]
+            )
         launch_env["MCTIVITY_GEAR_MAX_RATIO"] = str(device["gear_max_ratio"])
         for item in axis_devices:
             axis_name = str(item["logical_axis"]).upper()
@@ -197,6 +208,8 @@ def public_dump(runtime, device, launch_env):
         "MCTIVITY_PV_STOP_DECEL_RPM_S",
         "MCTIVITY_USERVO_AXIS_COUNT",
         "MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS",
+        "MCTIVITY_GEAR_FOLLOWING_ERROR_TRIP_CYCLES",
+        "MCTIVITY_GEAR_HARD_FOLLOWING_ERROR_LIMIT_COUNTS",
         "MCTIVITY_GEAR_MAX_RATIO",
     ]
     for axis_name in ("D", "E"):
