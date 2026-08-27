@@ -5,8 +5,6 @@
 
 #define MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS 200
 #define MCTIVITY_GEAR_DEFAULT_MAX_RATIO 200
-#define MCTIVITY_GEAR_COMBINED_ERROR_TRIP_CYCLES 3
-#define MCTIVITY_GEAR_COMBINED_HARD_ERROR_LIMIT_COUNTS 600
 
 static inline uint64_t mctivity_gear_max_target_step_counts(
     uint32_t max_velocity_cps,
@@ -24,20 +22,6 @@ static inline uint64_t mctivity_gear_max_target_step_counts(
     }
     max_step = (numerator + 999U) / 1000U;
     return max_step > UINT64_MAX - 2U ? UINT64_MAX : max_step + 2U;
-}
-
-static inline int mctivity_gear_error_trip_required(
-    uint64_t error_counts,
-    uint32_t soft_limit_counts,
-    uint32_t hard_limit_counts,
-    uint32_t over_limit_cycles,
-    uint32_t trip_cycles)
-{
-    if (error_counts > (uint64_t)hard_limit_counts) {
-        return 1;
-    }
-    return error_counts > (uint64_t)soft_limit_counts &&
-           over_limit_cycles >= (trip_cycles ? trip_cycles : 1U);
 }
 
 /*

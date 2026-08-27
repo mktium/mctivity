@@ -1212,6 +1212,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
               </div>
             </div>
             <div id="gearRuntimeStatus" class="control-note" aria-live="polite">齿轮未接合；D 主轴 / E 从轴默认同向 1:1</div>
+            <div id="gearDifferenceStatus" class="control-note" aria-live="polite">关系误差：0 cnt (0.0°)</div>
             <button id="gearClearLatchBtn" class="stop" onclick="clearGearSafetyLatch()">清除齿轮安全锁存</button>
             <div id="gearClearLatchNote" class="control-note">仅在 D/E 均失能、静止且控制字为 0 时使用</div>
           </div>
@@ -3357,11 +3358,19 @@ function render(s) {
     const master = s.gear_master ? axisDisplayName(String(s.gear_master)) : '轴 D';
     const slave = s.gear_slave ? axisDisplayName(String(s.gear_slave)) : '轴 E';
     const direction = Number(s.gear_direction || 1) < 0 ? '反向' : '同向';
+    const liveError = Number(s.gear_position_error || 0);
+    const lastError = Number(s.gear_last_trip_position_error || 0);
+    const displayedError = gearActive ? liveError : (gearLatched ? lastError : liveError);
+    const errorDegrees = displayedError * 360 / Math.max(1, Number(s.counts_per_rev || 10000));
+    const lastPositionTrip = String(s.gear_last_trip_reason || '').includes('position error');
+    const errorAlarm = Boolean(s.gear_position_error_alarm) || (gearLatched && lastPositionTrip);
     setText('gearRuntimeStatus', gearLatched
       ? '齿轮安全锁存：两轴保持失能，需先确认安全状态'
       : (gearActive
         ? `${master} 主轴 → ${slave} 从轴，${direction} ${Number(s.gear_slave_ratio || 1)}:${Number(s.gear_master_ratio || 1)}，关系误差 ${Number(s.gear_position_error || 0)} cnt`
         : '齿轮未接合；D 主轴 / E 从轴默认同向 1:1'));
+    setText('gearDifferenceStatus', `${gearLatched ? '最后' : '当前'}关系误差：${displayedError} cnt (${errorDegrees.toFixed(1)}°)` +
+      (errorAlarm ? '；位置误差告警（不停机）' : '；正常'));
   }
   const gearEngaged = isGearEngaged(device) && s.control_mode === 'gear_cam';
   const forceGearStandstill = Boolean(motionState.gearStoppedLatched && !gearEngaged);

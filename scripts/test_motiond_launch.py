@@ -58,8 +58,6 @@ class MotiondLaunchTests(unittest.TestCase):
         self.assertEqual(env["MCTIVITY_TOPOLOGY"], "axis-de-uservo-gear")
         self.assertEqual(env["MCTIVITY_PROFILE"], "axis-de-uservo-combined")
         self.assertEqual(env["MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS"], "200")
-        self.assertEqual(env["MCTIVITY_GEAR_FOLLOWING_ERROR_TRIP_CYCLES"], "3")
-        self.assertEqual(env["MCTIVITY_GEAR_HARD_FOLLOWING_ERROR_LIMIT_COUNTS"], "600")
         self.assertEqual(env["MCTIVITY_GEAR_MAX_RATIO"], "200")
         self.assertEqual(env["MCTIVITY_AXIS_D_MAX_SPEED_RPM"], "999")
         self.assertEqual(env["MCTIVITY_AXIS_E_MAX_SPEED_RPM"], "999")

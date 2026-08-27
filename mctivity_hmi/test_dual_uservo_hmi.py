@@ -165,9 +165,13 @@ class DualUservoHmiTests(unittest.TestCase):
 
     def test_live_safety_state_and_command_errors_are_visible(self):
         html = mctivity_hmi.HTML
+        source = Path(mctivity_hmi.__file__).read_text(encoding="utf-8")
         self.assertIn("typeof s.commissioning_inhibit === 'boolean'", html)
         self.assertIn("toggle.disabled = capabilityState.commissioningInhibit;", html)
         self.assertIn("currentLang === 'zh' ? '命令未执行'", html)
+        self.assertIn('id="gearDifferenceStatus"', source)
+        self.assertIn("gear_position_error_alarm", source)
+        self.assertIn("位置误差告警（不停机）", source)
         self.assertIn('self.send_header("Cache-Control", "no-store")', Path(mctivity_hmi.__file__).read_text())
 
     def test_full_profile_keeps_legacy_devices(self):
