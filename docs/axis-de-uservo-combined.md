@@ -74,3 +74,9 @@ The installer writes the restart variables and validates the sudoers file with
 `visudo`. The button is a narrowly scoped service-recovery control; it does
 not enable a drive, change mode, reset a fault, start gearing, or issue a
 motion command.
+
+The gear panel also provides an explicit `清除齿轮安全锁存` action. It refreshes
+both D/E statuses, resolves the actual configured gear slave, and sends
+`gear_stop` only when every assembled axis is disabled, stationary, and has
+controlword `0`. It is separate from the large motion `启停` control, so a
+latched gear fault cannot be accidentally retried as a gear start.

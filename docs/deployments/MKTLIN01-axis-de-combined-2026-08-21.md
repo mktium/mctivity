@@ -185,3 +185,29 @@ The read-only capability check reports
 both D/E disabled, stationary, `servo_request=false`, `gear_running=false`,
 and controlword `0`; the permission check also passed. No actual restart or
 drive control command was issued.
+
+## 2026-08-27 — explicit gear safety-latch clear control
+
+The HMI was upgraded with a separate `清除齿轮安全锁存` action after the first
+field gear attempt left the D/E group latched on follower position error. The
+button is separate from the large motion `启停` control, refreshes both axis
+statuses, targets the actual configured gear slave, and refuses to send
+`gear_stop` unless D/E are both disabled, stationary, and have controlword `0`.
+The existing backend `gear_stop` safety behavior remains unchanged.
+
+- source commit: `eec32b9` (pushed to `mktium/mctivity`);
+- source archive: `/tmp/mctivity-eec32b9.tar.gz`;
+- source archive SHA-256: `d3297fc0cad9fa18fee24a04bb4351c44b436cf14e3bdfcf5480baec0d598ad5`;
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-eec32b9`;
+- target build: real `/opt/etherlab`, `gcc -O2 -Wall -Wextra -Werror` passed;
+- target motiond SHA-256: `58c486d50019deefc2412e36774278c72633b60b562722317565fbd2e0497592`;
+- pre-deploy backup: `/var/backups/mctivity/pre-axis-de-gear-latch-clear-eec32b9-20260827T082010Z`;
+- only `mctivity-hmi.service` was restarted; motiond was not restarted;
+- all three services remained active and the new HMI asset contained
+  `clearGearSafetyLatch`.
+
+The post-deploy read-only state remained D/E OP with WC `6/6`, disabled,
+stationary, and controlword `0`. The pre-existing
+`gear_group_safety_latched=true` state was intentionally not cleared by
+deployment; the new button was not invoked. No drive control or motion command
+was issued.
