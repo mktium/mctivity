@@ -211,3 +211,32 @@ stationary, and controlword `0`. The pre-existing
 `gear_group_safety_latched=true` state was intentionally not cleared by
 deployment; the new button was not invoked. No drive control or motion command
 was issued.
+
+## 2026-08-27 — allow D master position control during active gear
+
+The operator reported `combined_mode_change_requires_stop` when starting
+normal position control from the D page after selecting electronic gear on E.
+The root cause was a backend guard that rejected every non-`gear_cam` mode
+change during an active gear session, including the master's required
+`set_mode position`. The guard now locks only the follower; the stationary
+master may select its normal position mode. Motion-in-progress, jog, and
+controlled-stop checks remain enforced.
+
+- source commit: `c77b7d2` (pushed to `mktium/mctivity`);
+- source archive SHA-256:
+  `6a58aa8e998e255db22594fdf6d982000e688f9db19b4921eff069fde6f2596b`;
+- target release: `/opt/mctivity-releases/v1.4.1-axis-de-master-c77b7d2`;
+- target-built motiond SHA-256:
+  `59ce489a0ea36a09b42058d47635c08914e5c53ab9fc701474d3fe161a19b02d`;
+- pre-deploy backup:
+  `/var/backups/mctivity/pre-v1.4.1-axis-de-master-c77b7d2-20260827T092913Z`;
+- target build used real `/opt/etherlab` and
+  `gcc -O2 -Wall -Wextra -Werror`; target pure C tests passed;
+- active link resolves to the new release and motiond/HMI are active.
+
+The post-restart read-only gate still showed D/E OP with WC `6/6`, zero
+deadline misses, zero communication-timing latch, disabled, stationary, and
+`cw=0`. However, D reported drive status `0x1218` and E `0x0218`
+(`fault=true`). This is the known restart-transition drive-fault risk; no
+fault reset was attempted, and the 60-second no-motion acceptance and all
+motion validation remain paused for separate operator fault handling.
