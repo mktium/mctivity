@@ -293,3 +293,33 @@ drive fault status `0x0218`; no fault reset was attempted. No enable, mode,
 gear, stop, reset, or motion command was sent. The new gear-speed fix remains
 unaccepted in the field until the restart/ EtherCAT transition fault is
 handled separately.
+
+## 2026-08-27 — combined speed ceiling aligned with native PV
+
+The combined D/E profile previously exposed a `222 rpm` maximum, even though
+the native Uservo PV profile already used `999 rpm`. This made the electronic
+gear follower speed guard reject a one-cycle `44 counts` sample (about
+`264 rpm`) even when the operator's D position speed was only `36 rpm`. The
+combined profile now keeps `222 rpm` as the default but uses `999 rpm`
+(`166500 counts/s`) as the configured ceiling for both D and E. The 200-count
+gear following-error limit, communication/WC/OP checks, overflow check, and
+fail-closed output interlock remain unchanged.
+
+- source commit: `9c25bf9` (pushed to `mktium/mctivity:feature/v1.4.1-axis-d-uservo`);
+- source archive: `/tmp/mctivity-9c25bf9.tar.gz`;
+- source archive SHA-256: `2ff20283af4a2729b094b2f39dcced7c583f844ccf45cde5ac507dbef846a629`;
+- release: `/opt/mctivity-releases/v1.4.1-axis-de-combined-9c25bf9`;
+- pre-deploy backup: `/var/backups/mctivity/pre-axis-de-combined-speed-9c25bf9-20260827T103849Z`;
+- target build used real `/opt/etherlab` and `gcc -O2 -Wall -Wextra -Werror`;
+- target motiond SHA-256: `a50a06df03470f81799f4781f9efa5e52a217d5370a5dba2227435a831d466e9`;
+- local HMI/profile/launcher tests, C tests, and release preflight passed;
+- target launcher resolved D/E maximum `999`, default `222`, and gear error
+  limit `200`; motiond logged the same values after restart.
+
+The active link resolves to the new release and motiond, HMI, and EtherCAT
+are active. The post-deploy read-only status has both axes OP with WC `6/6`,
+`cw=0`, disabled, stationary, and targets equal to actual positions; no
+enable, mode, gear, stop, reset, or motion command was sent. D/E reported a
+drive fault again after the restart transition, so no fault reset or motion
+acceptance was attempted. The fault and transition risk remain for separate
+operator handling; the new release is retained for diagnosis and rollback.
