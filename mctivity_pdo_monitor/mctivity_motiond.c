@@ -1535,7 +1535,7 @@ static void send_status_fd(int fd, int axis)
         "{\"ok\":true,\"status\":{\"device\":\"%s\",\"logical_axis\":\"%s\",\"topology\":\"%s\","
         "\"counts_per_rev\":%lld,\"commissioning_inhibit\":%s,\"enabled\":%s,\"servo_request\":%s,"
         "\"moving\":%s,\"gear_running\":%s,\"fault\":%s,\"settle_cycles\":%u,\"al_state\":%u,\"operational\":%u,"
-        "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,"
+        "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,\"commanded_mode\":%d,"
         "\"control_mode\":\"%s\",\"pos_raw\":%d,\"pos\":%d,\"velocity_actual_cps\":%d,\"target_raw\":%d,\"target\":%d,"
         "\"following_error\":%d,\"soft_zero_raw\":%d,\"jog_velocity_cps\":%d,\"torque_cmd\":%d,"
         "\"torque_feedback\":%d,\"homed\":%s,\"cycles\":%u,"
@@ -1558,6 +1558,7 @@ static void send_status_fd(int fd, int axis)
         s->moving ? "true" : "false", ax->gear_running ? "true" : "false", s->fault ? "true" : "false",
         s->enable_settle_cycles, s->al_state,
         s->operational, s->wc, s->wc_complete ? "true" : "false", s->cw, s->sw, s->err, s->mode_display,
+        ax->commanded_mode,
         s->control_mode, s->pos_raw, s->pos_user, s->velocity_actual_cps, s->target_raw, s->target_user, s->following_error,
         s->soft_zero_raw, s->jog_velocity_cps, s->torque_cmd, s->torque_feedback, s->homed ? "true" : "false",
         s->cycles,
