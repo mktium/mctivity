@@ -145,3 +145,18 @@ OP/WC remained healthy. No fault reset was attempted, so the 60-second
 no-motion acceptance and any motion test are paused for separate operator
 fault handling. No enable, mode, gear, stop, reset, or motion command was
 sent.
+
+## 2026-08-27 — operator-requested inhibit removal
+
+The operator requested removal of the commissioning inhibit for the next
+manual drive test. The current `/etc/mctivity/axis.env` and `hmi.env` were
+backed up at
+`/var/backups/mctivity/axis-de-combined-inhibit-off-20260827T121500Z` and both
+were changed to `MCTIVITY_COMMISSIONING_INHIBIT=0`. motiond and HMI were
+restarted; no enable, mode, gear, reset, stop, or motion command was sent.
+
+After the restart, the read-only status showed both slaves OP with WC `6/6`,
+but both drives reported `sw=0x0218` and `fault=true`; `cw=0`,
+`commanded_mode=0`, `enabled=false`, `servo_request=false`, and `moving=false`.
+The current “velocity cannot run” report is therefore a drive-fault gate, not
+the commissioning inhibit. No automatic fault reset was performed.
