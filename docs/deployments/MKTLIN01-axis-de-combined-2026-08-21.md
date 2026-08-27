@@ -240,3 +240,30 @@ deadline misses, zero communication-timing latch, disabled, stationary, and
 (`fault=true`). This is the known restart-transition drive-fault risk; no
 fault reset was attempted, and the 60-second no-motion acceptance and all
 motion validation remain paused for separate operator fault handling.
+
+## 2026-08-27 — elapsed-cycle gear speed guard fix deployment and rollback
+
+Commit `8edac79` changed the follower target-step check to scale its allowed
+step by the number of elapsed control cycles. Local release preflight, C unit
+tests, and the target build against real `/opt/etherlab` with
+`-O2 -Wall -Wextra -Werror` passed. The target-only pure C tests also passed.
+
+- source archive: `/tmp/v1.4.1-axis-de-gear-step-8edac79.tar.gz`;
+- source archive SHA-256:
+  `7fbb1b361a458ff09d103bb78d14ef5d86f11b405e1e88fa0093c62def6ef260`;
+- attempted release: `/opt/mctivity-releases/v1.4.1-axis-de-gear-step-8edac79`;
+- target motiond SHA-256:
+  `c0c012e6975dbfe52d6ad5f331e03648c3ee86be55ab85a90630f90b62270de3`;
+- pre-deploy backup:
+  `/var/backups/mctivity/pre-v1.4.1-axis-de-gear-step-8edac79-20260827T095312Z`.
+
+The attempted motiond restart did not pass the no-motion EtherCAT gate: E
+entered SAFEOP, the domain temporarily reported WC `3/6`, and the kernel
+reported AL `0x001A` synchronization error. The new release was not deleted;
+the active link was rolled back to
+`/opt/mctivity-releases/v1.4.1-axis-de-master-c77b7d2`. After rollback both
+services and EtherCAT were active and WC returned to `6/6`, but D/E retained
+drive fault status `0x0218`; no fault reset was attempted. No enable, mode,
+gear, stop, reset, or motion command was sent. The new gear-speed fix remains
+unaccepted in the field until the restart/ EtherCAT transition fault is
+handled separately.
