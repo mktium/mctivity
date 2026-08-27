@@ -241,6 +241,32 @@ deadline misses, zero communication-timing latch, disabled, stationary, and
 fault reset was attempted, and the 60-second no-motion acceptance and all
 motion validation remain paused for separate operator fault handling.
 
+## 2026-08-27 — gear trip diagnostics and wrap-safe error deployment
+
+Commit `f3dca4b` added wrap-safe 32-bit position error calculation and sticky
+gear-trip diagnostics (`gear_last_trip_reason`, target/actual/master raw
+positions, position error, target step, and elapsed cycles). The 200-count
+following-error limit was not increased. Local preflight, C tests, target
+real-EtherLab build with `-O2 -Wall -Wextra -Werror`, and target pure C tests
+passed.
+
+- source archive: `/tmp/v1.4.1-axis-gear-diagnostics-f3dca4b.tar.gz`;
+- source archive SHA-256:
+  `0a1879ec1c5c3222f7470398308fb4a2ff247122592a04fb31f3a97d21da96ca`;
+- target release:
+  `/opt/mctivity-releases/v1.4.1-axis-gear-diagnostics-f3dca4b`;
+- target motiond SHA-256:
+  `a50a06df03470f81799f4781f9efa5e52a217d5370a5dba2227435a831d466e9`;
+- pre-deploy backup:
+  `/var/backups/mctivity/pre-v1.4.1-axis-gear-diagnostics-f3dca4b-20260827T102313Z`.
+
+The post-deploy read-only check passed: motiond/HMI/EtherCAT active, both
+Uservo slaves OP, WC `6/6`, timing guard armed, no communication timing fault,
+both axes disabled and stationary, `cw=0`, no gear session or safety latch,
+and no drive fault. No enable, mode, gear, stop, reset, or motion command was
+sent. The release is deployed, but the planned motion acceptance remains
+separate and still requires explicit operator authorization.
+
 ## 2026-08-27 — elapsed-cycle gear speed guard fix deployment and rollback
 
 Commit `8edac79` changed the follower target-step check to scale its allowed
