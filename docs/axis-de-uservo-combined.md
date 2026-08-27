@@ -38,7 +38,10 @@ follower remains locked in `gear_cam`, while the master may select its normal
 position mode and receive ordinary position commands. The gear slave remains
 locked against ordinary axis commands until `gear_stop` completes. Gear
 configuration keeps the real-peer-only D/E rule, 1–200 ratios, direction
-selection, and the 200-count following-error limit.
+selection, and the 200-count following-error limit. The follower target-step
+guard scales its allowed counts by the number of elapsed 1 ms control cycles,
+so a short scheduling/sample gap is not mistaken for an over-speed event;
+communication/WC faults still fail closed independently.
 
 The HMI profile exposes `axis.mode.velocity.execute` and
 `axis.mode.gear_cam.execute` together. `sync_velocity_control` remains absent

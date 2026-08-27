@@ -413,6 +413,7 @@ typedef struct {
     int gear_direction;
     int gear_has_last_master_pos;
     int32_t gear_last_master_pos_raw;
+    uint32_t gear_last_master_cycle;
     int64_t gear_position_error;
     int gear_safety_latched;
     mctivity_electronic_gear_t gear_math;
@@ -1670,6 +1671,7 @@ static void gear_group_clear_runtime(int disable)
         runtime->commanded_mode = 0;
         runtime->gear_running = 0;
         runtime->gear_has_last_master_pos = 0;
+        runtime->gear_last_master_cycle = 0;
         runtime->gear_position_error = 0;
         runtime->gear_math.initialized = 0;
         clear_motion(runtime);
@@ -1737,6 +1739,7 @@ static int gear_group_start(int slave_axis, const char **reason)
     gear_group_session_active = 1;
     slave->gear_running = 1;
     slave->gear_has_last_master_pos = 1;
+    slave->gear_last_master_cycle = master->st.cycles;
     slave->gear_position_error = 0;
     set_control_mode(slave, "gear_cam");
     slave->commanded_mode = mode_code_for_name("position");
@@ -2765,12 +2768,14 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         int32_t next_target = s->target_raw;
         int64_t step;
         uint64_t max_step;
+        uint32_t elapsed_cycles = master_ax->st.cycles - ax->gear_last_master_cycle;
+        ax->gear_last_master_cycle = master_ax->st.cycles;
         if (!mctivity_gear_target(&ax->gear_math, master_ax->st.pos_raw, &next_target)) {
             gear_group_trip("position target overflow");
             gear_tracking_active = 0;
         } else {
             step = (int64_t)next_target - (int64_t)s->target_raw;
-            max_step = ((uint64_t)gear_max_velocity_cps[axis] + 999ULL) / 1000ULL + 2ULL;
+            max_step = mctivity_gear_max_target_step_counts(gear_max_velocity_cps[axis], elapsed_cycles);
             if (step < 0 ? (uint64_t)(-step) > max_step : (uint64_t)step > max_step) {
                 gear_group_trip("follower speed limit exceeded");
                 gear_tracking_active = 0;

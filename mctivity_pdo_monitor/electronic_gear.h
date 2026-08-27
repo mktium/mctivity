@@ -6,6 +6,24 @@
 #define MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS 200
 #define MCTIVITY_GEAR_DEFAULT_MAX_RATIO 200
 
+static inline uint64_t mctivity_gear_max_target_step_counts(
+    uint32_t max_velocity_cps,
+    uint32_t elapsed_cycles)
+{
+    uint64_t cycles = elapsed_cycles ? elapsed_cycles : 1U;
+    uint64_t numerator;
+    uint64_t max_step;
+    if ((uint64_t)max_velocity_cps > UINT64_MAX / cycles) {
+        return UINT64_MAX;
+    }
+    numerator = (uint64_t)max_velocity_cps * cycles;
+    if (numerator > UINT64_MAX - 999U) {
+        return UINT64_MAX;
+    }
+    max_step = (numerator + 999U) / 1000U;
+    return max_step > UINT64_MAX - 2U ? UINT64_MAX : max_step + 2U;
+}
+
 /*
  * During an active D/E gear session the follower must remain in gear_cam,
  * while the master is still allowed to receive its normal control mode.
