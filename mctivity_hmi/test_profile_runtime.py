@@ -57,7 +57,7 @@ class ProfileRuntimeTest(unittest.TestCase):
             self.assertEqual(device["max_velocity_counts_s"], 166500)
             self.assertEqual(device["default_accel_counts_s2"], 370333)
 
-    def test_combined_profile_assembles_velocity_and_gear_on_verified_csp(self):
+    def test_combined_profile_assembles_native_pv_and_csp_gear(self):
         runtime = self.runtime("axis-de-uservo-combined")
         self.assertEqual(runtime["profile"], "axis-de-uservo-combined")
         self.assertEqual(runtime["active_features"].count("feature-logic-velocity"), 1)
@@ -68,10 +68,12 @@ class ProfileRuntimeTest(unittest.TestCase):
         )
         for device in runtime["axis_devices"]:
             self.assertEqual(device["topology"], "axis-de-uservo-gear")
-            self.assertEqual(device["ethercat_mode"], "csp")
+            self.assertEqual(device["ethercat_mode"], "mixed")
             self.assertEqual(device["rxpdo_profile"], "0x1600")
             self.assertEqual(device["txpdo_profile"], "0x1A00")
             self.assertEqual(device["max_velocity_counts_s"], 37000)
+            self.assertIn("0x60ff:00/32", device["rxpdo"])
+            self.assertIn("0x606c:00/32", device["txpdo"])
 
     def test_legacy_profiles_have_no_axis_device_parameters(self):
         for name in ("minimal", "standard", "full"):

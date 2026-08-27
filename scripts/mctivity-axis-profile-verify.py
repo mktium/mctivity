@@ -104,10 +104,14 @@ def main():
             }
             expected_rxpdo = (["0x6040:00/16", "0x6060:00/8", "0x60ff:00/32", "0x60fe:01/32"]
                               if is_pv else
-                              ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"])
+                              (["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60ff:00/32", "0x60fe:01/32"]
+                               if is_combined else
+                               ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"]))
             expected_txpdo = (["0x6041:00/16", "0x6061:00/8", "0x606c:00/32", "0x60fd:00/32"]
                               if is_pv else
-                              ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"])
+                              (["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x606c:00/32", "0x60fd:00/32"]
+                               if is_combined else
+                               ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"]))
             for device in axis_devices:
                 if not (0 < float(device["default_relative_revolutions"]) <= float(device["max_position_revolutions"])):
                     raise SystemExit("axis-d-uservo relative default exceeds its position envelope")
@@ -142,7 +146,7 @@ def main():
                         raise SystemExit("axis-d-uservo-pv 0x6084 deceleration and stop deceleration must match")
                     if device["default_accel_counts_s2"] <= 0 or device["stop_decel_counts_s2"] <= 0:
                         raise SystemExit("axis-d-uservo-pv resolved acceleration/deceleration invalid")
-                if is_gear:
+                if is_gear and not is_combined:
                     if device.get("ethercat_mode") != "csp" or device.get("ethercat_mode_code") != 8:
                         raise SystemExit("axis-de-uservo-gear must select CiA 402 CSP mode code 8")
                     if device.get("rxpdo_profile") != "0x1600" or device.get("txpdo_profile") != "0x1A00":
@@ -151,6 +155,15 @@ def main():
                         raise SystemExit("axis-de-uservo-gear must use a 200-count following-error limit")
                     if int(device.get("gear_max_ratio", 0)) != 200:
                         raise SystemExit("axis-de-uservo-gear must use a 200:1 maximum ratio")
+                if is_combined:
+                    if device.get("ethercat_mode") != "mixed" or device.get("ethercat_mode_code") != 8:
+                        raise SystemExit("axis-de-uservo-combined must select mixed PDO mode with CSP default code 8")
+                    if device.get("rxpdo_profile") != "0x1600" or device.get("txpdo_profile") != "0x1A00":
+                        raise SystemExit("axis-de-uservo-combined must select the combined 0x1600/0x1A00 PDO map")
+                    if int(device.get("gear_following_error_limit_counts", 0)) != 200:
+                        raise SystemExit("axis-de-uservo-combined must use a 200-count following-error limit")
+                    if int(device.get("gear_max_ratio", 0)) != 200:
+                        raise SystemExit("axis-de-uservo-combined must use a 200:1 maximum ratio")
         if profile.get("profile") in {"minimal", "standard", "full"} and runtime.get("axis_devices"):
             raise SystemExit(f"legacy profile polluted by axis device parameters: {profile.get('profile')}")
     if checked < 1:

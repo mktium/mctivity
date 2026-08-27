@@ -122,6 +122,7 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
                     }
                 )
     if expected_topology == "axis-de-uservo-gear":
+        is_combined = profile_name == "axis-de-uservo-combined"
         expected_contract = {
             "vendor_id": "0x00666999",
             "product_code": "0x00004806",
@@ -129,8 +130,12 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
             "cycle_ns": 1_000_000,
             "rxpdo_profile": "0x1600",
             "txpdo_profile": "0x1A00",
-            "rxpdo": ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"],
-            "txpdo": ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"],
+            "rxpdo": (["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60ff:00/32", "0x60fe:01/32"]
+                      if is_combined else
+                      ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"]),
+            "txpdo": (["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x606c:00/32", "0x60fd:00/32"]
+                      if is_combined else
+                      ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"]),
         }
         for item in axis_devices:
             for key, expected in expected_contract.items():
@@ -138,8 +143,11 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
                     raise ProfileRuntimeError(
                         f"Uservo CSP runtime contract mismatch for {key}: expected {expected!r}, got {item.get(key)!r}"
                     )
-            if item.get("ethercat_mode") != "csp" or int(item.get("ethercat_mode_code", 0)) != 8:
-                raise ProfileRuntimeError("Uservo gear profile must declare CiA 402 CSP mode code 8")
+            expected_mode = "mixed" if is_combined else "csp"
+            if item.get("ethercat_mode") != expected_mode or int(item.get("ethercat_mode_code", 0)) != 8:
+                raise ProfileRuntimeError(
+                    f"Uservo {'combined' if is_combined else 'gear'} profile must declare mode code 8"
+                )
             if int(item.get("gear_following_error_limit_counts", 0)) != 200:
                 raise ProfileRuntimeError("Uservo gear profile must use a 200-count default following-error limit")
             if int(item.get("gear_max_ratio", 0)) != 200:
@@ -162,6 +170,16 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
             axis_name = str(item["logical_axis"]).upper()
             launch_env[f"MCTIVITY_AXIS_{axis_name}_COUNTS_PER_REV"] = str(item["counts_per_rev"])
             launch_env[f"MCTIVITY_AXIS_{axis_name}_MAX_SPEED_RPM"] = str(item["max_speed_rpm"])
+            if is_combined:
+                launch_env.update(
+                    {
+                        f"MCTIVITY_AXIS_{axis_name}_PV_TARGET_SPEED_RPM": str(item["default_speed_rpm"]),
+                        f"MCTIVITY_AXIS_{axis_name}_PV_MAX_SPEED_RPM": str(item["max_speed_rpm"]),
+                        f"MCTIVITY_AXIS_{axis_name}_PV_ACCEL_RPM_S": str(item["default_accel_rpm_s"]),
+                        f"MCTIVITY_AXIS_{axis_name}_PV_DECEL_RPM_S": str(item["default_decel_rpm_s"]),
+                        f"MCTIVITY_AXIS_{axis_name}_PV_STOP_DECEL_RPM_S": str(item["stop_decel_rpm_s"]),
+                    }
+                )
     return runtime, device, launch_env
 
 

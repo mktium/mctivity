@@ -36,10 +36,19 @@ PDO offsets, commands, and HMI persistence. Their shared 1 ms domain and timing
 guard intentionally fail closed for both axes if either slave or the combined
 working counter becomes unhealthy.
 
-The `axis-de-uservo-combined` profile keeps the verified CSP map above and
-adds velocity mode through software position stepping over `0x607A`. It does
-not claim or require a new native PV mapping; the existing `axis-de-uservo-pv`
-profile remains the native PV fallback.
+The `axis-de-uservo-combined` profile uses a single extended `0x1600`/`0x1A00`
+map containing both CSP position and native PV velocity objects:
+
+```text
+RxPDO 0x1600: 6040:00/16, 6060:00/8, 607A:00/32, 60FF:00/32, 60FE:01/32
+TxPDO 0x1A00: 6041:00/16, 6061:00/8, 6064:00/32, 606C:00/32, 60FD:00/32
+```
+
+Its velocity mode uses CiA 402 mode 3 and writes native `0x60FF`; position and
+electronic gear use CSP mode 8 and `0x607A`. The standalone
+`axis-de-uservo-pv` profile remains available with the exact four-entry PV
+maps. The combined map is configured before activation and must pass the
+target's Pre-Op/domain/WC gate before any enable or motion test.
 
 Official fault `0x8100` is `Communication_DS_301`: after the slave enters OP, loss of PDO communication for the configured timeout raises a communication alarm. The default is 100 ms and the timeout is configured through object `0x36B5`. It is distinct from EtherCAT AL code `0x001B` (Sync Manager watchdog).
 

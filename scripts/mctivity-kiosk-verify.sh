@@ -44,7 +44,7 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-d
     assert capabilities.get("commissioning_inhibit") is True, capabilities
     axis_devices = capabilities.get("axis_devices") or []
     expected_instances = ([('D', 'mctivity', 0), ('E', 'mctivity_e', 1)]
-                          if profile in {"axis-de-uservo-pv", "axis-de-uservo-gear"} else
+                          if profile in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"} else
                           [('D', 'mctivity', 0)])
     actual_instances = [
         (item.get("logical_axis"), item.get("transport_device"), item.get("physical_position"))
@@ -89,6 +89,18 @@ if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-d
         for device in axis_devices:
             assert device.get("default_velocity_counts_s") == 37000, device
             assert device.get("max_velocity_counts_s") == 166500, device
+            assert device.get("stop_decel_counts_s2") == 370333, device
+    if profile == "axis-de-uservo-combined":
+        modules = set(capabilities.get("active_features") or [])
+        caps = set(capabilities.get("capabilities") or [])
+        assert {"feature-logic-velocity", "feature-hmi-velocity"} <= modules, capabilities
+        assert {"feature-logic-electronic-gear", "feature-hmi-electronic-gear"} <= modules, capabilities
+        assert "axis.mode.velocity.execute" in caps, capabilities
+        assert "axis.mode.gear_cam.execute" in caps, capabilities
+        assert capabilities.get("sync_velocity_control", {}).get("available") is False, capabilities
+        for device in axis_devices:
+            assert device.get("default_velocity_counts_s") == 37000, device
+            assert device.get("max_velocity_counts_s") == 37000, device
             assert device.get("stop_decel_counts_s2") == 370333, device
     if profile == "axis-de-uservo-pv":
         sync = capabilities.get("sync_velocity_control") or {}

@@ -47,7 +47,7 @@ class MotiondLaunchTests(unittest.TestCase):
             self.assertEqual(env[f"{prefix}_PV_DECEL_RPM_S"], "2222")
             self.assertEqual(env[f"{prefix}_PV_STOP_DECEL_RPM_S"], "2222")
 
-    def test_combined_profile_keeps_csp_topology_and_gear_limits(self):
+    def test_combined_profile_exports_pv_parameters_and_gear_limits(self):
         runtime, device, env = LAUNCH.resolve_launch_environment(
             profile_name="axis-de-uservo-combined",
             environ={"MCTIVITY_COMMISSIONING_INHIBIT": "1"},
@@ -61,6 +61,13 @@ class MotiondLaunchTests(unittest.TestCase):
         self.assertEqual(env["MCTIVITY_GEAR_MAX_RATIO"], "200")
         self.assertEqual(env["MCTIVITY_AXIS_D_MAX_SPEED_RPM"], "222")
         self.assertEqual(env["MCTIVITY_AXIS_E_MAX_SPEED_RPM"], "222")
+        for axis_name in ("D", "E"):
+            prefix = f"MCTIVITY_AXIS_{axis_name}"
+            self.assertEqual(env[f"{prefix}_PV_TARGET_SPEED_RPM"], "222")
+            self.assertEqual(env[f"{prefix}_PV_MAX_SPEED_RPM"], "222")
+            self.assertEqual(env[f"{prefix}_PV_ACCEL_RPM_S"], "2222")
+            self.assertEqual(env[f"{prefix}_PV_DECEL_RPM_S"], "2222")
+            self.assertEqual(env[f"{prefix}_PV_STOP_DECEL_RPM_S"], "2222")
 
     def test_environment_topology_mismatch_is_rejected(self):
         with self.assertRaises(LAUNCH.ProfileRuntimeError):

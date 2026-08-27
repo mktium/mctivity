@@ -1,24 +1,33 @@
 # Axis D/E Uservo combined velocity and electronic gear
 
-`axis-de-uservo-combined` is the unified D/E HMI profile. It exposes both
-velocity control and electronic gear in the same mode selector while keeping
-the previously verified CSP PDO contract from `axis-de-uservo-gear`.
+`axis-de-uservo-combined` is the unified D/E HMI profile. It exposes native PV
+velocity control and CSP position/electronic gear in the same mode selector.
+The old standalone PV and CSP profiles remain unchanged.
 
 ## Runtime contract
 
 - physical position 0 is logical D (`mctivity`);
 - physical position 1 is logical E (`mctivity_e`);
 - D is the default gear master and E is the default gear slave;
-- RxPDO `0x1600`: `6040`, `6060`, `607A`, `60FE:01`;
-- TxPDO `0x1A00`: `6041`, `6061`, `6064`, `60FD`;
+- RxPDO `0x1600`: `6040`, `6060`, `607A`, `60FF`, `60FE:01`;
+- TxPDO `0x1A00`: `6041`, `6061`, `6064`, `606C`, `60FD`;
 - cycle period is 1 ms and D is the DC reference;
 - the configured velocity ceiling remains 222 rpm / 37000 counts/s.
 
-The existing `axis-de-uservo-pv` profile is unchanged and remains available as
-the native PV velocity fallback. The combined profile does not assume a new
-or unverified drive PDO mapping: its velocity mode converts the requested
-counts/s into bounded CSP target-position increments. The drive therefore
-stays in CSP mode (`0x6060=8`) in both position/gear and velocity modes.
+In velocity mode the drive is set to CiA 402 PV (`0x6060=3`) and the requested
+counts/s are written directly to the native `0x60FF` target-velocity PDO; live
+velocity is read from `0x606C`. In position and gear modes the drive remains in
+CSP (`0x6060=8`) and receives `0x607A` target position. The combined map keeps
+each control/status object unique in the process image, so changing the HMI
+mode does not require a live PDO remap.
+
+The combined profile uses the existing Uservo PDO assignment objects
+`0x1600`/`0x1A00`, extended at startup in Pre-Op with the additional native PV
+fields. Because the exact target ESI is not installed on the controller,
+deployment must verify that both slaves accept the map and that the domain WC
+is complete before any motion test. A failed map/domain gate is a deployment
+failure and must roll back the active release while retaining the failed
+release for diagnosis.
 
 ## Mode selection and safety
 
@@ -31,8 +40,8 @@ the real-peer-only D/E rule, 1–200 ratios, direction selection, and the
 
 The HMI profile exposes `axis.mode.velocity.execute` and
 `axis.mode.gear_cam.execute` together. `sync_velocity_control` remains absent
-because the old atomic dual-axis PV group is intentionally not mixed into the
-CSP combined profile.
+because this profile controls each axis through the mixed PV/CSP map; the
+electronic-gear group remains the only coupled D/E mode.
 
 ## Deployment boundary
 

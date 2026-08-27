@@ -226,6 +226,29 @@ static ec_sync_info_t uservo_syncs[] = {
     {0xff, 0, 0, NULL, 0}
 };
 
+/* Combined map: CSP position fields plus the native PV target/feedback fields.
+ * The mode selects which target is consumed: mode 3 uses 0x60FF, mode 8 uses
+ * 0x607A. Each object is mapped only once, avoiding duplicate controlword and
+ * mode entries in the process image. */
+static ec_pdo_entry_info_t uservo_combined_pdo_entries[] = {
+    {0x6040, 0x00, 16}, {0x6060, 0x00, 8}, {0x607a, 0x00, 32}, {0x60ff, 0x00, 32},
+    {0x60fe, 0x01, 32}, {0x6041, 0x00, 16}, {0x6061, 0x00, 8}, {0x6064, 0x00, 32},
+    {0x606c, 0x00, 32}, {0x60fd, 0x00, 32},
+};
+
+static ec_pdo_info_t uservo_combined_pdos[] = {
+    {0x1600, 5, uservo_combined_pdo_entries + 0},
+    {0x1a00, 5, uservo_combined_pdo_entries + 5},
+};
+
+static ec_sync_info_t uservo_combined_syncs[] = {
+    {0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE},
+    {1, EC_DIR_INPUT, 0, NULL, EC_WD_DISABLE},
+    {2, EC_DIR_OUTPUT, 1, uservo_combined_pdos + 0, EC_WD_ENABLE},
+    {3, EC_DIR_INPUT, 1, uservo_combined_pdos + 1, EC_WD_DISABLE},
+    {0xff, 0, 0, NULL, 0}
+};
+
 /* Official Uservo PV map: RxPDO 0x1601 / TxPDO 0x1A01. */
 static ec_pdo_entry_info_t uservo_pv_pdo_entries[] = {
     {0x6040, 0x00, 16}, {0x6060, 0x00, 8}, {0x60ff, 0x00, 32}, {0x60fe, 0x01, 32},
@@ -399,15 +422,18 @@ typedef struct {
     unsigned int controlword;
     unsigned int mode;
     unsigned int target_position;
+    unsigned int target_velocity;
     unsigned int digital_output;
     unsigned int statusword;
     unsigned int mode_display;
     unsigned int position_actual;
+    unsigned int velocity_actual;
     unsigned int digital_input;
 } uservo_csp_offsets_t;
 
 static uservo_csp_offsets_t uservo_dual_csp_offsets[AXIS_COUNT];
 static ec_pdo_entry_reg_t uservo_dual_csp_domain_regs[AXIS_COUNT * 8 + 1];
+static ec_pdo_entry_reg_t uservo_dual_combined_domain_regs[AXIS_COUNT * 10 + 1];
 
 static axis_runtime_t axes[AXIS_COUNT];
 static client_t clients[MAX_CLIENTS];
@@ -456,6 +482,12 @@ static int axis_is_uservo_pv(int axis)
     return uservo_pv_topology && (uservo_dual_pv_topology || axis == AXIS_MCTIVITY);
 }
 
+static int axis_uses_native_pv_control(int axis, const char *mode)
+{
+    return mode && strcmp(mode, "velocity") == 0 &&
+           (axis_is_uservo_pv(axis) || uservo_dual_combined_topology);
+}
+
 static int axis_is_uservo_gear(int axis)
 {
     (void)axis;
@@ -469,7 +501,9 @@ static int axis_is_fv3_hardware(int axis)
 
 static const uservo_pv_profile_t *uservo_pv_profile_for_axis(int axis)
 {
-    return axis_is_uservo_pv(axis) ? &uservo_pv_profiles[axis] : NULL;
+    return (axis_is_uservo_pv(axis) || uservo_dual_combined_topology)
+        ? &uservo_pv_profiles[axis]
+        : NULL;
 }
 
 static const char *axis_name(int axis)
@@ -484,7 +518,7 @@ static const char *axis_label(int axis)
 {
     if (uservo_dual_topology) {
         if (uservo_dual_gear_topology) {
-            return axis == AXIS_FV3 ? "Axis E Uservo CSP" : "Axis D Uservo CSP";
+            return axis == AXIS_FV3 ? "Axis E Uservo" : "Axis D Uservo";
         }
         return axis == AXIS_FV3 ? "Axis E Uservo PV" : "Axis D Uservo PV";
     }
@@ -887,14 +921,8 @@ static int8_t mode_code_for_name(const char *mode)
 static int8_t axis_mode_code(int axis, const char *mode)
 {
     /* DS1-E4806N PV is CiA 402 mode 3; legacy velocity remains CSV (9). */
-    if (axis_is_uservo_pv(axis) && strcmp(mode, "velocity") == 0) {
+    if (axis_uses_native_pv_control(axis, mode)) {
         return 3;
-    }
-    /* The combined D/E profile deliberately keeps the verified CSP PDO map.
-     * Its velocity mode is software position stepping, so the drive remains in
-     * CSP mode 8 and receives only the known 0x607A target-position entry. */
-    if (uservo_dual_combined_topology && strcmp(mode, "velocity") == 0) {
-        return 8;
     }
     return mode_code_for_name(mode);
 }
@@ -1086,6 +1114,36 @@ static int load_axis_profile_parameters(void)
     uint32_t configured_axis_count;
     if (!uservo_axis_d_topology) {
         counts_per_rev = LEGACY_COUNTS_PER_REV;
+        return 0;
+    }
+    if (uservo_dual_combined_topology) {
+        if (env_u32_required("MCTIVITY_USERVO_AXIS_COUNT", &configured_axis_count) < 0 ||
+            configured_axis_count != AXIS_COUNT) {
+            fprintf(stderr, "axis-de-uservo-combined requires exactly %d Uservo axes\n", AXIS_COUNT);
+            return -1;
+        }
+        if (load_uservo_pv_profile(&uservo_pv_profiles[AXIS_MCTIVITY], "D", 0) < 0 ||
+            load_uservo_pv_profile(&uservo_pv_profiles[AXIS_FV3], "E", 0) < 0) {
+            return -1;
+        }
+        if (env_u32_required("MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS", &gear_following_error_limit_counts) < 0 ||
+            env_u32_required("MCTIVITY_GEAR_MAX_RATIO", &gear_max_ratio) < 0 ||
+            gear_following_error_limit_counts == 0 || gear_max_ratio == 0 ||
+            gear_max_ratio > MCTIVITY_GEAR_DEFAULT_MAX_RATIO) {
+            fprintf(stderr, "axis-de-uservo-combined safety parameters are invalid\n");
+            return -1;
+        }
+        if (env_u32_required("MCTIVITY_AXIS_D_MAX_SPEED_RPM", &configured_counts_per_rev) < 0) {
+            return -1;
+        }
+        gear_max_velocity_cps[AXIS_MCTIVITY] =
+            (uint32_t)(((uint64_t)configured_counts_per_rev * uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev) / 60ULL);
+        if (env_u32_required("MCTIVITY_AXIS_E_MAX_SPEED_RPM", &configured_counts_per_rev) < 0) {
+            return -1;
+        }
+        gear_max_velocity_cps[AXIS_FV3] =
+            (uint32_t)(((uint64_t)configured_counts_per_rev * uservo_pv_profiles[AXIS_FV3].counts_per_rev) / 60ULL);
+        counts_per_rev = uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev;
         return 0;
     }
     if (uservo_dual_gear_topology) {
@@ -1963,7 +2021,7 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "stop") == 0) {
-        if (axis_is_uservo_pv(axis)) {
+        if (axis_uses_native_pv_control(axis, s->control_mode)) {
             const uservo_pv_profile_t *pv = uservo_pv_profile_for_axis(axis);
             clear_motion(ax);
             s->enable_settle_cycles = 0;
@@ -2627,6 +2685,7 @@ static void poll_server(unsigned int accept_budget, unsigned int command_budget,
 static void axis_cycle_logic(axis_runtime_t *ax, int axis)
 {
     status_t *s = &ax->st;
+    int native_pv_control = axis_uses_native_pv_control(axis, s->control_mode);
     int gear_tracking_active = 0;
     int pp_active = 0;
     int32_t fv3_pos_step = 0;
@@ -2684,7 +2743,7 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
                 snprintf(s->message, sizeof(s->message), "servo enabled and settled");
             }
         }
-    } else if (axis_is_uservo_pv(axis)) {
+    } else if (native_pv_control) {
         /* Native DS1-E4806N PV: the 0x60ff target is the command source;
          * position targets and CSP increment synthesis are not used. */
         s->target_raw = s->pos_raw;
@@ -2786,7 +2845,7 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         ax->gear_running = 0;
         ax->gear_has_last_master_pos = 0;
     }
-    if (!axis_is_uservo_pv(axis)) {
+    if (!native_pv_control) {
         ax->target_velocity_cps = clamp_i64_to_i32((int64_t)(s->target_raw - previous_target_raw) * 1000LL);
     }
     if (axis_is_fv3_hardware(axis) && s->servo_request && s->enabled) {
@@ -2800,8 +2859,8 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         gear_tracking_active = i64_abs_diff_i32(s->target_raw, s->pos_raw) > 1024 ||
                                i64_abs_diff_i32(axes[ax->gear_master_axis].st.target_raw, axes[ax->gear_master_axis].st.pos_raw) > 1024;
     }
-    s->moving = (axis_is_uservo_pv(axis) ? ax->target_velocity_cps != 0 : ax->motion.moving) ||
-                (!axis_is_uservo_pv(axis) && s->jog_velocity_cps != 0) ||
+    s->moving = (native_pv_control ? ax->target_velocity_cps != 0 : ax->motion.moving) ||
+                (!native_pv_control && s->jog_velocity_cps != 0) ||
                 ax->stop_velocity_cps != 0 ||
                 pp_active ||
                 gear_tracking_active ||
@@ -3074,6 +3133,30 @@ static void build_uservo_dual_csp_domain_regs(void)
     uservo_dual_csp_domain_regs[AXIS_COUNT * 8] = (ec_pdo_entry_reg_t){};
 }
 
+static void build_uservo_dual_combined_domain_regs(void)
+{
+    static const uint16_t indices[10] = {
+        0x6040, 0x6060, 0x607a, 0x60ff, 0x60fe,
+        0x6041, 0x6061, 0x6064, 0x606c, 0x60fd,
+    };
+    static const uint8_t subindices[10] = {0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    for (int axis = 0; axis < AXIS_COUNT; axis++) {
+        uservo_csp_offsets_t *off = &uservo_dual_csp_offsets[axis];
+        unsigned int *offsets[10] = {
+            &off->controlword, &off->mode, &off->target_position, &off->target_velocity,
+            &off->digital_output, &off->statusword, &off->mode_display, &off->position_actual,
+            &off->velocity_actual, &off->digital_input,
+        };
+        for (int entry = 0; entry < 10; entry++) {
+            uservo_dual_combined_domain_regs[axis * 10 + entry] = (ec_pdo_entry_reg_t){
+                0, (uint16_t)axis, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE,
+                indices[entry], subindices[entry], offsets[entry], NULL
+            };
+        }
+    }
+    uservo_dual_combined_domain_regs[AXIS_COUNT * 10] = (ec_pdo_entry_reg_t){};
+}
+
 static int configure_uservo_pv_profile(
     ec_slave_config_t *slave_config,
     const uservo_pv_profile_t *profile,
@@ -3109,6 +3192,7 @@ static int run_uservo_axes_de_gear(void)
     ec_slave_config_t *slave_configs[AXIS_COUNT];
     uint8_t *process_data;
     uint64_t deadline_ns;
+    const int combined = uservo_dual_combined_topology;
 
     if (prepare_axis_d_realtime() < 0) {
         return 1;
@@ -3120,7 +3204,7 @@ static int run_uservo_axes_de_gear(void)
     }
     domain = ecrt_master_create_domain(master);
     if (!domain) {
-        fprintf(stderr, "failed to create dual Uservo CSP domain\n");
+        fprintf(stderr, "failed to create dual Uservo %s domain\n", combined ? "combined" : "CSP");
         ecrt_release_master(master);
         return 1;
     }
@@ -3132,32 +3216,43 @@ static int run_uservo_axes_de_gear(void)
             ecrt_release_master(master);
             return 1;
         }
-        if (ecrt_slave_config_pdos(slave_configs[axis], EC_END, uservo_syncs)) {
-            fprintf(stderr, "failed to configure %s Uservo CSP PDOs\n", axis_label(axis));
+        if (ecrt_slave_config_pdos(
+                slave_configs[axis], EC_END, combined ? uservo_combined_syncs : uservo_syncs)) {
+            fprintf(stderr, "failed to configure %s Uservo %s PDOs\n", axis_label(axis), combined ? "combined" : "CSP");
+            ecrt_release_master(master);
+            return 1;
+        }
+        if (combined && configure_uservo_pv_profile(
+                slave_configs[axis], uservo_pv_profile_for_axis(axis), axis_label(axis)) < 0) {
             ecrt_release_master(master);
             return 1;
         }
         ecrt_slave_config_dc(slave_configs[axis], 0x0300, PERIOD_NS, 0, 0, 0);
     }
     if (ecrt_master_select_reference_clock(master, slave_configs[AXIS_MCTIVITY])) {
-        fprintf(stderr, "failed to select Axis D Uservo CSP DC reference clock\n");
+        fprintf(stderr, "failed to select Axis D Uservo %s DC reference clock\n", combined ? "combined" : "CSP");
         ecrt_release_master(master);
         return 1;
     }
-    build_uservo_dual_csp_domain_regs();
-    if (ecrt_domain_reg_pdo_entry_list(domain, uservo_dual_csp_domain_regs)) {
-        fprintf(stderr, "failed to register dual Uservo CSP PDO entries\n");
+    if (combined) {
+        build_uservo_dual_combined_domain_regs();
+    } else {
+        build_uservo_dual_csp_domain_regs();
+    }
+    if (ecrt_domain_reg_pdo_entry_list(
+            domain, combined ? uservo_dual_combined_domain_regs : uservo_dual_csp_domain_regs)) {
+        fprintf(stderr, "failed to register dual Uservo %s PDO entries\n", combined ? "combined" : "CSP");
         ecrt_release_master(master);
         return 1;
     }
     if (ecrt_master_activate(master)) {
-        fprintf(stderr, "failed to activate EtherCAT master for dual Uservo CSP\n");
+        fprintf(stderr, "failed to activate EtherCAT master for dual Uservo %s\n", combined ? "combined" : "CSP");
         ecrt_release_master(master);
         return 1;
     }
     process_data = ecrt_domain_data(domain);
     if (!process_data) {
-        fprintf(stderr, "failed to get dual Uservo CSP domain data\n");
+        fprintf(stderr, "failed to get dual Uservo %s domain data\n", combined ? "combined" : "CSP");
         ecrt_release_master(master);
         return 1;
     }
@@ -3170,7 +3265,8 @@ static int run_uservo_axes_de_gear(void)
                  "%s commissioning inhibit active", axis_label(axis));
     }
     printf(
-        "Axis D/E dual Uservo CSP gear daemon listening on 127.0.0.1:%d (inhibit=%s, D counts/rev=%u, E counts/rev=%u, error-limit=%u)\n",
+        "Axis D/E dual Uservo %s daemon listening on 127.0.0.1:%d (inhibit=%s, D counts/rev=%u, E counts/rev=%u, error-limit=%u)\n",
+        combined ? "combined PV/CSP gear" : "CSP gear",
         SERVER_PORT,
         commissioning_inhibit ? "on" : "off",
         uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev,
@@ -3205,7 +3301,9 @@ static int run_uservo_axes_de_gear(void)
             runtime->st.err = 0;
             runtime->st.mode_display = EC_READ_S8(process_data + off->mode_display);
             runtime->st.pos_raw = EC_READ_S32(process_data + off->position_actual);
-            runtime->st.velocity_actual_cps = 0;
+            runtime->st.velocity_actual_cps = combined
+                ? EC_READ_S32(process_data + off->velocity_actual)
+                : 0;
             runtime->st.following_error = 0;
             runtime->st.torque_feedback = 0;
             runtime->st.al_state = slave_states[axis].al_state;
@@ -3250,6 +3348,13 @@ static int run_uservo_axes_de_gear(void)
                         commissioning_inhibit || safety_output_blocked ? 0 : runtime->commanded_mode);
             EC_WRITE_S32(process_data + off->target_position,
                          commissioning_inhibit || safety_output_blocked ? runtime->st.pos_raw : runtime->st.target_raw);
+            if (combined) {
+                EC_WRITE_S32(process_data + off->target_velocity,
+                             commissioning_inhibit || safety_output_blocked ||
+                             !axis_uses_native_pv_control(axis, runtime->st.control_mode)
+                                 ? 0
+                                 : runtime->target_velocity_cps);
+            }
             EC_WRITE_U32(process_data + off->digital_output, 0);
         }
         ecrt_domain_queue(domain);
@@ -3282,6 +3387,9 @@ static int run_uservo_axes_de_gear(void)
             EC_WRITE_S8(process_data + off->mode, 0);
             EC_WRITE_S32(process_data + off->target_position,
                          EC_READ_S32(process_data + off->position_actual));
+            if (combined) {
+                EC_WRITE_S32(process_data + off->target_velocity, 0);
+            }
             EC_WRITE_U32(process_data + off->digital_output, 0);
         }
         ecrt_domain_queue(domain);

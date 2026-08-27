@@ -8,7 +8,7 @@
   "modules": [
     "axis-feedback-panel",
     "axis-control-panel",
-    "axis-device-uservo-gear",
+    "axis-device-uservo-combined",
     "feature-logic-single-point",
     "feature-hmi-single-point",
     "feature-logic-velocity",
@@ -20,13 +20,13 @@
   ],
   "axis_instances": [
     {
-      "module": "axis-device-uservo-gear",
+      "module": "axis-device-uservo-combined",
       "logical_axis": "D",
       "transport_device": "mctivity",
       "physical_position": 0
     },
     {
-      "module": "axis-device-uservo-gear",
+      "module": "axis-device-uservo-combined",
       "logical_axis": "E",
       "transport_device": "mctivity_e",
       "physical_position": 1
