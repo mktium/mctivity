@@ -12,7 +12,8 @@ The old standalone PV and CSP profiles remain unchanged.
 - RxPDO `0x1600`: `6040`, `6060`, `607A`, `60FF`, `60FE:01`;
 - TxPDO `0x1A00`: `6041`, `6061`, `6064`, `606C`, `60FD`;
 - cycle period is 1 ms and D is the DC reference;
-- the configured velocity ceiling remains 222 rpm / 37000 counts/s.
+- the default velocity remains 222 rpm, while the configured ceiling is 999 rpm
+  / 166500 counts/s (matching the native PV profile).
 
 In velocity mode the drive is set to CiA 402 PV (`0x6060=3`) and the requested
 counts/s are written directly to the native `0x60FF` target-velocity PDO; live

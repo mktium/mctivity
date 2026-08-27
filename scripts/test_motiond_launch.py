@@ -59,12 +59,12 @@ class MotiondLaunchTests(unittest.TestCase):
         self.assertEqual(env["MCTIVITY_PROFILE"], "axis-de-uservo-combined")
         self.assertEqual(env["MCTIVITY_GEAR_FOLLOWING_ERROR_LIMIT_COUNTS"], "200")
         self.assertEqual(env["MCTIVITY_GEAR_MAX_RATIO"], "200")
-        self.assertEqual(env["MCTIVITY_AXIS_D_MAX_SPEED_RPM"], "222")
-        self.assertEqual(env["MCTIVITY_AXIS_E_MAX_SPEED_RPM"], "222")
+        self.assertEqual(env["MCTIVITY_AXIS_D_MAX_SPEED_RPM"], "999")
+        self.assertEqual(env["MCTIVITY_AXIS_E_MAX_SPEED_RPM"], "999")
         for axis_name in ("D", "E"):
             prefix = f"MCTIVITY_AXIS_{axis_name}"
             self.assertEqual(env[f"{prefix}_PV_TARGET_SPEED_RPM"], "222")
-            self.assertEqual(env[f"{prefix}_PV_MAX_SPEED_RPM"], "222")
+            self.assertEqual(env[f"{prefix}_PV_MAX_SPEED_RPM"], "999")
             self.assertEqual(env[f"{prefix}_PV_ACCEL_RPM_S"], "2222")
             self.assertEqual(env[f"{prefix}_PV_DECEL_RPM_S"], "2222")
             self.assertEqual(env[f"{prefix}_PV_STOP_DECEL_RPM_S"], "2222")

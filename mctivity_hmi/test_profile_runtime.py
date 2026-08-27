@@ -71,7 +71,7 @@ class ProfileRuntimeTest(unittest.TestCase):
             self.assertEqual(device["ethercat_mode"], "mixed")
             self.assertEqual(device["rxpdo_profile"], "0x1600")
             self.assertEqual(device["txpdo_profile"], "0x1A00")
-            self.assertEqual(device["max_velocity_counts_s"], 37000)
+            self.assertEqual(device["max_velocity_counts_s"], 166500)
             self.assertIn("0x60ff:00/32", device["rxpdo"])
             self.assertIn("0x606c:00/32", device["txpdo"])
 
