@@ -1212,6 +1212,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
               </div>
             </div>
             <div id="gearRuntimeStatus" class="control-note" aria-live="polite">齿轮未接合；D 主轴 / E 从轴默认同向 1:1</div>
+            <button id="gearClearLatchBtn" class="stop" onclick="clearGearSafetyLatch()">清除齿轮安全锁存</button>
+            <div id="gearClearLatchNote" class="control-note">仅在 D/E 均失能、静止且控制字为 0 时使用</div>
           </div>
         </div>
       </section>
@@ -1434,6 +1436,8 @@ const UI_TEXT = {
     stageWrite:'写入暂存',
     gearMaster:'主轴',
     gearSlave:'从轴',
+    gearClearLatch:'清除齿轮安全锁存',
+    gearClearLatchNote:'仅在 D/E 均失能、静止且控制字为 0 时使用',
     pointPositioning:'单点定位',
     pointConfig:'点表配置',
     posJog:'位置/点动',
@@ -1572,6 +1576,8 @@ const UI_TEXT = {
     stageWrite:'Stage Command',
     gearMaster:'Master Axis',
     gearSlave:'Slave Axis',
+    gearClearLatch:'Clear Gear Safety Latch',
+    gearClearLatchNote:'Use only when D/E are disabled, stationary, and controlword is 0',
     pointPositioning:'Point Positioning',
     pointConfig:'Point Table',
     posJog:'Position / Jog',
@@ -2863,6 +2869,8 @@ function refreshStaticText() {
   const gearLabels = document.querySelectorAll('.gear-field .label');
   if (gearLabels[0]) gearLabels[0].textContent = text.gearMaster;
   if (gearLabels[1]) gearLabels[1].textContent = text.gearSlave;
+  setText('gearClearLatchBtn', text.gearClearLatch);
+  setText('gearClearLatchNote', text.gearClearLatchNote);
   const configTitles = document.querySelectorAll('#tabConfig h2');
   if (configTitles[0]) configTitles[0].textContent = text.pointPositioning;
   if (configTitles[1]) configTitles[1].textContent = text.pointConfig;
@@ -3677,6 +3685,68 @@ function gearPayload(cmdName) {
     slave_ratio: Number(gearSlaveRatio.value || 1),
     direction: Number(gearDirectionSelect.value || 1)
   };
+}
+function gearDeviceKey(name) {
+  const value = String(name || '').trim().toLowerCase();
+  return axisDevices().find(device => {
+    const logical = String(axisConfig(device).logical_axis || '').trim().toLowerCase();
+    return device.toLowerCase() === value || logical === value;
+  }) || null;
+}
+function gearSlaveDeviceFromStatus() {
+  for (const device of axisDevices()) {
+    const status = statusByDevice[device];
+    const slave = gearDeviceKey(status && status.gear_slave);
+    if (slave && status && (status.gear_group_session_active || status.gear_group_safety_latched)) {
+      return slave;
+    }
+  }
+  if (supportsDevice('mctivity_e')) return 'mctivity_e';
+  return axisDevices().find(device => device !== activeDevice) || activeDevice;
+}
+async function clearGearSafetyLatch() {
+  const devices = axisDevices();
+  const responses = await Promise.all(devices.map(device => refreshDeviceStatus(device).catch(error => ({ok:false, error:String(error)}))));
+  const unavailable = responses.find(response => !response || !response.ok || !response.status);
+  if (unavailable) {
+    const result = {ok:false, error:'gear_clear_status_unavailable'};
+    showApiError(result);
+    return result;
+  }
+  const blocked = devices.map(device => {
+    const status = statusByDevice[device] || {};
+    const reasons = [];
+    if (status.enabled) reasons.push('enabled');
+    if (status.servo_request) reasons.push('servo_request');
+    if (status.moving) reasons.push('moving');
+    if (status.gear_running) reasons.push('gear_running');
+    if (Number(status.cw || 0) !== 0) reasons.push('controlword');
+    return reasons.length ? {device, blocked_reasons:reasons} : null;
+  }).filter(Boolean);
+  if (blocked.length) {
+    const result = {ok:false, error:'gear_clear_blocked', blocked};
+    setText('gearRuntimeStatus', currentLang === 'zh'
+      ? '清除失败：D/E 必须均失能、静止且控制字为 0'
+      : 'Clear blocked: D/E must be disabled, stationary, and have controlword 0');
+    showApiError(result);
+    return result;
+  }
+  const device = gearSlaveDeviceFromStatus();
+  const result = await apiForDevice(device, {cmd:'gear_stop'});
+  showApiError(result);
+  if (result && result.ok) {
+    for (const state of Object.values(motionStateByDevice)) {
+      state.commandSeq += 1;
+      state.stopRequested = false;
+      state.latch = false;
+      state.seenMoving = false;
+      state.gearEngaged = false;
+      state.gearStoppedLatched = false;
+    }
+    setGearPanelLocked(false);
+    await Promise.all(devices.map(axis => refreshDeviceStatus(axis).catch(() => null)));
+  }
+  return result;
 }
 function isGearModeSelected() {
   const status = currentStatus();

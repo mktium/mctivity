@@ -55,6 +55,9 @@ class DualUservoGearHmiTests(unittest.TestCase):
     def test_rendered_gear_ui_has_dynamic_peer_and_inhibit_guard(self):
         html = mctivity_hmi.HTML
         self.assertIn('id="gearDirectionSelect"', html)
+        self.assertIn('id="gearClearLatchBtn"', html)
+        self.assertIn('function clearGearSafetyLatch()', html)
+        self.assertIn("apiForDevice(device, {cmd:'gear_stop'})", html)
         self.assertIn("gearMasterSelect.replaceChildren()", html)
         self.assertIn("if (capabilityState.commissioningInhibit)", html)
         self.assertIn("gear_group_safety_latched", html)
