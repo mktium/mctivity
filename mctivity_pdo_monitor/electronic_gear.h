@@ -131,7 +131,7 @@ static inline int mctivity_gear_target(
 
 static inline int64_t mctivity_gear_abs_error(int32_t target_raw, int32_t actual_raw)
 {
-    int64_t error = (int64_t)target_raw - (int64_t)actual_raw;
+    int64_t error = mctivity_gear_signed_delta(target_raw, actual_raw);
     return error < 0 ? -error : error;
 }
 

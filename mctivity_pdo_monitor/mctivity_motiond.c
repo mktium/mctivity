@@ -71,6 +71,13 @@ static int64_t counts_per_rev = LEGACY_COUNTS_PER_REV;
 static uint32_t gear_following_error_limit_counts = MCTIVITY_GEAR_DEFAULT_FOLLOWING_ERROR_LIMIT_COUNTS;
 static uint32_t gear_max_ratio = MCTIVITY_GEAR_DEFAULT_MAX_RATIO;
 static uint32_t gear_max_velocity_cps[AXIS_COUNT] = {37000U, 37000U};
+static char gear_last_trip_reason[96];
+static int64_t gear_last_trip_position_error;
+static int64_t gear_last_trip_step_counts;
+static uint32_t gear_last_trip_elapsed_cycles;
+static int32_t gear_last_trip_target_raw;
+static int32_t gear_last_trip_actual_raw;
+static int32_t gear_last_trip_master_raw;
 
 typedef struct {
     uint32_t counts_per_rev;
@@ -415,6 +422,8 @@ typedef struct {
     int32_t gear_last_master_pos_raw;
     uint32_t gear_last_master_cycle;
     int64_t gear_position_error;
+    int64_t gear_last_step_counts;
+    uint32_t gear_last_elapsed_cycles;
     int gear_safety_latched;
     mctivity_electronic_gear_t gear_math;
 } axis_runtime_t;
@@ -1552,6 +1561,9 @@ static void send_status_fd(int fd, int axis)
         "\"gear_group_session_active\":%s,\"gear_group_safety_latched\":%s,"
         "\"gear_master\":\"%s\",\"gear_slave\":\"%s\",\"gear_direction\":%d,"
         "\"gear_master_ratio\":%d,\"gear_slave_ratio\":%d,\"gear_position_error\":%lld,"
+        "\"gear_last_trip_reason\":\"%s\",\"gear_last_trip_position_error\":%lld,"
+        "\"gear_last_trip_step_counts\":%lld,\"gear_last_trip_elapsed_cycles\":%u,"
+        "\"gear_last_trip_target_raw\":%d,\"gear_last_trip_actual_raw\":%d,\"gear_last_trip_master_raw\":%d,"
         "\"last_command\":\"%s\",\"message\":\"%s\"}}\n",
         axis_name(axis), logical_axis, topology,
         (long long)axis_counts_per_rev, commissioning_inhibit ? "true" : "false",
@@ -1588,6 +1600,13 @@ static void send_status_fd(int fd, int axis)
         gear_slave->gear_direction,
         gear_slave->gear_master_ratio, gear_slave->gear_slave_ratio,
         (long long)gear_slave->gear_position_error,
+        gear_last_trip_reason,
+        (long long)gear_last_trip_position_error,
+        (long long)gear_last_trip_step_counts,
+        gear_last_trip_elapsed_cycles,
+        gear_last_trip_target_raw,
+        gear_last_trip_actual_raw,
+        gear_last_trip_master_raw,
         s->last_command,
         s->message);
     if (n > 0) {
@@ -1673,6 +1692,8 @@ static void gear_group_clear_runtime(int disable)
         runtime->gear_has_last_master_pos = 0;
         runtime->gear_last_master_cycle = 0;
         runtime->gear_position_error = 0;
+        runtime->gear_last_step_counts = 0;
+        runtime->gear_last_elapsed_cycles = 0;
         runtime->gear_math.initialized = 0;
         clear_motion(runtime);
         runtime->stop_velocity_cps = 0;
@@ -1686,6 +1707,14 @@ static void gear_group_clear_runtime(int disable)
 
 static void gear_group_trip(const char *reason)
 {
+    const axis_runtime_t *slave = &axes[gear_group_slave_axis];
+    snprintf(gear_last_trip_reason, sizeof(gear_last_trip_reason), "%s", reason ? reason : "unknown");
+    gear_last_trip_position_error = slave->gear_position_error;
+    gear_last_trip_step_counts = slave->gear_last_step_counts;
+    gear_last_trip_elapsed_cycles = slave->gear_last_elapsed_cycles;
+    gear_last_trip_target_raw = slave->st.target_raw;
+    gear_last_trip_actual_raw = slave->st.pos_raw;
+    gear_last_trip_master_raw = axes[gear_group_master_axis].st.pos_raw;
     gear_group_clear_runtime(1);
     gear_group_safety_latched = 1;
     for (int axis = 0; axis < AXIS_COUNT; axis++) {
@@ -2770,11 +2799,13 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         uint64_t max_step;
         uint32_t elapsed_cycles = master_ax->st.cycles - ax->gear_last_master_cycle;
         ax->gear_last_master_cycle = master_ax->st.cycles;
+        ax->gear_last_elapsed_cycles = elapsed_cycles;
         if (!mctivity_gear_target(&ax->gear_math, master_ax->st.pos_raw, &next_target)) {
             gear_group_trip("position target overflow");
             gear_tracking_active = 0;
         } else {
             step = (int64_t)next_target - (int64_t)s->target_raw;
+            ax->gear_last_step_counts = step;
             max_step = mctivity_gear_max_target_step_counts(gear_max_velocity_cps[axis], elapsed_cycles);
             if (step < 0 ? (uint64_t)(-step) > max_step : (uint64_t)step > max_step) {
                 gear_group_trip("follower speed limit exceeded");
