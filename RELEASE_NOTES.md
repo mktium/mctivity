@@ -79,9 +79,20 @@ Standalone enable/movement test tools are excluded from the default build and re
 - preserved the existing GPLv3 license; vendor-specific diagnostic packages are not included in this release
 - preserved basic raw fault status and manual reset; simulated status cannot dispatch control commands
 - corrected narrow-screen feedback/control overlap
-- no trajectory, homing, gearing, or PDO logic changes in this review
+- no trajectory-formula, homing-algorithm, or PDO changes in this review
 
 This review is local only: no deployment, service restart, or motion test was performed. Earlier controller build and motion results below apply to previous snapshots, not to these new packaging/security changes. Full native tool compilation and installation testing remain pending on an EtherCAT development target. Publication still requires review of the exact source archive, incoming history, and included third-party attribution; excluded diagnostic content is not part of this release.
+
+### Execution and Cancellation Follow-up
+
+- The HMI and anti-sway feature handler both enforce the execution flag for direct full-path/endpoint curve requests and non-dry preparation requests. Preview and dry run remain available; the adapter defaults to execution disabled.
+- Generic stop cancels a running multi-point job. Row dispatch and stop commands use per-axis ordering; other axis jobs remain independent.
+- Row timeout, failed status, or execution exceptions trigger a controlled stop attempt and feedback confirmation. Original execution errors and stop errors are retained separately.
+- An unconfirmed stop blocks table replacement, clear, restart, enable, reset, and other motion on that axis. Explicit stop retry and disable remain available. Stop request acceptance is not standstill confirmation.
+- Changing modes while a multi-point task is active requests cancellation and rejects the mode change until cancellation has finished; repeat the mode selection after standstill is confirmed.
+- Mock pages do not read or write live UI configuration. Delayed saves are blocked, and entering/leaving preview reloads the document without carrying preview settings into normal operation.
+
+The multi-point stop state is process-local. Do not restart the HMI to bypass an unconfirmed stop; verify the mechanism and independent protection at the machine. Communication loss can prevent software stopping, so hardware emergency stop and independent limits remain necessary.
 
 ## EtherCAT Topology
 
@@ -105,6 +116,7 @@ The auxiliary encoder can be disabled with `MCTIVITY_AUX_ENCODER_ENABLED=0`. The
 - automated multi-point concurrency and command-routing regression tests
 - automated assembly and HTTP smoke tests for `minimal`, `standard`, and `full`
 - basic raw fault display and manual reset regression tests
+- direct anti-sway execution-gate, cancellation/error recovery, and mock-configuration isolation regressions
 - hardware-free browser smoke tests at desktop and mobile viewports
 - GitHub Actions pull-request preflight is configured; no new remote run is claimed here
 

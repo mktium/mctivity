@@ -9,6 +9,7 @@ class ProtocolAdapter:
     apply_fv3_profile_fn: callable = None
     fv3_set_mode_fn: callable = None
     fv3_force_csp_fn: callable = None
+    anti_sway_execute_enabled: bool = False
 
     def wait_motion_ready(self, device):
         fn = self.wait_motion_ready_fn

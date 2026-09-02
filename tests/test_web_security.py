@@ -159,6 +159,60 @@ class WebAuthorizationTests(unittest.TestCase):
         self.assertEqual("read_only_device", body["error"])
         self.dispatch.assert_not_called()
 
+    def test_anti_sway_execution_gate_covers_actual_routes_and_dry_runs(self):
+        from tests.test_profile_assembly import load_manifest
+        from feature_dispatch import dispatch_axis_command
+        manifest = load_manifest("full")
+        self.stack.enter_context(patch.object(app, "_CAPABILITY_SET", frozenset(manifest["capabilities"])))
+        self.stack.enter_context(patch.object(app, "_ENABLED_FEATURE_KEYS", set(manifest["enabled_feature_keys"])))
+        self.stack.enter_context(patch.object(app, "feature_dispatch_axis_command", dispatch_axis_command))
+        transport = self.stack.enter_context(patch.object(app, "_transport_command", return_value={"ok": True}))
+        sdo = self.stack.enter_context(patch.object(app, "_write_sdo", side_effect=AssertionError("No SDO allowed")))
+        headers = {"X-MCTIVITY-Token": self.token, "Content-Type": "application/json"}
+        for enabled in (False, True):
+            with patch.object(app, "ANTI_SWAY_EXECUTE_ENABLED", enabled):
+                for device in ("mctivity", "fv3"):
+                    for cmd in ("anti_sway_curve_abs", "terminal_anti_sway_curve_abs"):
+                        payload = {"cmd": cmd, "device": device, "pos": 10000, "speed_rpm": 100,
+                                   "acceleration_rpm_s": 200, "natural_period_ms": 1400, "dry_run": True}
+                        transport.reset_mock()
+                        status, body = self.request("/api/command", "POST", headers, payload)
+                        self.assertEqual(200 if enabled else 403, status, body)
+                        self.assertEqual(1 if enabled else 0, transport.call_count)
+                        if not enabled:
+                            self.assertEqual("anti_sway_execution_disabled", body["error"])
+                        self.assertEqual(400, self.request("/api/command", "POST", headers,
+                                                          {**payload, "speed_rpm": -1})[0])
+                for dry_run in (True, False, "false", "0"):
+                    transport.reset_mock()
+                    payload = {"cmd": "anti_sway_run", "device": "mctivity", "sensor_axis": "aux_encoder",
+                               "target_counts": 10000, "speed_rpm": 100, "acceleration_rpm_s": 200,
+                               "natural_period_s": 1.4, "dry_run": dry_run}
+                    status, body = self.request("/api/command", "POST", headers, payload)
+                    self.assertEqual(200 if enabled or dry_run is True else 403, status, body)
+                    transport.assert_not_called()
+                self.assertEqual(200, self.request("/api/command", "POST", headers,
+                                                  {"cmd": "anti_sway_input", "sensor_axis": "aux_encoder"})[0])
+        sdo.assert_not_called()
+        self.status.assert_not_called()
+
+    def test_anti_sway_gate_does_not_replace_auth_capability_or_read_only_checks(self):
+        from tests.test_profile_assembly import load_manifest
+        capabilities = frozenset(load_manifest("full")["capabilities"])
+        self.stack.enter_context(patch.object(app, "_CAPABILITY_SET", capabilities))
+        self.stack.enter_context(patch.object(app, "ANTI_SWAY_EXECUTE_ENABLED", True))
+        payload = {"cmd": "terminal_anti_sway_curve_abs", "device": "mctivity", "pos": 10000,
+                   "speed_rpm": 100, "acceleration_rpm_s": 200, "natural_period_ms": 1400}
+        headers = {"X-MCTIVITY-Token": self.token, "Content-Type": "application/json"}
+        self.assertEqual(401, self.request("/api/command", "POST",
+                                          {"Content-Type": "application/json"}, payload)[0])
+        with patch.object(app, "_CAPABILITY_SET", capabilities - {"axis.mode.anti_sway_position.input"}):
+            self.assertEqual(400, self.request("/api/command", "POST", headers, payload)[0])
+        status, body = self.request("/api/command", "POST", headers, {**payload, "device": "aux_encoder"})
+        self.assertEqual(400, status)
+        self.assertEqual("read_only_device", body["error"])
+        self.dispatch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

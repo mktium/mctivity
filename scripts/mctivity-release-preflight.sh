@@ -32,6 +32,7 @@ if command -v node >/dev/null 2>&1; then
     node --check "$js_file"
   done < <(find mctivity_hmi/assets -name '*.js' -type f | sort)
   node tests/raw_fault_status_test.js
+  node tests/mock_state_isolation_test.js
   node --check tests/browser_fault_smoke.js
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mctivity-inline-js.XXXXXX")"
   tmp_js="$tmp_dir/inline.js"

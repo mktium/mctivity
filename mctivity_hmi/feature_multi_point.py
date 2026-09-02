@@ -29,6 +29,7 @@ _LOCK = threading.RLock()
 _TABLES: dict[str, dict[str, Any]] = {}
 _RUNNERS: dict[str, dict[str, Any]] = {}
 _THREADS: dict[str, threading.Thread] = {}
+_STOP_THREADS: dict[str, threading.Thread] = {}
 _STOP_EVENTS: dict[str, threading.Event] = {}
 _COMMAND_LOCKS: dict[str, threading.RLock] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
@@ -65,6 +66,12 @@ def _default_runner() -> dict[str, Any]:
         "message": "",
         "error": "",
         "run_id": None,
+        "preparing": False,
+        "stop_requested": False,
+        "stop_confirmed": False,
+        "execution_error": "",
+        "stop_error": "",
+        "stop_attempts": 0,
     }
 
 
@@ -90,10 +97,13 @@ def _runner_active_locked(device: str) -> bool:
         runner
         and (
             runner.get("running")
+            or runner.get("preparing")
+            or (runner.get("stop_requested") and not runner.get("stop_confirmed"))
             or str(runner.get("state") or "").lower() in _ACTIVE_RUNNER_STATES
         )
     )
-    return runner_active or bool(thread and thread.is_alive())
+    stop_thread = _STOP_THREADS.get(device)
+    return runner_active or bool(thread and thread.is_alive()) or bool(stop_thread and stop_thread.is_alive())
 
 
 def _next_run_id_locked(device: str) -> int:
@@ -108,7 +118,7 @@ def _is_current_run_locked(device: str, run_id: int) -> bool:
 
 def _update_current_runner(device: str, run_id: int, values: dict[str, Any]) -> bool:
     with _LOCK:
-        if not _is_current_run_locked(device, run_id):
+        if not _is_current_run_locked(device, run_id) or _runner_for(device)["stop_requested"]:
             return False
         _runner_for(device).update(values)
         return True
@@ -123,6 +133,8 @@ def _release_start_reservation(
 ) -> None:
     with _LOCK:
         if not _is_current_run_locked(device, run_id):
+            return
+        if stop_event.is_set():
             return
         _runner_for(device).update(
             {
@@ -171,6 +183,10 @@ def _wait_for_row(device: str, row: dict[str, Any], transport_fn, stop_event: th
         if not result.get("ok"):
             return False, str(result.get("error") or "status failed")
         status = result.get("status", {})
+        if not isinstance(status, dict) or type(status.get("moving")) not in (bool, int) or status["moving"] not in (0, 1):
+            return False, "motion status unavailable"
+        if status.get("fault"):
+            return False, "axis fault during point table execution"
         moving = bool(status.get("moving"))
         seen_motion = seen_motion or moving
         gap = _target_gap(status, target_pos)
@@ -183,12 +199,14 @@ def _wait_for_row(device: str, row: dict[str, Any], transport_fn, stop_event: th
 
 
 def _wait_for_axis_stopped(device: str, transport_fn) -> tuple[bool, str]:
-    started = _now()
-    while _now() - started <= POINT_STOP_TIMEOUT_S:
+    started = time.monotonic()
+    while time.monotonic() - started <= POINT_STOP_TIMEOUT_S:
         result = transport_fn(device, {"cmd": "status"})
         if not result.get("ok"):
             return False, str(result.get("error") or "status failed")
         status = result.get("status", {})
+        if not isinstance(status, dict) or type(status.get("moving")) not in (bool, int) or status["moving"] not in (0, 1):
+            return False, "motion status unavailable"
         if not bool(status.get("moving")):
             return True, "point table stopped"
         time.sleep(POINT_STATUS_PERIOD_S)
@@ -271,6 +289,111 @@ def _active_stop_row(device: str) -> dict[str, Any] | None:
     return enabled[0] if enabled else None
 
 
+def _abort_worker(device, run_id, transport_fn, stop_payload):
+    confirmed = False
+    stop_error = ""
+    try:
+        # Row dispatch and the stop command share one per-axis ordering boundary.
+        with _command_lock_for(device):
+            with _LOCK:
+                if not _is_current_run_locked(device, run_id):
+                    return
+            result = transport_fn(device, stop_payload)
+        if not result.get("ok"):
+            stop_error = str(result.get("error") or "stop command failed")
+        else:
+            confirmed, message = _wait_for_axis_stopped(device, transport_fn)
+            if not confirmed:
+                stop_error = message
+    except Exception as exc:
+        stop_error = str(exc) or "stop failed"
+    with _LOCK:
+        if not _is_current_run_locked(device, run_id):
+            return
+        runner = _runner_for(device)
+        execution_error = runner["execution_error"]
+        message = "axis stop confirmed" if confirmed else "axis stop unconfirmed: " + stop_error
+        runner.update({
+            "running": False,
+            "state": "error" if execution_error or not confirmed else "stopped",
+            "stop_confirmed": confirmed,
+            "stop_error": stop_error,
+            "updated_at": _now(),
+            "error": execution_error or stop_error,
+            "message": (execution_error + "; " if execution_error else "") + message,
+        })
+
+
+def _request_abort(device, run_id, transport_fn, execution_error="", stop_payload=None, retry=False):
+    with _LOCK:
+        if not _is_current_run_locked(device, run_id):
+            return
+        runner = _runner_for(device)
+        if execution_error and not runner["execution_error"]:
+            runner["execution_error"] = execution_error
+            runner["error"] = execution_error
+            if runner["stop_confirmed"]:
+                runner["state"] = "error"
+                runner["message"] = execution_error + "; axis stop confirmed"
+        event = _STOP_EVENTS.get(device)
+        if event:
+            event.set()
+        thread = _STOP_THREADS.get(device)
+        if thread and thread.is_alive():
+            return
+        if runner["stop_requested"] and (not retry or runner["stop_confirmed"]):
+            return
+        runner.update({
+            "running": True,
+            "state": "stopping",
+            "stop_requested": True,
+            "stop_confirmed": False,
+            "stop_error": "",
+            "stop_attempts": runner["stop_attempts"] + 1,
+            "updated_at": _now(),
+            "message": "point table stopping; awaiting axis feedback",
+        })
+        payload = dict(stop_payload or _stop_payload_for_row(_active_stop_row(device)))
+        thread = threading.Thread(
+            target=_abort_worker, args=(device, run_id, transport_fn, payload),
+            name=f"point-stop-{device}-{run_id}", daemon=True,
+        )
+        _STOP_THREADS[device] = thread
+        thread.start()
+
+
+def _busy_result(device):
+    snapshot = _snapshot(device)
+    runner = snapshot["point_table_runner"]
+    error = "point_table_running"
+    if runner["stop_requested"]:
+        error = "point_table_stopping" if runner["state"] == "stopping" else "point_table_stop_unconfirmed"
+        if runner["stop_confirmed"]:
+            error = "point_table_stopping"
+    snapshot.update({"ok": False, "error": error,
+                     "message": "Point table must finish cancelling and confirm standstill before another command."})
+    return snapshot
+
+
+def guarded_axis_command(device, payload, transport_fn, run_command):
+    cmd = str(payload.get("cmd", "")).strip().lower()
+    if cmd == "stop":
+        return _stop_table(device, transport_fn, stop_payload=payload)
+    if cmd == "status" or cmd.startswith("point_table_") or cmd in ("anti_sway_input", "anti_sway_run"):
+        return run_command()
+    with _command_lock_for(device):
+        with _LOCK:
+            active = _runner_active_locked(device)
+            run_id = (_RUNNERS.get(device) or {}).get("run_id")
+        if active:
+            if cmd in ("set_mode", "disable", "homing_stop", "gear_stop"):
+                _request_abort(device, run_id, transport_fn, retry=cmd == "disable")
+            if cmd != "disable":
+                return _busy_result(device)
+        # Disable remains available even when a controlled stop cannot be confirmed.
+        return run_command()
+
+
 def _run_worker(
     device: str,
     rows: list[dict[str, Any]],
@@ -283,11 +406,12 @@ def _run_worker(
     with _LOCK:
         if not _is_current_run_locked(device, run_id):
             return
-        initial_stopping = stop_event.is_set()
+        if stop_event.is_set():
+            return
         _runner_for(device).update(
             {
                 "running": True,
-                "state": "stopping" if initial_stopping else "running",
+                "state": "running",
                 "current_row": None,
                 "current_index": -1,
                 "completed_rows": 0,
@@ -296,7 +420,7 @@ def _run_worker(
                 "cycle_total": total_cycles,
                 "started_at": _now(),
                 "updated_at": _now(),
-                "message": "point table stopping" if initial_stopping else "point table running",
+                "message": "point table running",
                 "error": "",
             }
         )
@@ -336,13 +460,13 @@ def _run_worker(
                     raise RuntimeError(str(result.get("error") or f"row {row['row']} move failed"))
                 ok, message = _wait_for_row(device, row, transport_fn, stop_event)
                 if not ok:
-                    if stop_event.is_set():
+                    if stop_event.is_set() and message == "point table stopped":
                         break
                     raise RuntimeError(message)
                 if not _sleep_dwell_ms(int(row.get("dwell_ms", 0)), stop_event):
                     break
                 with _LOCK:
-                    if not _is_current_run_locked(device, run_id):
+                    if not _is_current_run_locked(device, run_id) or stop_event.is_set():
                         return
                     runner = _runner_for(device)
                     runner["completed_rows"] = int(runner.get("completed_rows", 0)) + 1
@@ -355,36 +479,16 @@ def _run_worker(
                 {"cycle_count": cycle_index + 1, "updated_at": _now()},
             ):
                 return
-        stopped_cleanly = True
-        stop_message = "point table stopped" if stop_event.is_set() else "point table complete"
-        if stop_event.is_set():
-            stopped_cleanly, stop_message = _wait_for_axis_stopped(device, transport_fn)
-        _update_current_runner(
-            device,
-            run_id,
-            {
-                "running": False,
-                "state": "stopped" if stop_event.is_set() and stopped_cleanly else ("error" if stop_event.is_set() else "complete"),
-                "current_row": None,
-                "current_index": -1,
-                "cycle_total": total_cycles,
-                "updated_at": _now(),
-                "message": stop_message,
-                "error": "" if stopped_cleanly else stop_message,
-            },
-        )
+        with _LOCK:
+            if stop_event.is_set() or not _is_current_run_locked(device, run_id):
+                return
+            _runner_for(device).update({
+                "running": False, "state": "complete", "current_row": None,
+                "current_index": -1, "cycle_total": total_cycles,
+                "updated_at": _now(), "message": "point table complete", "error": "",
+            })
     except Exception as exc:
-        _update_current_runner(
-            device,
-            run_id,
-            {
-                "running": False,
-                "state": "error",
-                "updated_at": _now(),
-                "error": str(exc),
-                "message": str(exc),
-            },
-        )
+        _request_abort(device, run_id, transport_fn, execution_error=str(exc))
 
 
 def _write_table(device: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -409,10 +513,11 @@ def _write_table(device: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _start_table(device: str, payload: dict[str, Any], transport_fn, adapter) -> dict[str, Any]:
-    with _LOCK:
+    with _command_lock_for(device), _LOCK:
         if _runner_active_locked(device):
-            snapshot = _snapshot(device)
-            snapshot.update({"ok": False, "error": "point_table_already_running"})
+            snapshot = _busy_result(device)
+            if snapshot["error"] == "point_table_running":
+                snapshot["error"] = "point_table_already_running"
             return snapshot
         table = copy.deepcopy(_table_for(device))
         rows = _enabled_rows(table.get("rows", []))
@@ -424,114 +529,82 @@ def _start_table(device: str, payload: dict[str, Any], transport_fn, adapter) ->
         run_id = _next_run_id_locked(device)
         stop_event = threading.Event()
         runner = _default_runner()
-        runner.update(
-            {
-                "running": True,
-                "state": "starting",
-                "cycle_total": cycle_count,
-                "started_at": _now(),
-                "updated_at": _now(),
-                "message": "point table starting",
-                "run_id": run_id,
-            }
-        )
+        runner.update({
+            "running": True, "preparing": True, "state": "starting",
+            "cycle_total": cycle_count, "started_at": _now(), "updated_at": _now(),
+            "message": "point table starting", "run_id": run_id,
+        })
         _RUNNERS[device] = runner
         _STOP_EVENTS[device] = stop_event
-    ready, message = adapter.wait_motion_ready(device)
-    if not ready:
-        _release_start_reservation(device, run_id, stop_event, "idle", message or "motion not ready")
-        return motion_not_ready(message)
-    if stop_event.is_set():
-        _release_start_reservation(device, run_id, stop_event, "stopped", "point table start cancelled")
-        snapshot = _snapshot(device)
-        snapshot.update({"ok": False, "error": "point_table_start_cancelled"})
-        return snapshot
-    if device == "fv3":
-        adapter.fv3_set_mode("multi_point")
-    with _command_lock_for(device):
-        mode_result = transport_fn(device, {"cmd": "set_mode", "mode": "multi_point"})
-    if not mode_result.get("ok"):
-        _release_start_reservation(
-            device,
-            run_id,
-            stop_event,
-            "error",
-            str(mode_result.get("error") or "set_mode multi_point failed"),
-        )
-        return mode_result
-    if stop_event.is_set():
-        _release_start_reservation(device, run_id, stop_event, "stopped", "point table start cancelled")
-        snapshot = _snapshot(device)
-        snapshot.update({"ok": False, "error": "point_table_start_cancelled"})
-        return snapshot
-    thread = threading.Thread(
-        target=_run_worker,
-        args=(device, rows, cycle_count, transport_fn, stop_event, run_id),
-        name=f"multi-point-{device}-{run_id}",
-        daemon=True,
-    )
-    with _LOCK:
-        if not _is_current_run_locked(device, run_id) or stop_event.is_set():
-            _release_start_reservation(device, run_id, stop_event, "stopped", "point table start cancelled")
-            snapshot = _snapshot(device)
-            snapshot.update({"ok": False, "error": "point_table_start_cancelled"})
-            return snapshot
-        _THREADS[device] = thread
-        thread.start()
-    return _snapshot(device)
-
-
-def _stop_table(device: str, transport_fn) -> dict[str, Any]:
-    stop_payload = _stop_payload_for_row(_active_stop_row(device))
-    with _LOCK:
-        event = _STOP_EVENTS.get(device)
-        if event:
-            event.set()
-        runner = _runner_for(device)
-        if runner.get("running"):
-            runner.update(
-                {
-                    "state": "stopping",
-                    "updated_at": _now(),
-                    "message": "point table stopping",
-                }
+    try:
+        ready, message = adapter.wait_motion_ready(device)
+        with _command_lock_for(device):
+            if stop_event.is_set():
+                snapshot = _snapshot(device)
+                snapshot.update({"ok": False, "error": "point_table_start_cancelled"})
+                return snapshot
+            if not ready:
+                _release_start_reservation(device, run_id, stop_event, "idle", message or "motion not ready")
+                return motion_not_ready(message)
+            if device == "fv3":
+                adapter.fv3_set_mode("multi_point")
+            mode_result = transport_fn(device, {"cmd": "set_mode", "mode": "multi_point"})
+            if not mode_result.get("ok"):
+                raise RuntimeError(str(mode_result.get("error") or "set_mode multi_point failed"))
+            thread = threading.Thread(
+                target=_run_worker,
+                args=(device, rows, cycle_count, transport_fn, stop_event, run_id),
+                name=f"multi-point-{device}-{run_id}", daemon=True,
             )
-        thread = _THREADS.get(device)
+            with _LOCK:
+                _THREADS[device] = thread
+                thread.start()
+        return _snapshot(device)
+    except Exception as exc:
+        _request_abort(device, run_id, transport_fn, execution_error=str(exc))
+        snapshot = _snapshot(device)
+        snapshot.update({"ok": False, "error": str(exc)})
+        return snapshot
+    finally:
+        with _LOCK:
+            if _is_current_run_locked(device, run_id):
+                _runner_for(device)["preparing"] = False
+
+
+def _stop_table(device: str, transport_fn, stop_payload=None) -> dict[str, Any]:
     with _command_lock_for(device):
-        stop_result = transport_fn(device, stop_payload)
+        with _LOCK:
+            active = _runner_active_locked(device)
+            run_id = (_RUNNERS.get(device) or {}).get("run_id")
+        if not active:
+            return transport_fn(device, dict(stop_payload or _stop_payload_for_row(_active_stop_row(device))))
+        _request_abort(device, run_id, transport_fn, stop_payload=stop_payload, retry=True)
+        with _LOCK:
+            thread = _STOP_THREADS.get(device)
     if thread and thread.is_alive():
         thread.join(timeout=0.5)
     snapshot = _snapshot(device)
-    if not stop_result.get("ok"):
-        snapshot["transport_error"] = stop_result.get("error")
+    runner = snapshot["point_table_runner"]
+    if runner["stop_error"]:
+        snapshot.update({"ok": False, "error": "point_table_stop_unconfirmed",
+                         "transport_error": runner["stop_error"], "message": runner["message"]})
     return snapshot
 
 
 def _clear_table(device: str, transport_fn) -> dict[str, Any]:
-    with _LOCK:
-        active = _runner_active_locked(device)
-        if not active:
-            _TABLES[device] = _default_table()
-            _RUNNERS[device] = _default_runner()
-            _STOP_EVENTS.pop(device, None)
-            thread = _THREADS.get(device)
-            if thread is None or not thread.is_alive():
-                _THREADS.pop(device, None)
-            return _snapshot(device)
-
-    _stop_table(device, transport_fn)
-    with _LOCK:
+    with _command_lock_for(device), _LOCK:
         if _runner_active_locked(device):
-            snapshot = _snapshot(device)
-            snapshot.update({"ok": False, "error": "point_table_stopping"})
-            return snapshot
+            runner = _runner_for(device)
+            # An unknown stop requires an explicit stop retry, never a clear/restart.
+            if not runner["stop_requested"]:
+                _request_abort(device, runner["run_id"], transport_fn)
+            return _busy_result(device)
         _TABLES[device] = _default_table()
         _RUNNERS[device] = _default_runner()
         _STOP_EVENTS.pop(device, None)
-        thread = _THREADS.get(device)
-        if thread is None or not thread.is_alive():
-            _THREADS.pop(device, None)
-    return _snapshot(device)
+        _THREADS.pop(device, None)
+        _STOP_THREADS.pop(device, None)
+        return _snapshot(device)
 
 
 def handle_axis_command(ctx):

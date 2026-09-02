@@ -19,6 +19,7 @@ const fixture = [
   "app._write_sdo = forbidden",
   "app._read_sdo = forbidden",
   "app.feature_dispatch_axis_command = forbidden",
+  "app.save_ui_state = forbidden",
   "server = app.ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)",
   "print(server.server_address[1], flush=True)",
   "server.serve_forever()"
@@ -56,6 +57,11 @@ let browser;
     const errors = [];
     const failedResources = [];
     const commands = [];
+    const stateWrites = [];
+    const serverState = {devices: {mctivity: {transmission: {
+      type: "linear", revs: 1, amount: 5, unit: "mm", direction: "forward",
+      travelMode: "reciprocating", forwardLimit: 222, reverseLimit: -222
+    }}}};
     const unexpected = [];
     let statusTemplate;
     let fault = true;
@@ -80,7 +86,14 @@ let browser;
         return route.continue();
       }
       let body;
-      if (url.pathname === "/api/ui_state") body = {ok: true, state: {}};
+      if (url.pathname === "/api/ui_state") {
+        if (request.method() === "POST") {
+          const payload = request.postDataJSON();
+          stateWrites.push(payload);
+          serverState.devices[payload.device] = payload.state;
+        }
+        body = {ok: true, state: serverState};
+      }
       else if (url.pathname === "/api/status") body = status(url.searchParams.get("device") || "mctivity");
       else if (url.pathname === "/api/command") {
         const payload = request.postDataJSON();
@@ -106,7 +119,28 @@ let browser;
     });
     assert.equal(commands.length, 0, "Mock mode sent a control command");
     statusTemplate = await page.evaluate(() => mockStatus("mctivity").status);
-    await page.evaluate(() => { mockFaultCode = null; refreshMockFaultPanel(); });
+    await page.evaluate(async () => {
+      openTransmissionDialog();
+      transmissionForwardLimit.value = "123";
+      saveTransmissionDialog();
+      saveUiState();
+      await persistUiState(activeDevice, {updateAntiSwayPeriod: true, updateAntiSwaySettings: true});
+    });
+    for (const button of ["#tabConfigBtn", "#tabEncoderBtn", "#tabMonitorBtn"]) {
+      await page.locator(button).click();
+    }
+    await page.waitForTimeout(400);
+    assert.equal(stateWrites.length, 0, "Mock edits or axis switching saved server configuration");
+    await page.evaluate(() => {
+      uiStateSaveTimer = setTimeout(() => persistUiState(), 180);
+      window.history.pushState(null, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await page.waitForFunction(() => capabilityState.loaded && !mockFaultEnabled() && currentStatus());
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => currentProfile().transmission.forwardLimit), 222);
+    assert(!stateWrites.some(payload => payload.state.transmission.forwardLimit === 123),
+      "Preview configuration escaped during exit/reload");
 
     for (const [device, button] of [["mctivity", "#tabMonitorBtn"], ["fv3", "#tabConfigBtn"], ["aux_encoder", "#tabEncoderBtn"]]) {
       await page.locator(button).click();
@@ -158,10 +192,45 @@ let browser;
     await page.evaluate(() => showApiError({ok: false, error: "unauthorized"}));
     assert(await page.locator("#diagModal").evaluate(element => element.classList.contains("open")));
     await page.evaluate(() => closeDiagModal());
+    const retryState = await page.evaluate(async () => {
+      modeSelect.value = "multi_point";
+      currentProfile().mode = "multi_point";
+      multiPointStatusByDevice[activeDevice] = {
+        state: "error", running: false, stop_requested: true, stop_confirmed: false,
+        execution_error: "row timeout", stop_error: "feedback unavailable",
+        message: "row timeout; axis stop unconfirmed: feedback unavailable"
+      };
+      renderMultiPointRunner(multiPointStatusByDevice[activeDevice]);
+      const result = {
+        active: isMultiPointRunnerRunning(),
+        label: document.getElementById("motionIndicatorText").textContent,
+        expected: UI_TEXT[currentLang].multiPointStopUnconfirmed
+      };
+      await startSinglePointMotion();
+      return result;
+    });
+    assert(retryState.active);
+    assert.equal(retryState.label, retryState.expected);
+    assert.equal(commands.at(-1).cmd, "point_table_stop", "Unknown stop must retry stop, not restart");
+    await page.evaluate(async () => {
+      currentProfile().transmission.forwardLimit = 211;
+      await persistUiState();
+    });
+    assert(stateWrites.some(payload => payload.state.transmission.forwardLimit === 211),
+      "Normal configuration saving stopped working");
+    const writesBeforePreview = stateWrites.length;
+    await page.evaluate(() => {
+      scheduleUiStateSave();
+      window.history.pushState(null, "", "/?mock_fault=0xFFFF");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await page.waitForFunction(() => capabilityState.loaded && mockFaultCode === "0xFFFF" && currentStatus());
+    await page.waitForTimeout(300);
+    assert.equal(stateWrites.length, writesBeforePreview, "Pending real save ran after entering preview");
     assert.deepEqual(errors, []);
     assert.deepEqual(failedResources, []);
     assert.deepEqual(unexpected, []);
-    console.log("browser raw status/reset smoke passed at " + viewport.width + "x" + viewport.height);
+    console.log("browser raw status/reset/configuration isolation passed at " + viewport.width + "x" + viewport.height);
     await context.close();
   }
 })().catch(error => {

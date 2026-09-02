@@ -18,6 +18,14 @@ The supplied motion daemon listens on loopback. Its local command protocol is no
 
 `make motion-test-tools` builds three standalone hardware tests. They require `--confirm-motion` before any hardware access. After confirmation they can enable/move a real drive, may use hardcoded topology/defaults, and bypass the HMI. Never run them alongside the motion daemon or on an unprepared load. Confirm independent emergency stop, drive limits, clearance, and topology first. The confirmation flag does not enforce those conditions.
 
+## Execution and Stop State
+
+The HMI execution flag covers anti-sway curve requests as well as non-dry preparation. It does not constrain the separate local daemon protocol or standalone tools.
+
+Multi-point cancellation retains an unconfirmed-stop state when a stop fails or feedback is unavailable. New motion and table clear/restart remain blocked on that axis; explicit stop retry and disable remain available. An accepted stop request is not confirmation of standstill. This state is process-local: do not restart the HMI to bypass it. Communication failures can prevent a software stop; independent hardware emergency stop and limits remain necessary.
+
+Browser fault-preview sessions keep configuration edits in memory and block device commands and configuration writes. Entering or leaving preview requires a fresh page load; do not attempt to reuse preview state for machine operation.
+
 ## Secrets and Publishing
 
 - Keep passwords, tokens, personal paths, host identities, private addresses, runtime state, logs, and site configuration out of Git and release archives.

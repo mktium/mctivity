@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "mctivity_hmi"))
 
 from feature_dispatch import dispatch_axis_command, feature_key_from_payload
+from feature_contract import ProtocolAdapter
 
 
 class FeatureRegistryTests(unittest.TestCase):
@@ -36,6 +37,7 @@ class FeatureRegistryTests(unittest.TestCase):
             payload,
             lambda *_: {"ok": True},
             enabled_feature_keys={"anti_sway_position"},
+            adapter=ProtocolAdapter(anti_sway_execute_enabled=True),
         )
         self.assertTrue(accepted["ok"])
 
@@ -47,6 +49,17 @@ class FeatureRegistryTests(unittest.TestCase):
         self.assertNotIn("feature-hmi-anti-sway-position", standard["modules"])
         self.assertIn("feature-logic-anti-sway-position", full["modules"])
         self.assertIn("feature-logic-aux-encoder", full["modules"])
+
+    def test_feature_execution_defaults_to_disabled(self):
+        calls = []
+        for cmd in ("anti_sway_curve_abs", "terminal_anti_sway_curve_abs", "anti_sway_run"):
+            result = dispatch_axis_command(
+                "isolated_test_axis", {"cmd": cmd, "dry_run": False},
+                lambda *_: calls.append(cmd), enabled_feature_keys={"anti_sway_position"},
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual("anti_sway_execution_disabled", result["error"])
+        self.assertEqual([], calls)
 
 
 if __name__ == "__main__":

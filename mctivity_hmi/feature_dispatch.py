@@ -12,6 +12,7 @@ from feature_anti_sway_position import handle_axis_command as handle_anti_sway_p
 from feature_gear_cam import handle_axis_command as handle_gear_cam_command
 from feature_homing import handle_axis_command as handle_homing_command
 from feature_multi_point import handle_axis_command as handle_multi_point_command
+from feature_multi_point import guarded_axis_command
 from feature_position import handle_axis_command as handle_position_command
 from feature_registry import FEATURE_REGISTRY
 from feature_torque import handle_axis_command as handle_torque_command
@@ -48,10 +49,8 @@ def feature_key_from_payload(payload):
 def dispatch_axis_command(device, payload, transport_fn, adapter=None, enabled_feature_keys=None):
     feature_key = feature_key_from_payload(payload)
     handler = FEATURE_HANDLERS.get(feature_key)
-    if handler is None:
-        return transport_fn(device, payload)
     enabled = set(enabled_feature_keys or [])
-    if feature_key not in enabled:
+    if handler is not None and feature_key not in enabled:
         return {
             "ok": False,
             "error": f"feature_not_loaded:{feature_key}",
@@ -61,4 +60,7 @@ def dispatch_axis_command(device, payload, transport_fn, adapter=None, enabled_f
     if adapter is None:
         adapter = ProtocolAdapter()
     ctx = FeatureContext(device=device, payload=payload, transport_fn=transport_fn, adapter=adapter)
-    return handler(ctx)
+    return guarded_axis_command(
+        device, payload, transport_fn,
+        lambda: handler(ctx) if handler is not None else ctx.run_transport(),
+    )

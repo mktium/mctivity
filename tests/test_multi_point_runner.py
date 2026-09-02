@@ -2,6 +2,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -44,18 +45,25 @@ class BlockingTransport:
 
 class MultiPointRunnerTests(unittest.TestCase):
     def setUp(self):
+        timer = patch.object(multi_point, "POINT_STOP_TIMEOUT_S", 2.0)
+        timer.start()
+        self.addCleanup(timer.stop)
         with multi_point._LOCK:
             thread = multi_point._THREADS.get(DEVICE)
             event = multi_point._STOP_EVENTS.get(DEVICE)
+            stop_thread = multi_point._STOP_THREADS.get(DEVICE)
             if event:
                 event.set()
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        if stop_thread and stop_thread.is_alive():
+            stop_thread.join(timeout=3.0)
         with multi_point._LOCK:
             for store in (
                 multi_point._TABLES,
                 multi_point._RUNNERS,
                 multi_point._THREADS,
+                multi_point._STOP_THREADS,
                 multi_point._STOP_EVENTS,
                 multi_point._COMMAND_LOCKS,
                 multi_point._RUN_SEQUENCES,
@@ -67,10 +75,13 @@ class MultiPointRunnerTests(unittest.TestCase):
         with multi_point._LOCK:
             event = multi_point._STOP_EVENTS.get(DEVICE)
             thread = multi_point._THREADS.get(DEVICE)
+            stop_thread = multi_point._STOP_THREADS.get(DEVICE)
             if event:
                 event.set()
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        if stop_thread and stop_thread.is_alive():
+            stop_thread.join(timeout=3.0)
 
     def test_stop_clear_and_restart_wait_for_existing_worker(self):
         transport = BlockingTransport()
@@ -87,11 +98,12 @@ class MultiPointRunnerTests(unittest.TestCase):
 
         restarted = multi_point._start_table(DEVICE, {}, transport, ProtocolAdapter())
         self.assertFalse(restarted["ok"])
-        self.assertEqual("point_table_already_running", restarted["error"])
+        self.assertEqual("point_table_stopping", restarted["error"])
 
         transport.moving = False
         thread = multi_point._THREADS[DEVICE]
         thread.join(timeout=2.0)
+        multi_point._STOP_THREADS[DEVICE].join(timeout=2.0)
         self.assertFalse(thread.is_alive())
 
         cleared = multi_point._clear_table(DEVICE, transport)

@@ -56,6 +56,19 @@ Earlier laboratory validation used a `500 mm` rope and a measured natural period
 - both standard and full profiles omit the excluded display module, without removing basic fault-reset capability
 - the motion daemon, homing and anti-sway algorithms, protocol dispatch, and GPL license are unchanged by the display-module removal
 
+## Execution and Cancellation Follow-up
+
+The initial content-cleanup snapshot did not cover all stop and preview-isolation paths. The subsequent local correction adds:
+
+- execution-flag enforcement at both the HMI and feature entry points, including both direct anti-sway curve commands
+- coordinated cancellation for generic stop, mode changes, disable, and other stop commands during a multi-point job
+- controlled stop attempts after row timeout, failed feedback, or execution failure, with separate execution and stop results
+- a persistent-in-process unconfirmed-stop latch that blocks restart/clear/other motion until an explicit stop retry obtains standstill feedback
+- UI stop-retry behavior instead of restart when multi-point stopping is unconfirmed
+- mock configuration isolation, delayed-save checks, and fresh-document transitions between mock and normal operation
+
+This follow-up changes feature dispatch, multi-point job lifecycle, execution admission, and the corresponding UI. It does not change the motion daemon, homing algorithm, anti-sway curve formulas, the GPL text, or excluded diagnostic-content boundaries.
+
 ## Ownership
 
 On 2026-09-02 the project owner confirmed that the program code copyright and logo belong to 上海诣儒信息科技有限公司, that the logo has a trademark registration certificate, and that the company created the architecture diagrams in-house. README and NOTICE record that confirmation without claiming an independent certificate inspection. No certificate or registration number is packaged. Third-party license terms remain separate.
@@ -66,7 +79,9 @@ Current release checks cover Python/JavaScript/JSON/shell syntax, all three prof
 
 The source release preflight is local and hardware-free. Browser checks use isolated simulated backends; no real drive is contacted. Reproducible test commands are in the release guide.
 
-On 2026-09-02 the local preflight passed all 26 Python tests and the Node.js raw-fault/reset/mock regression. The isolated Chrome browser smoke test passed at 1920x1080 and 390x844, with no script errors, failed resource requests, or unexpected device commands. These results cover the release checks described above, not all physical-machine behavior.
+The initial 26-test publication check did not cover direct execution bypass, generic-stop cancellation, abnormal job exit, or mock configuration writes. Its passing result is not evidence that those paths were correct.
+
+On 2026-09-02 the corrected preflight passed all 43 Python tests and two Node.js regression scripts. The 17 cancellation/concurrency tests also passed 20 repeated rounds (340 executions). The isolated Chrome browser smoke test passed at 1920x1080 and 390x844, including configuration-write accounting, preview transitions, and unconfirmed-stop retry. These results cover the checks described above, not physical-machine behavior.
 
 Historical checks on earlier snapshots include controller-side native IgH compilation and supervised motion tests of existing modes, homing, encoder feedback, electronic gearing, and anti-sway. They are not evidence of new testing after this publication change.
 

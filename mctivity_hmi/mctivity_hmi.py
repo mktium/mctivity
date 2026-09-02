@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from web_security import is_loopback_host, validate_web_access
 from feature_dispatch import dispatch_axis_command as feature_dispatch_axis_command
 from feature_contract import ProtocolAdapter
+from feature_anti_sway_position import execution_is_allowed, execution_disabled_result
 from feature_registry import (
     describe_feature_assembly,
     get_feature_registry_source,
@@ -801,8 +802,6 @@ def _sanitize_anti_sway_input_payload(payload, device, clean):
         dry_run = payload.get("dry_run", True)
         if isinstance(dry_run, str):
             dry_run = dry_run.strip().lower() not in ("0", "false", "no", "off")
-        if not dry_run and not ANTI_SWAY_EXECUTE_ENABLED:
-            return None
         clean["dry_run"] = bool(dry_run)
     return clean
 
@@ -863,11 +862,6 @@ def _sanitize_rejection_detail(payload, device):
         except ValueError:
             return {
                 "message": "防摇执行参数不可用：当前位置或目标位置不是有效整数。",
-                "command": cmd,
-            }
-        if not payload.get("dry_run", True) and not ANTI_SWAY_EXECUTE_ENABLED:
-            return {
-                "message": "防摇实跑尚未解锁，当前只能干跑。",
                 "command": cmd,
             }
         return {
@@ -2040,6 +2034,7 @@ const AXIS_DIR = -1;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
 let mockFaultCode = new URLSearchParams(window.location.search).get('mock_fault');
+let mockSessionReadOnly = mockFaultCode !== null;
 const MOCK_FAULT_OPTIONS = [
   {raw:'0', zh:'READY / 无故障', en:'READY / No fault', kind:'ready'},
   {raw:'0xFFFF', zh:'0xFFFF / 模拟原始码', en:'0xFFFF / Simulated raw code', kind:'sample'}
@@ -2151,6 +2146,7 @@ const UI_TEXT = {
     multiPointIdle:'等待点表',
     multiPointRunning:'点表运行中',
     multiPointStopping:'点表停止中',
+    multiPointStopUnconfirmed:'停止未确认',
     multiPointComplete:'点表完成',
     multiPointStopped:'点表已停止',
     multiPointCyclePopupTitle:'当前循环',
@@ -2418,6 +2414,7 @@ const UI_TEXT = {
     multiPointIdle:'Point table idle',
     multiPointRunning:'Point table running',
     multiPointStopping:'Point table stopping',
+    multiPointStopUnconfirmed:'Stop unconfirmed',
     multiPointComplete:'Point table complete',
     multiPointStopped:'Point table stopped',
     multiPointCyclePopupTitle:'Current Cycle',
@@ -5489,7 +5486,8 @@ function renderMultiPointRunner(runner) {
   } else if (runner && runner.state === 'stopped') {
     statusText = text.multiPointStopped;
   } else if (runner && runner.state === 'error') {
-    statusText = runner.error || runner.message || 'point table error';
+    statusText = (runner.stop_requested && !runner.stop_confirmed ? text.multiPointStopUnconfirmed + ': ' : '')
+      + (runner.message || runner.error || 'point table error');
   }
   setText('multiPointStatus', statusText);
   const statusButton = document.getElementById('multiPointStatus');
@@ -5511,8 +5509,8 @@ function renderMultiPointRunner(runner) {
   renderMultiPointCyclePopup(cycleInfo);
   if (isMultiPointModeSelected()) {
     const motionState = currentMotion();
-    if (runner && runner.running) {
-      renderMotionToggle(true, runner.state === 'stopping' ? text.multiPointStopping : text.multiPointRunning);
+    if (multiPointRunnerActive(runner)) {
+      renderMotionToggle(true, multiPointRunnerMotionText(runner));
     } else if (runner && ['complete', 'stopped', 'error'].includes(runner.state)) {
       motionState.latch = false;
       motionState.seenMoving = false;
@@ -5789,6 +5787,7 @@ function saveTransmissionDialog() {
   if (modeSelect && modeSelect.value === 'homing') renderHomingPanel(true);
 }
 async function persistUiState(device = activeDevice, options = {}) {
+  if (mockFaultEnabled()) return {ok:false, error:'mock_read_only'};
   if (device === activeDevice) saveUiState(device, false);
   try {
     const res = await fetch('/api/ui_state', {
@@ -5809,6 +5808,8 @@ async function persistUiState(device = activeDevice, options = {}) {
 }
 function scheduleUiStateSave(device = activeDevice) {
   if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
+  uiStateSaveTimer = 0;
+  if (mockFaultEnabled()) return;
   uiStateSaveTimer = setTimeout(() => {
     uiStateSaveTimer = 0;
     persistUiState(device);
@@ -5878,9 +5879,11 @@ function loadUiState(device = activeDevice) {
   if (device === activeDevice) renderMultiPointPanel(true);
 }
 async function hydrateUiStateFromServer() {
+  if (mockFaultEnabled()) return;
   try {
     const res = await fetch('/api/ui_state', {headers:apiHeaders()});
     const data = await res.json();
+    if (mockFaultEnabled()) return;
     showApiError(data);
     if (!data || !data.ok || !data.state || !data.state.devices) return;
     for (const device of axisDevices()) {
@@ -6087,6 +6090,16 @@ function initApiTokenInput() {
 function showApiError(data) {
   const text = UI_TEXT[currentLang];
   if (!data || data.ok) return;
+  if (data.error === 'anti_sway_execution_disabled') {
+    openDiagModal(text.unsupportedCommand, currentLang === 'zh'
+      ? '防摇实跑未启用，当前只能预览或干跑。' : data.message);
+    return;
+  }
+  if (['point_table_running', 'point_table_stopping', 'point_table_stop_unconfirmed'].includes(data.error)) {
+    openDiagModal(text.unsupportedCommand, currentLang === 'zh'
+      ? '多点任务尚未完成停止确认。请先停止并确认轴静止，再进行其他操作。' : data.message);
+    return;
+  }
   if (data.error === 'unauthorized') {
     openDiagModal(text.unauthorizedTitle, text.unauthorizedBody);
     return;
@@ -6114,7 +6127,10 @@ function normalizeMockFaultRaw(value) {
   return raw.toUpperCase();
 }
 function mockFaultEnabled() {
-  return mockFaultCode !== null;
+  // Preview data stays isolated for the document lifetime, including pending callbacks.
+  mockSessionReadOnly = mockSessionReadOnly || mockFaultCode !== null
+    || new URLSearchParams(window.location.search).has('mock_fault');
+  return mockSessionReadOnly;
 }
 function currentMockFaultOption() {
   if (!mockFaultEnabled()) return null;
@@ -6176,7 +6192,16 @@ function changeMockFaultCode() {
 }
 function syncMockFaultFromUrl() {
   const params = new URLSearchParams(window.location.search);
-  mockFaultCode = params.get('mock_fault');
+  const next = params.get('mock_fault');
+  if ((next !== null) !== (mockFaultCode !== null)) {
+    mockSessionReadOnly = true;
+    if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
+    uiStateSaveTimer = 0;
+    // A fresh document reloads real settings; no preview state is carried over.
+    window.location.reload();
+    return;
+  }
+  mockFaultCode = next;
   refreshMockFaultPanel();
   api({cmd:'status'}).catch(err => console.error(err));
 }
@@ -7012,7 +7037,7 @@ function render(s) {
   }
   renderMotionToggle(
     gearEngaged || multiPointRunning || homingRunning || (!forceGearStandstill && motionState.latch),
-    gearEngaged ? text.gearing : (multiPointRunning ? text.multiPointRunning : (homingRunning ? text.homingRunning : ''))
+    gearEngaged ? text.gearing : (multiPointRunning ? multiPointRunnerMotionText(multiPointStatusByDevice[device]) : (homingRunning ? text.homingRunning : ''))
   );
   setGearPanelLocked(gearEngaged);
   const faultIndicator = document.getElementById('faultIndicator');
@@ -7221,9 +7246,19 @@ function isHomingModeSelected() {
   const status = currentStatus();
   return (modeSelect && modeSelect.value === 'homing') || hmiModeFromStatus(activeDevice, status && status.control_mode) === 'homing';
 }
+function multiPointRunnerActive(runner) {
+  return Boolean(runner && (runner.running || runner.preparing || runner.state === 'stopping'
+    || (runner.stop_requested && !runner.stop_confirmed)));
+}
+function multiPointRunnerMotionText(runner) {
+  const text = UI_TEXT[currentLang];
+  if (runner && runner.stop_requested && !runner.stop_confirmed && runner.state === 'error') {
+    return text.multiPointStopUnconfirmed;
+  }
+  return runner && (runner.state === 'stopping' || runner.stop_requested) ? text.multiPointStopping : text.multiPointRunning;
+}
 function isMultiPointRunnerRunning(device = activeDevice) {
-  const runner = multiPointStatusByDevice[device];
-  return Boolean(runner && (runner.running || runner.state === 'stopping'));
+  return multiPointRunnerActive(multiPointStatusByDevice[device]);
 }
 function setMode() {
   const requested = modeSelect.value;
@@ -8510,11 +8545,15 @@ class Handler(BaseHTTPRequestHandler):
                         400,
                     )
                     return
+                if not execution_is_allowed(payload, ANTI_SWAY_EXECUTE_ENABLED):
+                    self.send_json(execution_disabled_result(), 403)
+                    return
                 status = feature_dispatch_axis_command(
                     device,
                     payload,
                     _transport_command,
                     adapter=ProtocolAdapter(
+                        anti_sway_execute_enabled=ANTI_SWAY_EXECUTE_ENABLED,
                         wait_motion_ready_fn=_wait_motion_ready,
                         apply_fv3_profile_fn=_apply_fv3_profile_from_payload,
                         fv3_set_mode_fn=lambda mode_name: _write_sdo(

@@ -159,9 +159,24 @@ def _normalized_request(ctx, payload):
     }
 
 
+def execution_is_allowed(payload, enabled):
+    cmd = str(payload.get("cmd", "")).strip().lower()
+    requires_execution = cmd in ("anti_sway_curve_abs", "terminal_anti_sway_curve_abs")
+    if cmd == "anti_sway_run":
+        requires_execution = not _bool_payload(payload.get("dry_run"), True)
+    return not requires_execution or bool(enabled)
+
+
+def execution_disabled_result():
+    return {"ok": False, "error": "anti_sway_execution_disabled",
+            "message": "Anti-sway execution is disabled; preview and dry run remain available."}
+
+
 def handle_axis_command(ctx):
     cmd = ctx.cmd()
     mode = ctx.mode()
+    if not execution_is_allowed(ctx.payload, ctx.adapter.anti_sway_execute_enabled):
+        return execution_disabled_result()
     if cmd == "set_mode" and mode == "anti_sway_position":
         return ctx.run_transport()
     if cmd in ("anti_sway_input", "anti_sway_run"):
