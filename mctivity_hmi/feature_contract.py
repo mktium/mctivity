@@ -60,4 +60,4 @@ class FeatureContext:
 
 
 def motion_not_ready(message=None):
-    return {"ok": False, "error": message or "servo is not ready for motion"}
+    return {"ok": False, "error": "motion_not_ready", "message": message or "servo is not ready for motion"}

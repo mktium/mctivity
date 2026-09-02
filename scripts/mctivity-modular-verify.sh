@@ -12,10 +12,11 @@ import urllib.request
 base = sys.argv[1].rstrip("/")
 caps_url = base + "/api/capabilities"
 health_url = base + "/api/health/modular"
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def get_json(url):
     try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
+        with opener.open(url, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         print(f"mctivity HMI is not reachable at {url}: {exc}", file=sys.stderr)

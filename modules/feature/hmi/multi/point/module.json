@@ -1,0 +1,12 @@
+{
+  "id": "feature-hmi-multi-point",
+  "type": "hmi_feature",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [
+    "feature-logic-multi-point"
+  ],
+  "conflicts": [],
+  "capabilities": [],
+  "apiVersion": "v1"
+}

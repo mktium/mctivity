@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <ecrt.h>
+#include "motion_test_guard.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
@@ -152,6 +153,9 @@ static uint64_t timespec_to_ns(const struct timespec *ts)
 
 int main(int argc, char **argv)
 {
+    if (!acknowledge_motion_test(&argc, &argv)) {
+        return 2;
+    }
     int32_t delta_counts = 1000;
     int move_ms = 2000;
     int hold_ms = 2000;

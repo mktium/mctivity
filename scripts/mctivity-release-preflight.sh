@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 -m py_compile mctivity_hmi/*.py
+export PYTHONDONTWRITEBYTECODE=1
+python3 - <<'PY'
+import ast
+from pathlib import Path
+for path in Path("mctivity_hmi").glob("*.py"):
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+print("python syntax ok")
+PY
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 python3 - <<'PY'
 import json
@@ -20,8 +28,14 @@ done
 
 if command -v node >/dev/null 2>&1; then
   node --check mctivity_hmi/motion_curve_editor_block.js
-  tmp_js="$(mktemp "${TMPDIR:-/tmp}/mctivity-inline-js.XXXXXX.js")"
-  trap 'rm -f "$tmp_js"' EXIT
+  while IFS= read -r js_file; do
+    node --check "$js_file"
+  done < <(find mctivity_hmi/assets -name '*.js' -type f | sort)
+  node tests/raw_fault_status_test.js
+  node --check tests/browser_fault_smoke.js
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mctivity-inline-js.XXXXXX")"
+  tmp_js="$tmp_dir/inline.js"
+  trap 'rm -rf "$tmp_dir"' EXIT
   python3 - "$tmp_js" <<'PY'
 from pathlib import Path
 import sys
@@ -33,23 +47,33 @@ end = source.index("</script>", start)
 Path(sys.argv[1]).write_text(source[start:end], encoding="utf-8")
 PY
   node --check "$tmp_js"
+else
+  echo "Node.js is required for release JavaScript checks." >&2
+  exit 1
 fi
-
-find . -name "__pycache__" -type d -not -path "./.git/*" -exec rm -rf {} +
-find . -name "*.pyc" -type f -not -path "./.git/*" -exec rm -f {} +
 
 bad_files="$(
   find . -path ./.git -prune -o \( \
     -name "__MACOSX" -o \
     -name "._*" -o \
     -name ".DS_Store" -o \
-    -name "__pycache__" -o \
-    -name "*.pyc" \
+    -name ".env" -o \
+    -name ".env.*" -o \
+    -name "*.pem" -o \
+    -name "*.key" -o \
+    -name "*.p12" -o \
+    -name "*.pfx" -o \
+    -name "*.bak" -o \
+    -name "*.log" -o \
+    -name "*.pid" -o \
+    -name "mctivity_hmi_state.json" \
   \) -print
 )"
 if [ -n "$bad_files" ]; then
   printf '%s\n' "$bad_files"
   exit 1
 fi
+
+python3 scripts/release_content_check.py
 
 echo "release preflight ok"

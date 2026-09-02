@@ -1,117 +1,58 @@
-# Release Notes
+# Release Guide
 
-Full release status and safety notes are in [../RELEASE_NOTES.md](../RELEASE_NOTES.md).
+The current release candidate is `v1.4.0-preview.3`. Full behavior, safety notes, topology, and limitations are documented in [../RELEASE_NOTES.md](../RELEASE_NOTES.md).
 
-`v1.2.0` is a preview/source release for controlled lab evaluation and integration testing. It is not a certified safety system and must not be used as the sole protection layer for machinery.
+## Technical Changes Since v1.2.0
 
-## Version
+- multi-point positioning and controlled sequence stop
+- current-position and torque-obstruction homing with backoff
+- Axis C auxiliary encoder feedback
+- Axis C as an electronic-gear master
+- full-path ZVD and endpoint period-matched anti-sway positioning
+- persistent anti-sway settings and measured period
+- direction/unit consistency fixes across positioning, homing, and gearing
+- touch-oriented HMI and motion confirmation updates
 
-Version `v1.2.0` marks the first modular baseline of `mctivity`.
+## Release Boundary
 
-This version:
+- Source/preview release for controlled laboratory evaluation.
+- Runtime UI state, logs, backups, credentials, and site-specific deployment values are excluded.
+- Anti-sway remains open-loop; encoder feedback does not perform real-time trajectory correction.
+- Vendor-specific diagnostic code, data, detail dialogs, and manual-derived troubleshooting documentation are not included.
+- Basic fault flags, raw error codes, manual reset, and existing control protections remain. No manufacturer manuals are distributed.
 
-- added a new user-visible mode: `incremental`
-- completed the first usable modular assembly baseline
-- kept current deployment and main usage model intact
+## Preflight
 
-## Highlights
+```bash
+./scripts/mctivity-release-preflight.sh
+python3 scripts/release_content_check.py --history origin/main
+git diff --check
+```
 
-- Profile/module/feature-registry modular assembly chain is now in place
-- Incremental displacement is integrated as an independent feature
-- HMI mode entry visibility now follows actual assembly state
-- Torque mode is now represented in feature registry and dispatch like the other assembled modes
-- Existing axis-control behavior is preserved as the baseline
-- Public-release defaults are safer: local-only Web HMI, optional API token, bounded request size, and safe fallback behavior
-- FV3 device access is controlled by the `axis.device.fv3.access` capability from the dual-axis module
-- `/api/command` rejects unknown commands and forwards only whitelisted payload fields
+Run the preflight from the repository root or from an extracted source archive. The archive supports current-file checks only; review history separately in the repository.
 
-## Functional Scope
+Optional browser regression with Playwright 1.62.1 available to Node.js:
 
-Base axis modules:
+```bash
+MCTIVITY_BROWSER_CHANNEL=chrome node tests/browser_fault_smoke.js
+```
 
-- `axis-feedback-panel`
-- `axis-control-panel`
+Omit the channel variable to use Playwright's installed Chromium. This test launches an isolated loopback fixture, intercepts device APIs, blocks hardware backend calls, and checks raw fault display and explicit reset at 1920x1080 and 390x844. It does not connect to a controller.
 
-Main assembled features in this version:
+On a matching IgH EtherCAT development target:
 
-- `position`
-- `incremental`
-- `velocity`
-- `gear_cam`
+```bash
+cd mctivity_pdo_monitor
+make clean
+make
+```
 
-Other modes still present in profile/capability space:
+Verify every selected profile, review the safety notes, and use a release branch before tagging or merging.
 
-- `jog`
-- `point`
-- `homing`
-- `torque`
+## Publication Gate
 
-Current note:
+This candidate excludes vendor-specific fault diagnosis. Review the exact source tree and every commit that will be published, not only the final diff: a removed dataset must not survive in an intermediate commit or release attachment. The release content check rejects excluded package paths. Keep private backups outside the repository and do not publish them.
 
-- `torque` is registered in the modular feature path, while its HMI behavior in this release remains staged rather than full CST torque PDO control
+The project owner confirmed company ownership of the program code and logo, and in-house creation of the architecture diagrams, on 2026-09-02. This ownership-confirmation item is recorded in [Notices](../NOTICE.md); it does not clear third-party material. Review [Security](../SECURITY.md) and inspect the exact branch history and commit author metadata as well as its current files. Old review branches, tags, release archives, and other remote feature branches need their own audit; a clean candidate does not clear them.
 
-## Main Changes
-
-### 1. Modular Runtime Assembly
-
-- `profiles/*.json`
-- `modules/**/module.json`
-- `mctivity_hmi/feature_registry.json`
-- capability-gated `/api/command`
-- assembly observability:
-  - `/api/capabilities`
-  - `/api/health/modular`
-
-### 2. Feature Dispatch and Contracts
-
-- `feature_dispatch.py`
-- `feature_contract.py`
-- `ProtocolAdapter`
-- `FeatureContext`
-
-### 3. Incremental Displacement
-
-- new `incremental` mode
-- embedded motion-curve editor in IPC HMI
-- `move_curve_rel` path
-- independent module/capability boundary:
-  - `feature-logic-incremental`
-  - `feature-hmi-incremental`
-  - `axis.mode.incremental.execute`
-
-### 4. HMI Assembly Awareness
-
-- `mode_hmi_module_map`
-- mode selector and right-side mode panels follow loaded HMI modules
-
-### 5. Public Release Hardening
-
-- default HMI host changed to `127.0.0.1`
-- request Host allowlist defaults to `127.0.0.1`, `localhost`, and `::1`; additional LAN hosts require `MCTIVITY_ALLOWED_HOSTS`
-- optional `MCTIVITY_API_TOKEN` support for command/state endpoints
-- browser HMI API requests can include the token from the top-bar API Token field
-- request payload size bound through `MCTIVITY_MAX_REQUEST_BYTES`
-- command/state POST requests require `application/json` and reject foreign browser origins
-- strict command and mode validation before motion transport
-- payload field sanitization with stable command field order before forwarding to `motiond`
-- strict integer validation and configurable motion safety limits before forwarding motion parameters
-- `move_curve_rel` drops UI-only mode data and validates blend names before transport
-- `motiond` now matches JSON keys strictly and rejects invalid numeric fields instead of treating ordinary strings as field names or zero values
-- UI state persistence drops NaN/Infinity and emits standard JSON only
-- UI state default path moved out of the code directory
-- systemd examples include `StateDirectory` and basic hardening flags
-
-### 6. Device Assembly Gate
-
-- `feature-logic-dual-axis-fv3` provides `axis.device.fv3.access`
-- profiles without that capability expose only Axis A
-- unsupported or unloaded devices are rejected before command dispatch
-
-## Known Limitations
-
-- Browser hardening headers are not yet complete.
-- Global software travel-envelope limits are not yet fully configurable.
-- The C motion daemon does not yet use saturated arithmetic in every position/velocity accumulation path.
-- `mctivity_ctl.py` bypasses HMI profile and API restrictions by design.
-- The motion daemon assumes the configured EtherCAT slave topology.
-- This release is not a certified functional safety component.
+Create a source archive from the exact reviewed commit using `git archive`, not from the working directory. Do not push all branches/tags or publish a Git bundle. Record the commit and archive digest. Hardware validation from a previous snapshot must remain labeled historical; this laboratory demo may document outstanding motion tests without calling them passed.

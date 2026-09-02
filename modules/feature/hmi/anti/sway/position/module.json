@@ -1,0 +1,14 @@
+{
+  "id": "feature-hmi-anti-sway-position",
+  "type": "hmi_feature",
+  "version": "0.2.0-preview",
+  "domain": "axis_control_domain",
+  "requires": [
+    "feature-logic-anti-sway-position",
+    "feature-hmi-single-point"
+  ],
+  "conflicts": [],
+  "capabilities": [],
+  "apiVersion": "v1",
+  "status": "preview"
+}

@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <ecrt.h>
+#include "motion_test_guard.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
@@ -138,6 +139,9 @@ static uint16_t next_controlword(uint16_t sw)
 
 int main(int argc, char **argv)
 {
+    if (!acknowledge_motion_test(&argc, &argv)) {
+        return 2;
+    }
     int hold_seconds = 5;
     ec_master_t *master;
     ec_domain_t *domain;

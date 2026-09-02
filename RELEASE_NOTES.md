@@ -1,139 +1,141 @@
-# mctivity v1.2.0 Release Notes
+# mctivity v1.4.0-preview.3 Release Notes
 
 ## Release Status
 
-`mctivity v1.2.0` is a source release and preview release for evaluation, integration testing, and controlled lab use.
+`v1.4.0-preview.3` is a source/preview release for controlled laboratory evaluation, integration testing, and module-development work.
 
-This version includes the modular HMI, profile-based capability gating, dual-axis MCTIVITY/FV3 support, EtherCAT motion daemon integration, systemd service files, and release preflight checks.
+It is not stable, production-ready, safety-certified, or suitable for unattended machine operation.
 
-This release is not certified as a functional safety system and must not be used as the only protection layer for real machinery.
+## Highlights Since v1.2.0
+
+- multi-point positioning with editable point table, repeat count, progress display, and controlled stop
+- Axis C auxiliary encoder feedback and use as an electronic-gear master
+- current-position homing and torque-obstruction homing with configurable backoff
+- anti-sway positioning as an independent HMI/logic module pair
+- full-path ZVD input shaping and endpoint period-matched positioning
+- transmission-direction and unit-consistency fixes across position, homing, and gearing
+- stronger UI-state persistence for anti-sway settings and measured period
+- touch-oriented HMI updates, motion confirmation dialogs, and responsive feedback layout
+
+## Endpoint Anti-Sway Behavior
+
+Endpoint anti-sway remains an open-loop, period-matched motion profile. Given distance `D`, velocity limit `vmax`, acceleration limit `a`, and measured natural period `T`, it chooses an integer period count `N` and starts deceleration at `N x T`.
+
+Full-path anti-sway is a separate strategy using a three-impulse ZVD shaper. The two strategies are not interchangeable.
+
+The auxiliary encoder provides swing-angle monitoring, period calibration, start-phase gating, and evaluation. It does not perform real-time closed-loop trajectory correction in this release.
+
+## Modular Assembly
+
+New or expanded modules include:
+
+- `feature-logic-multi-point` + `feature-hmi-multi-point`
+- `feature-logic-homing` + `feature-hmi-homing`
+- `feature-logic-anti-sway-position` + `feature-hmi-anti-sway-position`
+- `feature-logic-aux-encoder`
+
+Existing functions continue to use the same profile/module/capability/feature-registry assembly chain introduced in `v1.2.0`.
 
 ## Safety Notice
 
-`mctivity` controls motion hardware. Incorrect configuration, software defects, network exposure, invalid motion parameters, or EtherCAT/drive misconfiguration may cause unexpected machine movement.
+Incorrect configuration, software defects, invalid parameters, network exposure, EtherCAT faults, or drive misconfiguration may cause unexpected motion.
 
-Before using this software with real hardware, users must ensure:
+Before enabling motion:
 
-- physical emergency stop is installed and tested
-- hardware limit switches are installed and tested
-- drive-side torque, velocity, acceleration, position, and following-error limits are configured
-- the machine is tested first without load or with the mechanical system safely isolated
-- operators understand the difference between HMI-level restrictions and drive-level safety limits
-- the system is used only on a trusted machine and trusted network
+- install and test emergency stop and hardware limit circuits
+- configure drive-side velocity, torque, following-error, and travel limits
+- verify transmission direction, unit conversion, and software limits
+- isolate the mechanism or begin with reduced speed, acceleration, torque, and travel
+- keep an operator at the machine during preview testing
 
-The software must not be treated as a replacement for drive safety functions, hardware interlocks, emergency stop circuits, or machinery risk assessment.
+The software must not replace drive safety functions, mechanical protection, safety relays, risk assessment, or site operating procedures.
 
-## Important Deployment Notes
+### Homing
 
-### Web HMI Exposure
+Torque-obstruction homing intentionally moves toward a physical obstruction. It may bypass the established software coordinate envelope while searching because the operation defines that coordinate system. Use low speed, limited torque, independent travel protection, and a safe timeout.
 
-The Web HMI listens on `127.0.0.1` by default. Do not expose it directly to the public internet.
+### Anti-Sway
 
-For controlled LAN access, set an API token and explicitly allow expected hostnames:
+Real anti-sway execution is disabled unless `MCTIVITY_ANTI_SWAY_EXECUTE_ENABLED=1` is set. A measured period should be recalibrated whenever rope/rod geometry, payload, center of gravity, or suspension conditions change.
 
-```bash
-MCTIVITY_WEB_HOST=0.0.0.0
-MCTIVITY_ALLOWED_HOSTS=mctivity.local,axis-hmi.local
-MCTIVITY_API_TOKEN=<strong-token>
-```
+## Network and API Notes
 
-For shared or untrusted networks, place the service behind an authenticated reverse proxy or VPN.
+- the HMI binds to `127.0.0.1` by default
+- LAN use requires an explicit bind address, allowed hosts, and a randomly generated `MCTIVITY_API_TOKEN`
+- non-loopback startup rejects missing or short/repetitive tokens; status, commands, and UI state require the configured token
+- foreign browser origins and unsupported JSON payloads are rejected
+- the built-in HMI does not provide a complete hardened browser security-header set
+- do not expose the built-in server directly to the public internet
 
-### Browser Security
+`mctivity_ctl.py` connects directly to `motiond` and bypasses HMI authentication, capability gating, and parameter sanitization. Keep it local and trusted.
 
-The HMI rejects foreign browser origins for command/state POST requests and restricts Host headers by default.
+Standalone enable/movement test tools are excluded from the default build and require an explicit `--confirm-motion` first argument. This is an accidental-use guard, not a machine safety interlock.
 
-This version does not yet provide a complete hardened browser header set such as `Content-Security-Policy` or `X-Frame-Options`. Use the HMI only from trusted local workstations, and do not embed it into third-party dashboards in operational environments.
+## Local Publication Review: 2026-09-02
 
-### Motion Range Limits
+- replaced private-value release checks with generic, redacted source/history scanning
+- added HTTP authentication/configuration tests and a hardware-free C guard test
+- documented external dependencies, redistribution boundaries, and installation security
+- preserved the existing GPLv3 license; vendor-specific diagnostic packages are not included in this release
+- preserved basic raw fault status and manual reset; simulated status cannot dispatch control commands
+- corrected narrow-screen feedback/control overlap
+- no trajectory, homing, gearing, or PDO logic changes in this review
 
-The HMI API validates command names, device access, JSON content type, numeric format, velocity, acceleration, move time, torque, and gear ratio limits.
+This review is local only: no deployment, service restart, or motion test was performed. Earlier controller build and motion results below apply to previous snapshots, not to these new packaging/security changes. Full native tool compilation and installation testing remain pending on an EtherCAT development target. Publication still requires review of the exact source archive, incoming history, and included third-party attribution; excluded diagnostic content is not part of this release.
 
-This version does not yet provide a complete global machine-travel envelope for all position-related fields, such as:
+## EtherCAT Topology
 
-- `pos`
-- `delta`
-- `target_delta_counts`
-- `min_pos`
-- `max_pos`
-
-Users must configure safe travel and force limits at the drive, controller, and mechanical levels. Do not rely only on the HMI frontend for travel limitation.
-
-### Low-Level Motion Daemon Access
-
-`mctivity_ctl.py` is a local low-level daemon client. It communicates directly with `mctivity_motiond` and bypasses:
-
-- HMI API token checks
-- profile capability gating
-- frontend command limits
-- HMI command sanitization
-
-Use `mctivity_ctl.py` only for local diagnostics, commissioning, and trusted maintenance workflows. Public or remote API access should go through the HMI service.
-
-### EtherCAT Topology
-
-The v1.2.0 motion daemon is designed around the current dual-slave EtherCAT topology:
+The supplied daemon is configured for:
 
 ```text
-Slave 0: MCTIVITY axis
-Slave 1: FV3 axis
+Slave 0: primary servo axis
+Slave 1: secondary servo axis
+Slave 2: SICK AFM60A auxiliary encoder
 ```
 
-The HMI profile system can hide or disable FV3 access at the UI/API layer, but the underlying motion daemon still expects the configured EtherCAT topology unless modified.
+The auxiliary encoder can be disabled with `MCTIVITY_AUX_ENCODER_ENABLED=0`. The two servo slave definitions remain required by the supplied daemon. Different devices, PDO layouts, or slave ordering require adapter/topology changes.
 
-Users with a single-axis setup should verify daemon behavior in their own EtherCAT environment before deployment.
+## Validation Record
 
-## Recommended Operating Modes
+- release preflight and JSON parsing
+- Python syntax checks
+- JavaScript syntax checks for the embedded HMI and curve editor
+- shell syntax checks
+- profile/module dependency and capability verification
+- automated multi-point concurrency and command-routing regression tests
+- automated assembly and HTTP smoke tests for `minimal`, `standard`, and `full`
+- basic raw fault display and manual reset regression tests
+- hardware-free browser smoke tests at desktop and mobile viewports
+- GitHub Actions pull-request preflight is configured; no new remote run is claimed here
 
-For evaluation:
+Historical checks on earlier snapshots, not repeated for this publication change:
 
-```bash
-MCTIVITY_PROFILE=standard
-MCTIVITY_WEB_HOST=127.0.0.1
-python3 mctivity_hmi/mctivity_hmi.py
-```
+- native IgH EtherCAT C build on the laboratory controller
+- controlled real-hardware checks for existing axis modes, homing, auxiliary feedback, electronic gearing, and anti-sway motion
 
-For full dual-axis local testing:
+The final laboratory anti-sway configuration used a `500 mm` rope and a measured period near `1.41965 s`. These are validation values, not packaged defaults.
 
-```bash
-MCTIVITY_PROFILE=full
-MCTIVITY_WEB_HOST=127.0.0.1
-python3 mctivity_hmi/mctivity_hmi.py
-```
+## Known Limitations
 
-For controlled LAN testing:
+- preview-quality browser and operational hardening
+- no certified functional-safety behavior
+- no universal EtherCAT device discovery or PDO adapter configuration
+- no complete global software travel envelope across every command path
+- some low-level position/velocity accumulation paths are not fully saturated
+- open-loop anti-sway only; no real-time swing-angle feedback correction
+- raw fault flags and codes only; no vendor-specific diagnosis or troubleshooting guidance
+- runtime UI state is site-specific and intentionally excluded from the repository
 
-```bash
-MCTIVITY_PROFILE=full
-MCTIVITY_WEB_HOST=0.0.0.0
-MCTIVITY_ALLOWED_HOSTS=mctivity.local,axis-hmi.local
-MCTIVITY_API_TOKEN=<strong-token>
-python3 mctivity_hmi/mctivity_hmi.py
-```
-
-## Preflight Checks
-
-Before publishing or deploying, run:
+## Preflight
 
 ```bash
 ./scripts/mctivity-release-preflight.sh
 ```
 
-On an EtherCAT development machine, also build the motion daemon:
+On an IgH EtherCAT development target:
 
 ```bash
 cd mctivity_pdo_monitor
 make clean
 make
 ```
-
-The C build requires the IgH EtherCAT Master headers and libraries, including `ecrt.h`.
-
-## Known Limitations
-
-- Browser hardening headers are not yet complete.
-- Global software travel-envelope limits are not yet fully configurable.
-- The C motion daemon does not yet use saturated arithmetic in every position/velocity accumulation path.
-- `mctivity_ctl.py` bypasses HMI profile and API restrictions by design.
-- The motion daemon assumes the configured EtherCAT slave topology.
-- This release is not a certified functional safety component.

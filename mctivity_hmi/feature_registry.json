@@ -3,8 +3,7 @@
     "logic_modules": [
       "feature-logic-single-point",
       "feature-logic-jog",
-      "feature-logic-point",
-      "feature-logic-homing"
+      "feature-logic-point"
     ],
     "commands": [
       "move_abs",
@@ -13,7 +12,33 @@
     "modes": [
       "position",
       "jog",
-      "point",
+      "point"
+    ]
+  },
+  "anti_sway_position": {
+    "logic_modules": [
+      "feature-logic-anti-sway-position"
+    ],
+    "commands": [
+      "anti_sway_input",
+      "anti_sway_run",
+      "anti_sway_curve_abs",
+      "terminal_anti_sway_curve_abs"
+    ],
+    "modes": [
+      "anti_sway_position"
+    ]
+  },
+  "homing": {
+    "logic_modules": [
+      "feature-logic-homing"
+    ],
+    "commands": [
+      "homing_set_current",
+      "homing_start_torque",
+      "homing_stop"
+    ],
+    "modes": [
       "homing"
     ]
   },
@@ -26,6 +51,21 @@
     ],
     "modes": [
       "incremental"
+    ]
+  },
+  "multi_point": {
+    "logic_modules": [
+      "feature-logic-multi-point"
+    ],
+    "commands": [
+      "point_table_write",
+      "point_table_run",
+      "point_table_stop",
+      "point_table_clear",
+      "point_table_status"
+    ],
+    "modes": [
+      "multi_point"
     ]
   },
   "velocity": {

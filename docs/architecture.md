@@ -1,186 +1,122 @@
 # Architecture
 
-## Overall Structure
+## Layers
 
-`mctivity v1.2.0` can be understood as four layers:
+`mctivity v1.4.0-preview.3` is organized as four layers:
 
-1. runtime UI/API shell
-2. modular assembly layer
-3. feature dispatch layer
-4. motion transport/device layer
+1. browser HMI and local HTTP API
+2. profile/module/capability assembly
+3. feature dispatch and protocol adapters
+4. `motiond`, IgH EtherCAT, drives, and auxiliary encoder
 
 ## Runtime Flow
 
-![Runtime Flow](assets/architecture-runtime-flow.png)
-
 ```mermaid
 flowchart LR
-    UI["Browser HMI"] --> API["mctivity_hmi.py"]
-    API --> GATE["Capability Gate"]
+    HMI["Browser HMI"] --> API["mctivity_hmi.py"]
+    API --> GATE["Host, token, capability, and payload gates"]
     GATE --> DISP["feature_dispatch"]
-    DISP --> POS["position"]
-    DISP --> INC["incremental"]
-    DISP --> VEL["velocity"]
-    DISP --> TOR["torque"]
-    DISP --> GEAR["gear_cam"]
+    DISP --> POS["position / incremental / multi-point"]
+    DISP --> HOME["homing"]
+    DISP --> GEAR["electronic gear"]
+    DISP --> SWAY["anti-sway position"]
+    DISP --> OTHER["jog / point / velocity / torque"]
     POS --> ADAPTER["ProtocolAdapter"]
-    INC --> ADAPTER
-    VEL --> ADAPTER
-    TOR --> ADAPTER
+    HOME --> ADAPTER
     GEAR --> ADAPTER
-    ADAPTER --> TRANS["transport_fn"]
-    TRANS --> FV3["fv3 bridge"]
-    TRANS --> MOTIOND["motiond TCP"]
-    FV3 --> DEV["EtherCAT / Servo"]
-    MOTIOND --> DEV
+    SWAY --> ADAPTER
+    OTHER --> ADAPTER
+    ADAPTER --> MOTIOND["motiond TCP"]
+    MOTIOND --> ECAT["IgH EtherCAT"]
+    ECAT --> AXISA["Servo axis A"]
+    ECAT --> AXISB["Servo axis B"]
+    ECAT --> AXISC["Auxiliary encoder axis C"]
 ```
 
 ## Assembly Flow
 
-![Assembly Flow](assets/architecture-assembly-flow.png)
-
 ```mermaid
 flowchart TD
-    PROFILE["profiles/*.json"] --> RUNTIME["_build_module_runtime()"]
+    PROFILE["profiles/*.json"] --> RUNTIME["module runtime"]
     MODULE["modules/**/module.json"] --> RUNTIME
-    REG["feature_registry.json"] --> DISP["feature_dispatch"]
+    REGISTRY["feature_registry.json"] --> DISPATCH["feature dispatch"]
     RUNTIME --> CAPS["capabilities"]
-    RUNTIME --> ACTIVE["active_features"]
-    ACTIVE --> ENABLED["enabled_feature_keys"]
-    ACTIVE --> ASM["feature_assembly"]
+    RUNTIME --> ACTIVE["active features"]
     CAPS --> API["/api/capabilities"]
-    ENABLED --> API
-    ASM --> API
-    API --> HMI["HMI bootstrap"]
-    HMI --> MODECAP["mode_capability_map"]
-    HMI --> MODEHMI["mode_hmi_module_map"]
+    ACTIVE --> API
+    API --> HMI["HMI mode and panel visibility"]
 ```
 
-## Axis Module Structure
+A motion feature normally has a logic module and an HMI module. The profile selects modules, module manifests declare dependencies and capabilities, and the feature registry owns modes and commands.
 
-![Axis Module Structure](assets/architecture-axis-modules.png)
+## Profiles
 
-```mermaid
-flowchart LR
-    AXIS["Axis"] --> FEEDBACK["axis-feedback-panel"]
-    AXIS --> CONTROL["axis-control-panel"]
-    AXIS --> MODES["mode-driven feature area"]
+- `minimal`: axis feedback, control panel, and single-point positioning
+- `standard`: minimal plus incremental, jog, point, multi-point, homing, and velocity
+- `full`: standard plus dual-axis access, auxiliary encoder, torque, electronic gearing, and anti-sway
 
-    MODES --> P1["single-point"]
-    MODES --> P2["incremental"]
-    MODES --> P3["jog"]
-    MODES --> P4["point"]
-    MODES --> P5["homing"]
-    MODES --> P6["velocity"]
-    MODES --> P7["torque"]
-    MODES --> P8["gear_cam"]
-```
+Profiles control HMI/API exposure. Missing module dependencies are resolved fail-closed: the incomplete feature is omitted and reported in `warnings`. Profiles do not discover EtherCAT slaves or rewrite PDO layouts.
 
-## Functional Modules
-
-Base axis modules:
-
-- `axis-feedback-panel`
-- `axis-control-panel`
-
-Current logic/HMI feature pairs:
+## Main Feature Pairs
 
 - `feature-logic-single-point` + `feature-hmi-single-point`
+- `feature-logic-anti-sway-position` + `feature-hmi-anti-sway-position`
 - `feature-logic-incremental` + `feature-hmi-incremental`
 - `feature-logic-jog` + `feature-hmi-jog`
 - `feature-logic-point` + `feature-hmi-point`
+- `feature-logic-multi-point` + `feature-hmi-multi-point`
 - `feature-logic-homing` + `feature-hmi-homing`
 - `feature-logic-velocity` + `feature-hmi-velocity`
 - `feature-logic-torque` + `feature-hmi-torque`
 - `feature-logic-electronic-gear` + `feature-hmi-electronic-gear`
 
-Device-level modules:
+Device and display modules:
 
-- `feature-logic-dual-axis-fv3` provides `axis.device.fv3.access`
-- `feature-hmi-dual-axis-fv3` exposes Axis B in HMI when the capability is active
+- `feature-logic-dual-axis-fv3` + `feature-hmi-dual-axis-fv3`
+- `feature-logic-aux-encoder`
 
-## Incremental Command Path
-
-![Incremental Command Path](assets/architecture-incremental-path.png)
+## Anti-Sway Path
 
 ```mermaid
 flowchart LR
-    EDITOR["motion curve editor"] --> PANEL["incremental HMI panel"]
-    PANEL --> CMD["move_curve_rel payload"]
-    CMD --> DISP["feature_dispatch"]
-    DISP --> INC["incremental feature"]
-    INC --> POSH["position handler route"]
-    POSH --> ADAPTER["ProtocolAdapter"]
-    ADAPTER --> MOTION["motiond move_curve_rel"]
-    MOTION --> AXIS["servo axis"]
+    ENC["Axis C swing angle"] --> CAL["period calibration and start gate"]
+    PARAM["target, speed, acceleration"] --> PLAN["trajectory planner"]
+    CAL --> PLAN
+    PLAN --> FULL["full-path: three-impulse ZVD"]
+    PLAN --> END["endpoint: period-matched N x T"]
+    FULL --> MOTIOND["motiond CSP execution"]
+    END --> MOTIOND
+    MOTIOND --> SERVO["Axis A servo"]
 ```
 
-## Main Interface Relationships
+This release is open-loop anti-sway. Axis C is used for angle monitoring, period calibration, start-phase gating, and result evaluation. Its angle is not used for real-time trajectory correction.
 
-### position
+## Homing Path
 
-Input:
+Homing is an exclusive control mode with two operations:
 
-- `set_mode(position)`
-- `move_abs`
-- `move_rel`
+- set the current physical position to a configured coordinate
+- move toward an obstruction, detect a sustained torque threshold, assign the corresponding end coordinate, and back off by the configured distance
 
-Output:
+Obstruction homing uses timeout, maximum search distance, torque hold, controlled deceleration, and servo/EtherCAT readiness checks. Because it establishes the coordinate system, it does not use the existing software coordinate envelope during the search.
 
-- position motion commands to motion transport
+## Basic Fault Status
 
-### incremental
+Device fault flags and raw error codes pass through the existing status API to the control panel. The panel displays the raw hexadecimal value and a generic fault state, without identifying a manufacturer alarm or suggesting repairs. Manual fault reset remains an explicit control action; observing a fault does not send a reset or motion command.
 
-Input:
+## EtherCAT Topology
 
-- `set_mode(incremental)`
-- `move_curve_rel`
-- motion-curve editor parameters
+The supplied daemon expects:
 
-Output:
+```text
+Slave 0: primary servo axis
+Slave 1: secondary servo axis
+Slave 2: SICK AFM60A auxiliary encoder
+```
 
-- incremental curve motion command
+Set `MCTIVITY_AUX_ENCODER_ENABLED=0` to disable the third slave configuration. The two servo definitions remain required. Other slave orders, products, or PDO layouts need code/configuration changes.
 
-### velocity
-
-Input:
-
-- `set_mode(velocity)`
-- `jog_velocity`
-
-Output:
-
-- velocity motion command
-
-### torque
-
-Input:
-
-- `set_mode(torque)`
-- `torque_cmd`
-
-Output:
-
-- torque staging or torque-mode command transport
-
-Current note:
-
-- in this release the torque panel is wired into modular dispatch, but the HMI copy still describes the command path as staged only
-
-### gear_cam
-
-Input:
-
-- `set_mode(gear_cam)`
-- `gear_config`
-- `gear_start`
-- `gear_stop`
-
-Output:
-
-- electronic gearing commands
-
-## Backend Interfaces
+## API Boundary
 
 - `GET /api/status`
 - `GET /api/ui_state`
@@ -189,36 +125,4 @@ Output:
 - `GET /api/health/modular`
 - `POST /api/command`
 
-Command gate:
-
-- request Host must be in the HMI allowlist before the API is served
-- command/state POST requests must be same-origin browser requests and use `application/json`
-- command names must be present in the HMI whitelist
-- `set_mode` mode names must be present in the mode whitelist
-- only whitelisted payload fields are forwarded to motion transport
-- forwarded command fields use stable order with `cmd` first and `device` second
-- integer motion parameters are strictly parsed and checked against configurable motion limits before transport
-- `move_curve_rel` accepts only known blend names and does not forward its UI-only `mode` field to `motiond`
-- `motiond` field lookup matches JSON keys only; required numeric command fields are rejected when invalid, while HMI API validation should be used for public command access
-
-Device gate:
-
-- Axis A uses `mctivity`
-- Axis B uses `fv3`
-- `fv3` requests require `axis.device.fv3.access`
-- v1.2.0 `motiond` still expects the current two-slave EtherCAT topology; profiles control HMI/API exposure, not EtherCAT slave discovery
-
-## Adapter Interfaces
-
-Current adapter methods:
-
-- `wait_motion_ready(device)`
-- `apply_fv3_profile(payload)`
-- `fv3_set_mode(mode)`
-- `fv3_force_csp()`
-
-Low-level CLI note:
-
-- `mctivity_ctl.py` connects directly to `motiond`
-- it does not apply HMI profile/capability gates
-- use it as a local service/debug client, not as the public API boundary
+The HMI validates hosts, configured API tokens, browser origin/content type, command ownership, mode ownership, payload fields, and integer motion bounds before dispatch. `mctivity_ctl.py` connects directly to `motiond` and bypasses these HMI gates; keep it local and trusted.

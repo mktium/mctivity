@@ -8,15 +8,40 @@ _DEFAULT_FEATURE_REGISTRY = {
             "feature-logic-single-point",
             "feature-logic-jog",
             "feature-logic-point",
-            "feature-logic-homing",
         },
         "commands": {"move_abs", "move_rel"},
-        "modes": {"position", "jog", "point", "homing"},
+        "modes": {"position", "jog", "point"},
+    },
+    "anti_sway_position": {
+        "logic_modules": {"feature-logic-anti-sway-position"},
+        "commands": {
+            "anti_sway_input",
+            "anti_sway_run",
+            "anti_sway_curve_abs",
+            "terminal_anti_sway_curve_abs",
+        },
+        "modes": {"anti_sway_position"},
+    },
+    "homing": {
+        "logic_modules": {"feature-logic-homing"},
+        "commands": {"homing_set_current", "homing_start_torque", "homing_stop"},
+        "modes": {"homing"},
     },
     "incremental": {
         "logic_modules": {"feature-logic-incremental"},
         "commands": {"move_curve_rel"},
         "modes": {"incremental"},
+    },
+    "multi_point": {
+        "logic_modules": {"feature-logic-multi-point"},
+        "commands": {
+            "point_table_write",
+            "point_table_run",
+            "point_table_stop",
+            "point_table_clear",
+            "point_table_status",
+        },
+        "modes": {"multi_point"},
     },
     "velocity": {
         "logic_modules": {"feature-logic-velocity"},

@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <ecrt.h>
+#include "motion_test_guard.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
@@ -150,6 +151,9 @@ static int32_t command_for_enabled_cycle(int32_t center, int32_t half_counts,
 
 int main(int argc, char **argv)
 {
+    if (!acknowledge_motion_test(&argc, &argv)) {
+        return 2;
+    }
     int roundtrips = 10;
     int32_t half_counts = DEFAULT_REV_COUNTS / 2;
     int move_ms = 3000;

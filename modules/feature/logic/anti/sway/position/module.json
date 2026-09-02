@@ -1,0 +1,20 @@
+{
+  "id": "feature-logic-anti-sway-position",
+  "type": "logic_feature",
+  "version": "0.4.0-preview",
+  "domain": "axis_control_domain",
+  "requires": [
+    "axis-control-panel",
+    "axis-feedback-panel",
+    "feature-logic-dual-axis-fv3",
+    "feature-logic-single-point",
+    "ui-state-persist"
+  ],
+  "conflicts": [],
+  "capabilities": [
+    "axis.mode.anti_sway_position.input",
+    "axis.mode.position.execute"
+  ],
+  "apiVersion": "v1",
+  "status": "preview"
+}

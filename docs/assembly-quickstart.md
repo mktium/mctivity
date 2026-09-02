@@ -1,182 +1,94 @@
 # Assembly Quickstart
 
-This guide is for users who download the repo and want to assemble only the modules they need.
+## Assembly Model
 
-## The Simple Model
+1. A file in `profiles/` selects module ids.
+2. Each `modules/**/module.json` declares dependencies and capabilities.
+3. `mctivity_hmi/feature_registry.json` assigns modes and commands to features.
 
-You mainly need to understand three things:
+When assembling existing functions, edit a profile. Change the feature registry only when adding a feature or changing command ownership.
 
-1. `profile`
-   decides what to load
-2. `module`
-   declares what each part provides
-3. `feature registry`
-   defines which commands and modes belong to which feature
-
-## The Three Places to Touch
-
-### 1. Choose a profile
-
-Files:
-
-- `profiles/minimal.json`
-- `profiles/standard.json`
-- `profiles/full.json`
-
-For most users, start from `standard` or `full`.
-
-### 2. Add or remove module ids
-
-Edit only the `modules` array in the chosen profile.
-
-Example:
-
-```json
-{
-  "profile": "custom",
-  "domains": ["axis_control_domain"],
-  "modules": [
-    "axis-feedback-panel",
-    "axis-control-panel",
-    "feature-logic-single-point",
-    "feature-hmi-single-point",
-    "feature-logic-incremental",
-    "feature-hmi-incremental",
-    "ui-state-persist"
-  ]
-}
-```
-
-### 3. Do not edit the feature registry unless needed
-
-File:
-
-- `mctivity_hmi/feature_registry.json`
-
-Only touch this when:
-
-- creating a new feature
-- changing command ownership
-- changing mode ownership
-
-For normal assembly, editing the profile is enough.
-
-## Recommended Ready-Made Patterns
+## Ready-Made Profiles
 
 ### Minimal
 
-- feedback
-- control panel
-- single-point
+- axis feedback and control panel
+- single-point positioning
 - UI state persistence
-
-Use:
-
-- `profiles/minimal.json`
 
 ### Standard
 
-- minimal +
-- incremental
-- jog
-- point
-- homing
-- velocity
-- UI state persistence
-
-Use:
-
-- `profiles/standard.json`
+- minimal profile
+- incremental, jog, point, and multi-point positioning
+- current-position and torque-obstruction homing
+- velocity mode
 
 ### Full
 
-- standard +
-- torque
+- standard profile
+- torque mode
 - electronic gear
-- dual-axis FV3 support
+- Axis B FV3 support
+- Axis C auxiliary encoder support
+- full-path and endpoint anti-sway positioning
 
-Use:
+Keep each motion feature's `feature-logic-*` and `feature-hmi-*` modules together unless a manifest explicitly says otherwise. Missing dependencies remove the incomplete feature from the active assembly and add a capability warning.
 
-- `profiles/full.json`
-
-## How to Start
-
-Before using the systemd examples, create the runtime user/group that the sample units expect:
-
-```bash
-sudo groupadd --system mctivity || true
-sudo useradd --system --gid mctivity --home-dir /var/lib/mctivity --create-home mctivity || true
-```
-
-### Manual
+## Manual Start
 
 ```bash
 cd /opt/mctivity/mctivity_hmi
 MCTIVITY_PROFILE=full python3 mctivity_hmi.py
 ```
 
-The HMI listens on `127.0.0.1` by default. For controlled LAN access only:
+The HMI listens on `127.0.0.1` by default. Controlled LAN access requires explicit host configuration and a randomly generated API token:
 
 ```bash
-cd /opt/mctivity/mctivity_hmi
-MCTIVITY_PROFILE=full MCTIVITY_WEB_HOST=0.0.0.0 MCTIVITY_ALLOWED_HOSTS=mctivity.local,axis-hmi.local MCTIVITY_API_TOKEN=change-me python3 mctivity_hmi.py
+export MCTIVITY_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+MCTIVITY_PROFILE=full \
+MCTIVITY_WEB_HOST=0.0.0.0 \
+MCTIVITY_ALLOWED_HOSTS=mctivity.local,axis-hmi.local \
+python3 mctivity_hmi.py
 ```
 
-To require a token on `POST /api/command` and `GET/POST /api/ui_state`:
+Enter the generated token in the HMI. Keep it in protected installation configuration for persistent service use, never in Git. Non-loopback startup rejects empty or short/repetitive tokens. This HTTP service is for isolated trusted networks, not internet exposure. See [Security and Operation](../SECURITY.md).
+
+Real anti-sway motion is disabled by default:
 
 ```bash
-cd /opt/mctivity/mctivity_hmi
-MCTIVITY_PROFILE=full MCTIVITY_API_TOKEN=change-me python3 mctivity_hmi.py
+MCTIVITY_ANTI_SWAY_EXECUTE_ENABLED=1 python3 mctivity_hmi.py
 ```
 
-When token auth is enabled in browser HMI, enter the same token in the top-bar API Token field. The token is kept in `sessionStorage`.
+Set this only on a controlled machine after verifying the measured period, transmission direction, limits, emergency stop, and safe test envelope.
 
-### IPC Profile Switch
+The auxiliary encoder is enabled by default in the supplied daemon. Disable it when the third EtherCAT slave is not installed:
 
 ```bash
-cd /opt/mctivity
+MCTIVITY_AUX_ENCODER_ENABLED=0 ./mctivity_motiond
+```
+
+## Profile Switch
+
+```bash
 sudo ./scripts/mctivity-set-profile.sh full
 ./scripts/mctivity-modular-verify.sh
 ```
 
-`mctivity-modular-verify.sh` expects the HMI service to be running. Set `BASE_URL` if the HMI is listening on a non-default port.
+`mctivity-modular-verify.sh` expects a running HMI. Set `BASE_URL` when it is not on the default local port.
 
-## How to Verify
-
-Before packaging or publishing:
+## Verify an Assembly
 
 ```bash
 ./scripts/mctivity-release-preflight.sh
-```
-
-```bash
 curl -s http://127.0.0.1:2015/api/capabilities
 ```
 
-If token auth is enabled:
+Check `profile`, `active_features`, `enabled_feature_keys`, `feature_assembly`, and `warnings`. A healthy assembly has the expected loaded features and no unresolved dependency warnings.
 
-```bash
-curl -s -H 'X-MCTIVITY-Token: change-me' http://127.0.0.1:2015/api/ui_state
-```
+## Rules of Thumb
 
-Look at:
-
-- `profile`
-- `active_features`
-- `enabled_feature_keys`
-- `feature_assembly`
-- `warnings`
-
-Healthy modular state:
-
-- `warnings` should ideally be empty
-- `feature_assembly.loaded` should contain the features you expect
-
-## Very Simple Rule for New Users
-
-If you are only assembling existing functions:
-
-- edit `profiles/*.json`
-- do not edit Python files
-- do not edit `feature_registry.json` first
-- keep the default local-only HMI unless you intentionally need LAN access
+- Use `minimal` for the smallest single-axis UI.
+- Use `standard` for normal axis control without the extra devices/modes in `full`.
+- Use `full` only when the configured EtherCAT topology and devices match the daemon.
+- Do not expose the built-in HTTP server directly to the public internet.
+- Do not treat software limits or UI confirmations as machine safety functions.

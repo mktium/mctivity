@@ -21,6 +21,6 @@ def handle_axis_command(ctx):
             ctx.adapter.apply_fv3_profile(ctx.payload)
         if cmd == "move_curve_rel":
             ctx.adapter.fv3_force_csp()
-        if cmd == "set_mode" and mode in ("position", "incremental", "jog", "point", "homing"):
+        if cmd == "set_mode" and mode in ("position", "incremental", "jog", "point", "multi_point"):
             ctx.adapter.fv3_set_mode(mode)
     return ctx.run_transport()

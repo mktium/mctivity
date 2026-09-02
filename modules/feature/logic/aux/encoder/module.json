@@ -1,0 +1,14 @@
+{
+  "id": "feature-logic-aux-encoder",
+  "type": "logic_feature",
+  "version": "1.0.0",
+  "domain": "axis_control_domain",
+  "requires": [
+    "axis-feedback-panel"
+  ],
+  "conflicts": [],
+  "capabilities": [
+    "axis.device.aux_encoder.access"
+  ],
+  "apiVersion": "v1"
+}

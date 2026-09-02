@@ -9,12 +9,16 @@
     "axis-control-panel",
     "feature-logic-single-point",
     "feature-hmi-single-point",
+    "feature-logic-anti-sway-position",
+    "feature-hmi-anti-sway-position",
     "feature-logic-incremental",
     "feature-hmi-incremental",
     "feature-logic-jog",
     "feature-hmi-jog",
     "feature-logic-point",
     "feature-hmi-point",
+    "feature-logic-multi-point",
+    "feature-hmi-multi-point",
     "feature-logic-homing",
     "feature-hmi-homing",
     "feature-logic-velocity",
@@ -25,6 +29,7 @@
     "feature-hmi-electronic-gear",
     "feature-logic-dual-axis-fv3",
     "feature-hmi-dual-axis-fv3",
+    "feature-logic-aux-encoder",
     "ui-state-persist"
   ]
 }

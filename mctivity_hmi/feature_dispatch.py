@@ -8,7 +8,10 @@ mode-feature routing explicit and modular.
 """
 
 from feature_contract import FeatureContext, ProtocolAdapter
+from feature_anti_sway_position import handle_axis_command as handle_anti_sway_position_command
 from feature_gear_cam import handle_axis_command as handle_gear_cam_command
+from feature_homing import handle_axis_command as handle_homing_command
+from feature_multi_point import handle_axis_command as handle_multi_point_command
 from feature_position import handle_axis_command as handle_position_command
 from feature_registry import FEATURE_REGISTRY
 from feature_torque import handle_axis_command as handle_torque_command
@@ -17,7 +20,10 @@ from feature_velocity import handle_axis_command as handle_velocity_command
 
 FEATURE_HANDLERS = {
     "position": handle_position_command,
+    "anti_sway_position": handle_anti_sway_position_command,
     "incremental": handle_position_command,
+    "multi_point": handle_multi_point_command,
+    "homing": handle_homing_command,
     "velocity": handle_velocity_command,
     "torque": handle_torque_command,
     "gear_cam": handle_gear_cam_command,
