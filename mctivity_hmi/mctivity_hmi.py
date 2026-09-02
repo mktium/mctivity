@@ -2612,6 +2612,8 @@ const feedbackByDevice = {mctivity:null, fv3:null, aux_encoder:null};
 const lastSoftZeroByDevice = {mctivity:null, fv3:null, aux_encoder:null};
 const incrementalCurveSnapshots = {mctivity:'', fv3:'', aux_encoder:''};
 const multiPointStatusByDevice = {mctivity:null, fv3:null, aux_encoder:null};
+const multiPointRequestsByDevice = {};
+let multiPointSelectionRevision = 0;
 const motionStateByDevice = {
   mctivity: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0, homingPending:false, homingPendingMethod:'', homingWasActive:false, homingNoticeKey:'', motionCancelNoticeKey:''},
   fv3: {latch:false, seenMoving:false, commandAt:0, commandSeq:0, stopRequested:false, gearEngaged:false, gearStoppedLatched:false, movingOffCandidateAt:0, enableVisual:false, enableOffCandidateAt:0, homingPending:false, homingPendingMethod:'', homingWasActive:false, homingNoticeKey:'', motionCancelNoticeKey:''},
@@ -5433,26 +5435,55 @@ function multiPointPayloadRows() {
     }, bounds);
   });
 }
-async function writeMultiPointTable(showAlert=false) {
+async function multiPointRequest(device, payload) {
+  const state = multiPointRequestsByDevice[device] ||= {issued:0, applied:0, barrier:0, pending:0};
+  const mutation = payload.cmd !== 'point_table_status';
+  if (!mutation && state.pending) return null;
+  const sequence = ++state.issued;
+  if (mutation) {
+    state.barrier = sequence;
+    state.pending += 1;
+  }
+  try {
+    const result = await apiForDevice(device, payload);
+    // A command invalidates older polls; responses never borrow the visible axis.
+    const current = sequence >= state.barrier && sequence > state.applied;
+    if (!current) return Object.assign({}, result, {uiSuperseded:true});
+    state.applied = sequence;
+    const runner = result && result.point_table_runner;
+    if (runner && typeof runner === 'object' && !Array.isArray(runner)) {
+      multiPointStatusByDevice[device] = runner;
+      if (device === activeDevice) renderMultiPointRunner(runner);
+    }
+    if (device === activeDevice) showApiError(result);
+    return result;
+  } finally {
+    if (mutation) state.pending -= 1;
+  }
+}
+function multiPointWritePayload() {
   const mp = syncMultiPointRowsFromInputs();
   const rows = multiPointPayloadRows();
   if (!rows.length) {
     throw new Error(UI_TEXT[currentLang].multiPointIdle);
   }
-  const result = await api({
+  return {
     cmd:'point_table_write',
     start:mp.start,
     step:mp.step,
     cycle_count:mp.cycleCount,
     rows
-  });
+  };
+}
+async function writeMultiPointTable(showAlert=false, device=activeDevice, payload=multiPointWritePayload()) {
+  const result = await multiPointRequest(device, payload);
+  if (result.uiSuperseded) return result;
   if (!result.ok) throw new Error(result.error || 'point_table_write failed');
-  multiPointStatusByDevice[activeDevice] = result.point_table_runner || null;
-  renderMultiPointRunner(multiPointStatusByDevice[activeDevice]);
-  if (showAlert) openDiagModal(modeLabel('multi_point'), result.message || UI_TEXT[currentLang].multiPointComplete);
+  if (showAlert && device === activeDevice) openDiagModal(modeLabel('multi_point'), result.message || UI_TEXT[currentLang].multiPointComplete);
   return result;
 }
 async function toggleMultiPointEdit() {
+  const device = activeDevice;
   const mp = currentMultiPoint();
   if (!mp.editing) {
     mp.editing = true;
@@ -5461,12 +5492,13 @@ async function toggleMultiPointEdit() {
     return false;
   }
   try {
-    await writeMultiPointTable(false);
-    currentMultiPoint().editing = false;
-    renderMultiPointPanel(true);
-    saveUiState();
+    const result = await writeMultiPointTable(false, device);
+    if (result.uiSuperseded) return false;
+    currentMultiPoint(device).editing = false;
+    if (device === activeDevice) renderMultiPointPanel(true);
+    scheduleUiStateSave(device);
   } catch (err) {
-    openDiagModal(modeLabel('multi_point'), err.message || String(err));
+    if (device === activeDevice) openDiagModal(modeLabel('multi_point'), err.message || String(err));
   }
   return false;
 }
@@ -5520,12 +5552,7 @@ function renderMultiPointRunner(runner) {
 }
 async function refreshMultiPointStatus() {
   if (!modeIsAssembled('multi_point')) return null;
-  const result = await api({cmd:'point_table_status'});
-  if (result && result.ok) {
-    multiPointStatusByDevice[activeDevice] = result.point_table_runner || null;
-    renderMultiPointRunner(multiPointStatusByDevice[activeDevice]);
-  }
-  return result;
+  return multiPointRequest(activeDevice, {cmd:'point_table_status'});
 }
 async function refreshAntiSwaySensorStatus() {
   if (!modeSelect || modeSelect.value !== 'anti_sway_position') return null;
@@ -6700,7 +6727,9 @@ function switchAxis(deviceName) {
   const monitorBtn = document.getElementById('tabMonitorBtn');
   const configBtn = document.getElementById('tabConfigBtn');
   const encoderBtn = document.getElementById('tabEncoderBtn');
-  activeDevice = supportsDevice(deviceName) ? deviceName : 'mctivity';
+  const nextDevice = supportsDevice(deviceName) ? deviceName : 'mctivity';
+  if (nextDevice !== activeDevice) multiPointSelectionRevision += 1;
+  activeDevice = nextDevice;
   if (monitorPanel) monitorPanel.classList.add('active');
   if (configPanel) configPanel.classList.remove('active');
   if (monitorBtn) monitorBtn.classList.toggle('active', activeDevice === 'mctivity');
@@ -7328,8 +7357,28 @@ function resetFault(event) {
   api({cmd:'fault_reset'}).catch(err => console.error(err));
   return false;
 }
+async function stopMultiPointMotion(device = activeDevice) {
+  const motionState = currentMotion(device);
+  if (motionState.stopRequested) return false;
+  const sequence = ++motionState.commandSeq;
+  motionState.stopRequested = true;
+  motionState.latch = false;
+  motionState.seenMoving = false;
+  try {
+    return await multiPointRequest(device, {cmd:'point_table_stop'});
+  } catch (err) {
+    if (device === activeDevice && sequence === motionState.commandSeq) {
+      renderMultiPointRunner(multiPointStatusByDevice[device]);
+      openDiagModal(modeLabel('multi_point'), err.message || String(err));
+    }
+    return false;
+  } finally {
+    if (sequence === motionState.commandSeq) motionState.stopRequested = false;
+  }
+}
 function stopMotion() {
   if (isAuxEncoderDevice(activeDevice)) return Promise.resolve(false);
+  if (isMultiPointModeSelected() || isMultiPointRunnerRunning()) return stopMultiPointMotion(activeDevice);
   const motionState = currentMotion();
   motionState.commandSeq += 1;
   if (motionState.stopRequested) return false;
@@ -7353,23 +7402,6 @@ function stopMotion() {
       .catch(err => {
         motionState.stopRequested = false;
         renderMotionToggle(Boolean(currentStatus() && currentStatus().moving) || isGearEngaged(), isGearEngaged() ? UI_TEXT[currentLang].gearing : '');
-        console.error(err);
-        return false;
-      });
-  }
-  if (isMultiPointModeSelected()) {
-    return api({cmd:'point_table_stop'})
-      .then(data => {
-        motionState.stopRequested = false;
-        motionState.latch = false;
-        motionState.seenMoving = false;
-        multiPointStatusByDevice[activeDevice] = data.point_table_runner || null;
-        renderMultiPointRunner(multiPointStatusByDevice[activeDevice]);
-        return data;
-      })
-      .catch(err => {
-        motionState.stopRequested = false;
-        renderMotionToggle(Boolean(currentStatus() && currentStatus().moving));
         console.error(err);
         return false;
       });
@@ -7531,6 +7563,52 @@ function startHomingFromPanel() {
   });
   return false;
 }
+async function startMultiPointMotion() {
+  const device = activeDevice;
+  const selection = multiPointSelectionRevision;
+  const motionState = currentMotion(device);
+  const commandSeq = ++motionState.commandSeq;
+  const current = () => commandSeq === motionState.commandSeq && !motionState.stopRequested
+    && selection === multiPointSelectionRevision && device === activeDevice && isMultiPointModeSelected();
+  let started = false;
+  try {
+    if (currentMultiPoint(device).editing) throw new Error(UI_TEXT[currentLang].multiPointWrite);
+    const payload = multiPointWritePayload();
+    motionState.latch = true;
+    motionState.seenMoving = false;
+    motionState.gearEngaged = false;
+    motionState.gearStoppedLatched = false;
+    motionState.motionCancelNoticeKey = '';
+    motionState.commandAt = Date.now();
+    setGearPanelLocked(false);
+    renderMotionToggle(true);
+    const modeResult = await apiForDevice(device, {cmd:'set_mode', mode:'multi_point'});
+    if (!current()) return false;
+    if (!modeResult.ok) {
+      showApiError(modeResult);
+      throw new Error(modeResult.error || 'set_mode multi_point failed');
+    }
+    const writeResult = await writeMultiPointTable(false, device, payload);
+    if (!current() || writeResult.uiSuperseded) return false;
+    const runResult = await multiPointRequest(device, {cmd:'point_table_run', cycle_count:payload.cycle_count});
+    if (runResult.uiSuperseded) return false;
+    if (!runResult.ok) throw new Error(runResult.error || 'point_table_run failed');
+    started = true;
+    return runResult;
+  } catch (err) {
+    if (current()) openDiagModal(modeLabel('multi_point'), err.message || String(err));
+    return false;
+  } finally {
+    if (!started && commandSeq === motionState.commandSeq) {
+      motionState.latch = false;
+      motionState.seenMoving = false;
+      if (device === activeDevice) {
+        renderMotionToggle(false);
+        renderMultiPointRunner(multiPointStatusByDevice[device]);
+      }
+    }
+  }
+}
 async function startSinglePointMotion() {
   if (isAuxEncoderDevice(activeDevice)) return false;
   const motionState = currentMotion();
@@ -7538,6 +7616,7 @@ async function startSinglePointMotion() {
   if (isMultiPointRunnerRunning() || motionState.latch || (currentStatus() && currentStatus().moving)) {
     return stopMotion();
   }
+  if (isMultiPointModeSelected()) return startMultiPointMotion();
   if (modeSelect && modeSelect.value === 'anti_sway_position') {
     return startAntiSwayRun().catch(err => {
       console.error(err);
@@ -7598,24 +7677,6 @@ async function startSinglePointMotion() {
         renderMotionToggle(false);
       }
       return homingResult;
-    }
-    if (modeSelect && modeSelect.value === 'multi_point') {
-      const mp = currentMultiPoint();
-      if (mp.editing) {
-        throw new Error(UI_TEXT[currentLang].multiPointWrite);
-      }
-      const modeResult = await api({cmd:'set_mode', mode:'multi_point'});
-      if (!modeResult.ok) throw new Error(modeResult.error || 'set_mode multi_point failed');
-      if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
-      const writeResult = await writeMultiPointTable(false);
-      if (!writeResult.ok) throw new Error(writeResult.error || 'point_table_write failed');
-      if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
-      const runResult = await api({cmd:'point_table_run', cycle_count:mp.cycleCount});
-      if (commandSeq !== motionState.commandSeq || motionState.stopRequested) return false;
-      if (!runResult.ok) throw new Error(runResult.error || 'point_table_run failed');
-      multiPointStatusByDevice[activeDevice] = runResult.point_table_runner || null;
-      renderMultiPointRunner(multiPointStatusByDevice[activeDevice]);
-      return runResult;
     }
     if (modeSelect && modeSelect.value === 'incremental') {
       syncIncrementalEditor(false);

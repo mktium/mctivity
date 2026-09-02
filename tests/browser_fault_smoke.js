@@ -8,6 +8,7 @@ const path = require("node:path");
 const {spawn} = require("node:child_process");
 const {once} = require("node:events");
 const {chromium} = require("playwright");
+const checkMultiPointRaces = require("./browser_multi_point_races");
 const root = path.resolve(__dirname, "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mctivity-browser-"));
 const screenshots = process.env.MCTIVITY_SCREENSHOT_DIR;
@@ -212,6 +213,8 @@ let browser;
     assert(retryState.active);
     assert.equal(retryState.label, retryState.expected);
     assert.equal(commands.at(-1).cmd, "point_table_stop", "Unknown stop must retry stop, not restart");
+    await checkMultiPointRaces(page);
+    console.log("browser multi-point response races passed at " + viewport.width + "x" + viewport.height);
     await page.evaluate(async () => {
       currentProfile().transmission.forwardLimit = 211;
       await persistUiState();

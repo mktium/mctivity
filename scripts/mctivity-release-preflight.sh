@@ -33,7 +33,9 @@ if command -v node >/dev/null 2>&1; then
   done < <(find mctivity_hmi/assets -name '*.js' -type f | sort)
   node tests/raw_fault_status_test.js
   node tests/mock_state_isolation_test.js
+  node tests/multi_point_ui_race_test.js
   node --check tests/browser_fault_smoke.js
+  node --check tests/browser_multi_point_races.js
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mctivity-inline-js.XXXXXX")"
   tmp_js="$tmp_dir/inline.js"
   trap 'rm -rf "$tmp_dir"' EXIT

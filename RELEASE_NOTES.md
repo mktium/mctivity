@@ -94,6 +94,15 @@ This review is local only: no deployment, service restart, or motion test was pe
 
 The multi-point stop state is process-local. Do not restart the HMI to bypass an unconfirmed stop; verify the mechanism and independent protection at the machine. Communication loss can prevent software stopping, so hardware emergency stop and independent limits remain necessary.
 
+### Feedback Validity and Axis Response Follow-up
+
+- Stop confirmation now requires valid EtherCAT working-counter and slave-operational flags, an advancing uint32 cycle counter, and two stationary samples. Missing, malformed, invalid, delayed, frozen, or rolled-back feedback preserves the unconfirmed-stop guard. Row completion uses the same feedback validity checks.
+- Multi-point status, stop, table-write, and run responses update only the axis that initiated the request. Per-axis sequencing prevents late responses from overwriting newer state; polling does not race pending table mutations.
+- Startup captures the axis and table values before waiting. Switching axes, including away and back, cancels remaining unsent startup steps; a late response cannot start the newly selected axis. Table-edit completion and errors also stay with their original axis.
+- New memory and browser regressions cover invalid-feedback recovery, delayed axis responses, same-axis response ordering, and the visible stop-retry control.
+
+These corrections remain local and hardware-free. No trajectory formula, PDO daemon, or homing implementation was changed. The feedback contract and its process-local limits are documented in SECURITY.md.
+
 ## EtherCAT Topology
 
 The supplied daemon is configured for:

@@ -25,6 +25,9 @@ class MemoryTransport:
         self.status_error = ""
         self.keep_moving = False
         self.missing_motion_status = False
+        self.feedback_overrides = {}
+        self.freeze_cycles = False
+        self.cycles = 0
         self.before_move_return = None
         self.lock = threading.Lock()
 
@@ -52,7 +55,11 @@ class MemoryTransport:
                 return {"ok": False, "error": self.status_error}
             if self.missing_motion_status:
                 return {"ok": True, "status": {}}
-            return {"ok": True, "status": {"moving": self.moving, "pos": 0}}
+            if not self.freeze_cycles:
+                self.cycles += 1
+            return {"ok": True, "status": {"moving": self.moving, "pos": 0,
+                    "wc_complete": True, "operational": 1, "cycles": self.cycles,
+                    **self.feedback_overrides}}
         return {"ok": True}
 
     def commands(self):
@@ -368,6 +375,122 @@ class MotionCancellationTests(unittest.TestCase):
         self.assertEqual("readiness feedback lost", runner["execution_error"])
         self.assertEqual(["stop"], transport.commands())
         self.assertFalse(mp._start_table(DEVICES[0], {}, transport, ProtocolAdapter())["ok"])
+
+    def test_invalid_bus_feedback_cannot_unlock_after_execution_failure(self):
+        failures = [
+            {"wc_complete": False, "operational": 0},
+            {"wc_complete": False, "operational": 1},
+            {"wc_complete": True, "operational": 0},
+            {"wc_complete": None}, {"operational": None},
+            {"wc_complete": "true"}, {"operational": "1"},
+            {"operational": 2}, {"cycles": None}, {"cycles": -1},
+            {"cycles": True}, {"cycles": 1.0}, {"cycles": 0x100000000},
+        ]
+        for device in DEVICES:
+            for fields in failures + [None]:
+                with self.subTest(device=device, fields=fields), \
+                        patch.object(mp, "POINT_FEEDBACK_STALE_S", 0.02):
+                    transport = self.transport()
+                    transport.feedback_overrides = fields or {}
+                    transport.freeze_cycles = fields is None
+                    with patch.object(mp, "_wait_for_row", return_value=(False, "original row feedback lost")):
+                        self.start(transport, device)
+                        runner = self.finish(device)
+                    self.assertFalse(runner["stop_confirmed"])
+                    self.assertTrue(runner["stop_error"])
+                    self.assertEqual("original row feedback lost", runner["execution_error"])
+                    self.assertFalse(mp._clear_table(device, transport)["ok"])
+                    self.assertFalse(mp._start_table(device, {}, transport, ProtocolAdapter())["ok"])
+                    self.assertFalse(mp._write_table(device, {"rows": []})["ok"])
+                    for cmd in ("enable", "move_abs", "fault_reset", "set_zero"):
+                        self.assertFalse(self.command(transport, cmd, device)["ok"])
+                    self.assertEqual(["set_mode", "move_abs", "stop"], transport.commands())
+                    # Disable stays available, but cannot assert a valid stop by itself.
+                    self.assertTrue(self.command(transport, "disable", device)["ok"])
+                    self.assertFalse(self.finish(device)["stop_confirmed"])
+                    transport.feedback_overrides = {}
+                    transport.freeze_cycles = False
+                    self.assertTrue(self.command(transport, "stop", device)["ok"])
+                    runner = self.finish(device)
+                    self.assertTrue(runner["stop_confirmed"])
+                    self.assertEqual("original row feedback lost", runner["execution_error"])
+                    self.assertTrue(self.command(transport, "enable", device)["ok"])
+                    self.assertTrue(mp._clear_table(device, transport)["ok"])
+
+    def test_row_completion_rejects_invalid_bus_feedback(self):
+        transport = self.transport()
+        transport.feedback_overrides = {"moving": False, "pos": ROW["pos"], "wc_complete": False}
+        self.start(transport)
+        runner = self.finish()
+        self.assertIn("wc_complete", runner["execution_error"])
+        self.assertFalse(runner["stop_confirmed"])
+        self.assertEqual(["set_mode", "move_abs", "stop"], transport.commands())
+
+    def test_normal_rows_and_cycles_complete_with_fresh_feedback(self):
+        transport = self.transport()
+        poll = {"pos": 0, "moving": False}
+
+        def complete_rows(device, payload):
+            result = transport(device, payload)
+            if payload["cmd"] == "move_abs":
+                poll.update(pos=payload["pos"], moving=True)
+            if payload["cmd"] == "status":
+                result["status"].update(poll)
+                poll["moving"] = False
+            return result
+
+        mp._write_table(DEVICES[0], {"rows": [dict(ROW), dict(ROW, row=2, pos=20000)], "cycle_count": 2})
+        mp._start_table(DEVICES[0], {}, complete_rows, ProtocolAdapter())
+        self.assertEqual("complete", self.finish()["state"])
+        self.assertEqual(4, transport.commands().count("move_abs"))
+        self.assertNotIn("stop", transport.commands())
+        self.assertTrue(mp._clear_table(DEVICES[0], transport)["ok"])
+
+
+class MotionFeedbackValidationTests(unittest.TestCase):
+    def valid(self, cycles=1, **fields):
+        return {"ok": True, "status": {"moving": False, "wc_complete": True,
+                                      "operational": 1, "cycles": cycles, **fields}}
+
+    def test_missing_or_malformed_feedback_is_rejected(self):
+        for field in ("moving", "wc_complete", "operational", "cycles"):
+            value = self.valid()
+            del value["status"][field]
+            with self.subTest(missing=field):
+                self.assertTrue(mp._MotionFeedbackWatch().check(value, mp.time.monotonic())[2])
+        for value in (None, [], "ok", {"ok": 1}, {"ok": True, "status": []}):
+            with self.subTest(value=value):
+                self.assertTrue(mp._MotionFeedbackWatch().check(value, mp.time.monotonic())[2])
+
+    def test_counter_wrap_is_fresh_but_rollback_is_invalid(self):
+        watch = mp._MotionFeedbackWatch()
+        self.assertFalse(watch.check(self.valid(0xffffffff), mp.time.monotonic())[1])
+        self.assertTrue(watch.check(self.valid(0), mp.time.monotonic())[1])
+        self.assertTrue(watch.check(self.valid(0xffffffff), mp.time.monotonic())[2])
+
+    def test_delayed_response_and_frozen_counter_are_stale(self):
+        with patch.object(mp.time, "monotonic", return_value=10):
+            watch = mp._MotionFeedbackWatch()
+            self.assertIn("too old", watch.check(self.valid(), 8)[2])
+            self.assertEqual("", watch.check(self.valid(), 10)[2])
+        with patch.object(mp.time, "monotonic", return_value=12):
+            self.assertIn("stale", watch.check(self.valid(), 12)[2])
+
+    def test_stop_requires_advancing_stationary_samples(self):
+        for samples in (
+            [self.valid(7), self.valid(7), self.valid(8)],
+            [self.valid(7, moving=True), self.valid(8), self.valid(9)],
+        ):
+            calls = []
+
+            def transport(*_):
+                value = samples[len(calls)]
+                calls.append(value)
+                return value
+
+            with patch.object(mp.time, "sleep"):
+                self.assertTrue(mp._wait_for_axis_stopped("memory_axis", transport)[0])
+            self.assertEqual(3, len(calls))
 
 
 if __name__ == "__main__":

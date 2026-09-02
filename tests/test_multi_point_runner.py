@@ -29,6 +29,7 @@ class BlockingTransport:
         self.moving = False
         self.move_started = threading.Event()
         self.calls = []
+        self.cycles = 0
         self.lock = threading.Lock()
 
     def __call__(self, device, payload):
@@ -39,7 +40,9 @@ class BlockingTransport:
             self.moving = True
             self.move_started.set()
         if cmd == "status":
-            return {"ok": True, "status": {"moving": self.moving, "pos": 0}}
+            self.cycles += 1
+            return {"ok": True, "status": {"moving": self.moving, "pos": 0,
+                    "wc_complete": True, "operational": 1, "cycles": self.cycles}}
         return {"ok": True}
 
 

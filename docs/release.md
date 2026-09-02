@@ -37,7 +37,7 @@ Optional browser regression with Playwright 1.62.1 available to Node.js:
 MCTIVITY_BROWSER_CHANNEL=chrome node tests/browser_fault_smoke.js
 ```
 
-Omit the channel variable to use Playwright's installed Chromium. This test launches an isolated loopback fixture, intercepts device APIs, blocks hardware backend calls, and checks raw fault display, explicit reset, unconfirmed-stop retry, and preview configuration isolation at 1920x1080 and 390x844. It does not connect to a controller.
+Omit the channel variable to use Playwright's installed Chromium. This test launches an isolated loopback fixture, intercepts device APIs, blocks hardware backend calls, and checks raw fault display, explicit reset, unconfirmed-stop retry, delayed multi-point responses across axis switches, same-axis response ordering, startup cancellation, and preview configuration isolation at 1920x1080 and 390x844. It does not connect to a controller.
 
 On a matching IgH EtherCAT development target:
 

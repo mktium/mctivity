@@ -24,6 +24,10 @@ The HMI execution flag covers anti-sway curve requests as well as non-dry prepar
 
 Multi-point cancellation retains an unconfirmed-stop state when a stop fails or feedback is unavailable. New motion and table clear/restart remain blocked on that axis; explicit stop retry and disable remain available. An accepted stop request is not confirmation of standstill. This state is process-local: do not restart the HMI to bypass it. Communication failures can prevent a software stop; independent hardware emergency stop and limits remain necessary.
 
+The supplied daemon's motion-feedback contract requires a valid `moving` flag, `wc_complete` and `operational` both true (or integer 1), and a uint32 `cycles` counter. Missing/malformed fields, an invalid bus/slave state, a counter rollback, a response taking over one second, or a counter not advancing for one second cannot confirm stop. Two stationary samples with a forward cycle-counter advance are required; uint32 wrap is supported. The same validity/freshness checks guard multi-point row completion. A successful local daemon RPC alone is insufficient. Alternative adapters must provide this contract, not synthesize successful flags for unavailable feedback.
+
+Multi-point browser responses are bound to the request's axis and ordered per axis. A mutating request invalidates older polls, and polling pauses while a mutation is pending. Missing runner data does not clear the existing state. Switching axes during startup cancels remaining unsent setup/run steps; it does not stop motion that has already been submitted. This UI sequencing is not a substitute for the server-side cancellation guard or multi-client arbitration.
+
 Browser fault-preview sessions keep configuration edits in memory and block device commands and configuration writes. Entering or leaving preview requires a fresh page load; do not attempt to reuse preview state for machine operation.
 
 ## Secrets and Publishing

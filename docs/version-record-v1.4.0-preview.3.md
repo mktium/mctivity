@@ -69,6 +69,15 @@ The initial content-cleanup snapshot did not cover all stop and preview-isolatio
 
 This follow-up changes feature dispatch, multi-point job lifecycle, execution admission, and the corresponding UI. It does not change the motion daemon, homing algorithm, anti-sway curve formulas, the GPL text, or excluded diagnostic-content boundaries.
 
+## Feedback and Response Follow-up
+
+A second independent review found that successful local RPC responses could still contain invalid EtherCAT feedback, and that delayed browser responses could update the wrong axis. The earlier passing checks did not cover those cases.
+
+- Multi-point stop and row-completion checks require valid bus/slave flags and a progressing uint32 sample counter. Stop confirmation needs two stationary samples across a counter advance. Missing/invalid fields, counter rollback/freeze, or stale responses retain the stop constraint.
+- Multi-point requests capture their axis; per-axis request ordering and mutation barriers reject superseded responses. Rendering and table-edit completion no longer use the axis selected at response time.
+- Startup snapshots its table inputs before awaiting responses and cancels remaining unsent steps after an axis-selection change or explicit stop. Motion already submitted is not automatically cancelled by changing tabs.
+- Stop retries and server-side blocking remain independent of browser selection. No motion formulas, PDO daemon, homing code, or diagnostic-content boundaries changed in this follow-up.
+
 ## Ownership
 
 On 2026-09-02 the project owner confirmed that the program code copyright and logo belong to 上海诣儒信息科技有限公司, that the logo has a trademark registration certificate, and that the company created the architecture diagrams in-house. README and NOTICE record that confirmation without claiming an independent certificate inspection. No certificate or registration number is packaged. Third-party license terms remain separate.
@@ -82,6 +91,8 @@ The source release preflight is local and hardware-free. Browser checks use isol
 The initial 26-test publication check did not cover direct execution bypass, generic-stop cancellation, abnormal job exit, or mock configuration writes. Its passing result is not evidence that those paths were correct.
 
 On 2026-09-02 the corrected preflight passed all 43 Python tests and two Node.js regression scripts. The 17 cancellation/concurrency tests also passed 20 repeated rounds (340 executions). The isolated Chrome browser smoke test passed at 1920x1080 and 390x844, including configuration-write accounting, preview transitions, and unconfirmed-stop retry. These results cover the checks described above, not physical-machine behavior.
+
+The subsequent feedback/response correction expanded validation to 50 Python tests and three Node.js regressions. The isolated browser test now also exercises delayed A/B status, stop, write and run responses, same-axis response ordering, and the actual stop-retry control at both viewports. Exact candidate/archive checks and any repeated-run counts are recorded in the local review handoff, not inferred from the earlier snapshot's results.
 
 Historical checks on earlier snapshots include controller-side native IgH compilation and supervised motion tests of existing modes, homing, encoder feedback, electronic gearing, and anti-sway. They are not evidence of new testing after this publication change.
 

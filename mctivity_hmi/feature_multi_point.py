@@ -24,6 +24,7 @@ POINT_TARGET_TOLERANCE_COUNTS = 2048
 POINT_ROW_TIMEOUT_S = 120.0
 POINT_STOP_TIMEOUT_S = 120.0
 POINT_STATUS_PERIOD_S = 0.08
+POINT_FEEDBACK_STALE_S = 1.0
 
 _LOCK = threading.RLock()
 _TABLES: dict[str, dict[str, Any]] = {}
@@ -172,19 +173,57 @@ def _target_gap(status: dict[str, Any], target_pos: int) -> int | None:
         return None
 
 
+class _MotionFeedbackWatch:
+    """Validate live daemon feedback, not just a successful local RPC."""
+
+    def __init__(self):
+        self.cycles = None
+        self.advanced_at = time.monotonic()
+
+    def check(self, result, requested_at):
+        now = time.monotonic()
+        if not isinstance(result, dict):
+            return None, False, "status failed"
+        if result.get("ok") is not True:
+            return None, False, str(result.get("error") or "status failed")
+        status = result.get("status")
+        if not isinstance(status, dict) or type(status.get("moving")) not in (bool, int) or status["moving"] not in (0, 1):
+            return None, False, "motion status unavailable"
+        for field in ("wc_complete", "operational"):
+            if type(status.get(field)) not in (bool, int) or status[field] != 1:
+                return None, False, f"EtherCAT feedback invalid: {field}"
+        cycles = status.get("cycles")
+        if type(cycles) is not int or not 0 <= cycles <= 0xffffffff:
+            return None, False, "feedback cycle counter unavailable"
+        if now - requested_at > POINT_FEEDBACK_STALE_S:
+            return None, False, "feedback response too old"
+        if self.cycles is None:
+            self.cycles, self.advanced_at = cycles, now
+            return status, False, ""
+        # The daemon exports a uint32 cycle counter; accept wrap, not rollback.
+        delta = (cycles - self.cycles) & 0xffffffff
+        if delta >= 0x80000000:
+            return None, False, "feedback cycle counter moved backwards"
+        if delta:
+            self.cycles, self.advanced_at = cycles, now
+            return status, True, ""
+        if now - self.advanced_at >= POINT_FEEDBACK_STALE_S:
+            return None, False, "feedback cycle counter is stale"
+        return status, False, ""
+
+
 def _wait_for_row(device: str, row: dict[str, Any], transport_fn, stop_event: threading.Event) -> tuple[bool, str]:
     target_pos = int(row["pos"])
     started = _now()
     seen_motion = False
+    feedback = _MotionFeedbackWatch()
     while not stop_event.is_set():
         if _now() - started > POINT_ROW_TIMEOUT_S:
             return False, f"point table row {row['row']} timed out"
-        result = transport_fn(device, {"cmd": "status"})
-        if not result.get("ok"):
-            return False, str(result.get("error") or "status failed")
-        status = result.get("status", {})
-        if not isinstance(status, dict) or type(status.get("moving")) not in (bool, int) or status["moving"] not in (0, 1):
-            return False, "motion status unavailable"
+        requested_at = time.monotonic()
+        status, fresh, error = feedback.check(transport_fn(device, {"cmd": "status"}), requested_at)
+        if error:
+            return False, error
         if status.get("fault"):
             return False, "axis fault during point table execution"
         moving = bool(status.get("moving"))
@@ -192,7 +231,7 @@ def _wait_for_row(device: str, row: dict[str, Any], transport_fn, stop_event: th
         gap = _target_gap(status, target_pos)
         close_enough = gap is not None and gap <= POINT_TARGET_TOLERANCE_COUNTS
         settled_enough = _now() - started > 0.5
-        if close_enough and (seen_motion and not moving or settled_enough and not moving):
+        if fresh and close_enough and (seen_motion and not moving or settled_enough and not moving):
             return True, "row complete"
         time.sleep(POINT_STATUS_PERIOD_S)
     return False, "point table stopped"
@@ -200,15 +239,17 @@ def _wait_for_row(device: str, row: dict[str, Any], transport_fn, stop_event: th
 
 def _wait_for_axis_stopped(device: str, transport_fn) -> tuple[bool, str]:
     started = time.monotonic()
+    feedback = _MotionFeedbackWatch()
+    previous_still = False
     while time.monotonic() - started <= POINT_STOP_TIMEOUT_S:
-        result = transport_fn(device, {"cmd": "status"})
-        if not result.get("ok"):
-            return False, str(result.get("error") or "status failed")
-        status = result.get("status", {})
-        if not isinstance(status, dict) or type(status.get("moving")) not in (bool, int) or status["moving"] not in (0, 1):
-            return False, "motion status unavailable"
-        if not bool(status.get("moving")):
+        requested_at = time.monotonic()
+        status, fresh, error = feedback.check(transport_fn(device, {"cmd": "status"}), requested_at)
+        if error:
+            return False, error
+        still = not bool(status["moving"])
+        if fresh and previous_still and still:
             return True, "point table stopped"
+        previous_still = still
         time.sleep(POINT_STATUS_PERIOD_S)
     return False, "point table stop timed out"
 
