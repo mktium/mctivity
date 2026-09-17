@@ -213,6 +213,8 @@ def travel_ui_model(status: Mapping[str, Any] | None, raw_config: Mapping[str, A
         "endpoints_valid": config.endpoints_valid,
         "calibration_actions_available": False,
         "calibration_actions_reason": "runtime_not_connected",
+        "calibration_engine": "endpoint_contact_decision_v1",
+        "calibration_engine_available": False,
         "anti_sway": {
             "enabled": config.anti_sway_enabled,
             "ready": config.anti_sway_ready,

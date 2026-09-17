@@ -51,11 +51,23 @@ reset, or motion command is part of the baseline deployment.
 The local phase B/G implementation adds a read-only linear-travel model and HMI
 panel for the single-axis D profile. It displays current/target counts, endpoint
 validity, safe travel range, calibration state, commissioning inhibit, and
-anti-sway readiness. Endpoint calibration actions are intentionally not wired to
+anti-sway readiness. The endpoint decision layer is implemented as the pure
+`endpoint_contact_decision_v1` state machine in
+`mctivity_hmi/travel_calibration.py`: it requires a healthy enabled axis, a
+current baseline, a sustained current rise, and a position-progress stall, with
+timeout/fault/communication fail-closed paths. It has no EtherCAT or subprocess
+side effects. Endpoint calibration actions are intentionally not wired to
 motiond yet; the HMI reports `runtime_not_connected` and keeps the anti-sway
-toggle disabled. Targets are rejected by the pure model until both endpoints and
-the safety margin are valid. The read-only model uses the confirmed baseline of
-`10000 counts/rev`, while endpoint values and sway period remain unconfigured.
+toggle disabled. Targets are rejected by the pure model until both endpoints
+and the safety margin are valid. The read-only model uses the confirmed
+baseline of `10000 counts/rev`, while endpoint values and sway period remain
+unconfigured.
+
+The HMI panel is deliberately compact for the fixed touch display. Its short
+viewport layout keeps the position rail, endpoint/target metrics, and calibration
+badge visible without relying on vertical scrolling; explanatory text and the
+currently unavailable anti-sway switch collapse at viewport heights at or below
+820 px.
 
 ## No-motion acceptance
 

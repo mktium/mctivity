@@ -22,6 +22,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
                 "counts_per_rev": 10000,
                 "calibration_actions_available": False,
                 "calibration_actions_reason": "runtime_not_connected",
+                "calibration_engine": "endpoint_contact_decision_v1",
+                "calibration_runtime_connected": False,
                 "anti_sway_shaper": "zvd",
             },
         )
@@ -48,6 +50,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         self.assertFalse(result["travel"]["endpoints_valid"])
         self.assertEqual(result["travel"]["calibration_state"], "uncalibrated")
         self.assertFalse(result["travel"]["calibration_actions_available"])
+        self.assertEqual(result["travel"]["calibration_engine"], "endpoint_contact_decision_v1")
+        self.assertFalse(result["travel"]["calibration_engine_available"])
         command.assert_called_once_with({"cmd": "status", "device": "mctivity"})
 
     def test_travel_status_rejects_other_device(self):
@@ -78,6 +82,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         self.assertIn("行程与防摇", html)
         self.assertIn("/api/travel?device=", html)
         self.assertIn("端点尚未有效；当前页面只读显示", html)
+        self.assertIn("@media (max-height: 820px)", html)
+        self.assertIn("overflow:hidden", html)
         self.assertNotIn("__LINEAR_TRAVEL_AVAILABLE__", html)
 
 

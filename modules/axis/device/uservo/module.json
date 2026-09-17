@@ -33,6 +33,17 @@
     "default_accel_rpm_s": 100,
     "max_accel_rpm_s": 500,
     "commissioning_inhibit_default": true,
+    "linear_travel": {
+      "enabled": true,
+      "calibration_engine": "endpoint_contact_decision_v1",
+      "calibration_runtime_connected": false,
+      "encoder_counts_per_rev": 10000,
+      "approach_speed_counts_s_default": 500,
+      "contact_hold_ms_default": 40,
+      "requires_current_feedback": true,
+      "requires_position_progress_check": true,
+      "anti_sway_shaper": "zvd"
+    },
     "rxpdo": [
       "0x6040:00/16",
       "0x6060:00/8",
