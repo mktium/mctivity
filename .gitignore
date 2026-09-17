@@ -35,3 +35,6 @@ compile_commands.json
 .env.*
 .vscode/
 .idea/
+
+# 本地项目日志与现场调试记录（不进入仓库）
+项目日志/

@@ -21,6 +21,7 @@ from feature_registry import (
     resolve_enabled_feature_keys,
 )
 from profile_runtime import build_module_runtime
+from travel_runtime import normalize_travel_config, travel_ui_model
 
 
 def _env_int(name, default):
@@ -343,6 +344,11 @@ _GEAR_PROFILE = (
     and all(device.get("topology") == "axis-de-uservo-gear" for device in _AXIS_DEVICES)
     and {str(device.get("logical_axis", "")).upper() for device in _AXIS_DEVICES} == {"D", "E"}
 )
+_LINEAR_TRAVEL_PROFILE = (
+    len(_AXIS_DEVICES) == 1
+    and str(_AXIS_DEVICES[0].get("logical_axis", "")).upper() == "D"
+    and _AXIS_DEVICES[0].get("topology") == "axis-d-uservo"
+)
 _PRIMARY_AXIS_DEVICE = _AXIS_DEVICES[0] if _AXIS_DEVICES else {}
 _PRIMARY_AXIS_LABEL = str(_PRIMARY_AXIS_DEVICE.get("logical_axis", "A")).strip().upper() or "A"
 _PRIMARY_AXIS_COUNTS_PER_REV = max(1, int(_PRIMARY_AXIS_DEVICE.get("counts_per_rev", 8388608)))
@@ -460,6 +466,15 @@ def capability_manifest():
             "max_ratio": MAX_GEAR_RATIO,
             "following_error_limit_counts": 200 if _GEAR_PROFILE else None,
             "commands": ["gear_config", "gear_start", "gear_stop"] if _GEAR_PROFILE else [],
+        },
+        "linear_travel_control": {
+            "available": _LINEAR_TRAVEL_PROFILE,
+            "device": _HMI_DEVICE_ORDER[0] if _LINEAR_TRAVEL_PROFILE else None,
+            "logical_axis": _PRIMARY_AXIS_LABEL if _LINEAR_TRAVEL_PROFILE else None,
+            "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV if _LINEAR_TRAVEL_PROFILE else None,
+            "calibration_actions_available": False,
+            "calibration_actions_reason": "runtime_not_connected",
+            "anti_sway_shaper": "zvd",
         },
         "motiond_restart_control": {
             "available": SYSTEM_MOTIOND_RESTART_ENABLED,
@@ -837,6 +852,24 @@ button.stop { background:var(--warn); } button.blue { background:var(--theme-dee
 .big-angle { grid-column:1 / -1; font-size:54px; line-height:.9; color:var(--theme-deep); font-weight:900; }
 .sliders { display:grid; gap:8px; }
 .slider-card { border:1px solid rgba(166,166,166,.30); border-radius:10px; padding:9px; background:#fff; }
+.travel-card { margin-top:9px; border-color:rgba(42,131,183,.28); background:linear-gradient(180deg,#fff 0%,#f7fbfe 100%); }
+.travel-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:7px; }
+.travel-title { color:var(--theme-deep); font-size:14px; font-weight:900; }
+.travel-badge { padding:4px 8px; border-radius:999px; background:#eef3f6; color:#66717c; font-size:10px; font-weight:900; }
+.travel-badge.good { background:rgba(22,134,74,.10); color:var(--ok); }
+.travel-badge.warn { background:rgba(199,118,0,.12); color:var(--warn); }
+.travel-rail { position:relative; height:30px; margin:10px 8px 5px; border-radius:999px; background:#e7edf1; }
+.travel-rail-safe { position:absolute; top:8px; height:14px; border-radius:999px; background:rgba(42,131,183,.20); }
+.travel-marker { position:absolute; top:3px; width:24px; height:24px; border-radius:50%; border:3px solid var(--theme-deep); background:#fff; transform:translateX(-50%); box-shadow:0 3px 8px rgba(26,105,165,.22); }
+.travel-labels { display:flex; justify-content:space-between; gap:8px; color:#66717c; font-size:10px; font-weight:800; }
+.travel-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:8px; }
+.travel-metric { padding:6px 7px; border-radius:8px; background:#f7f9fb; border:1px solid rgba(166,166,166,.18); }
+.travel-metric .label { display:block; color:#78838d; font-size:10px; font-weight:800; }
+.travel-metric .value { display:block; margin-top:2px; color:#20262b; font-size:13px; font-weight:900; }
+.travel-switch { display:flex; align-items:center; gap:7px; margin-top:8px; color:#47515a; font-size:11px; font-weight:900; }
+.travel-switch input { width:18px; height:18px; margin:0; accent-color:var(--theme-blue); }
+.travel-switch input:disabled { opacity:.55; }
+.travel-reason { min-height:20px; margin-top:6px; color:#6b747d; font-size:11px; line-height:1.25; font-weight:700; }
 .slider-head { display:flex; justify-content:space-between; gap:10px; align-items:baseline; margin-bottom:4px; }
 .slider-title { font-size:13px; font-weight:900; color:var(--dark); }
 .slider-number { font-size:14px; font-weight:900; color:var(--theme-deep); text-align:right; }
@@ -1091,6 +1124,18 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
               </div>
             </div>
           </div>
+        </div>
+        <div id="linearTravelCard" class="slider-card travel-card" hidden>
+          <div class="travel-head"><span class="travel-title">行程与防摇</span><span id="travelBadge" class="travel-badge">未标定</span></div>
+          <div class="travel-rail" aria-label="线性行程"><span id="travelRailSafe" class="travel-rail-safe"></span><span id="travelMarker" class="travel-marker"></span></div>
+          <div class="travel-labels"><span id="travelLeftLabel">左端 --</span><span id="travelPositionLabel">当前位置 --</span><span id="travelRightLabel">右端 --</span></div>
+          <div class="travel-grid">
+            <div class="travel-metric"><span class="label">目标</span><span id="travelTargetValue" class="value">--</span></div>
+            <div class="travel-metric"><span class="label">安全范围</span><span id="travelSafeRangeValue" class="value">--</span></div>
+            <div class="travel-metric"><span class="label">防摇</span><span id="travelAntiSwayValue" class="value">未配置</span></div>
+          </div>
+          <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled><span>启用防摇轨迹（需先完成端点标定和摆动周期配置）</span></label>
+          <div id="travelReason" class="travel-reason">当前仅显示只读状态；端点标定流程尚未接入。</div>
         </div>
         <div id="panel-incremental" class="mode-panel">
           <div class="slider-card">
@@ -1367,6 +1412,7 @@ const PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S = __PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__;
 const PRIMARY_AXIS_MAX_ACCEL_RPM_S = __PRIMARY_AXIS_MAX_ACCEL_RPM_S__;
 const AXIS_CONFIG_BY_DEVICE = __AXIS_CONFIG_BY_DEVICE__;
 const ASSEMBLED_DEVICE_ORDER = __ASSEMBLED_DEVICE_ORDER__;
+const LINEAR_TRAVEL_AVAILABLE = __LINEAR_TRAVEL_AVAILABLE__;
 const AXIS_DIR = -1;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
@@ -1699,11 +1745,15 @@ function newDeviceProfile(device) {
     stopDecelRpmS:config.stop_decel_rpm_s, relDelta:config.default_relative_counts,
     moveMs:3000, velRpm:config.default_speed_rpm, velCps:rpmToCountsS(config.default_speed_rpm, device),
     torqueCmd:0, gearMaster:defaultGearMaster, gearMasterRatio:1, gearSlaveRatio:1, gearDirection:1,
+    travel:{left_limit_counts:null, right_limit_counts:null, safety_margin_counts:0,
+      calibration_state:'uncalibrated', anti_sway_enabled:false, sway_period_ms:null,
+      shaper:'zvd', residual_sway_limit_counts:0},
     incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'},
     transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360},
     points:{1:0, 2:counts/2, 3:counts}};
 }
 const statusByDevice = {};
+const travelStateByDevice = {};
 const feedbackByDevice = {};
 const incrementalCurveSnapshots = {};
 const motionStateByDevice = {};
@@ -1714,6 +1764,7 @@ const uiStateSaveTimerByDevice = {};
 const faultResetFeedbackByDevice = {};
 for (const device of ASSEMBLED_DEVICE_ORDER) {
   statusByDevice[device] = null;
+  travelStateByDevice[device] = null;
   feedbackByDevice[device] = null;
   incrementalCurveSnapshots[device] = '';
   motionStateByDevice[device] = newMotionState();
@@ -1944,6 +1995,17 @@ async function refreshDeviceStatus(device) {
     const status = Object.assign({}, data.status, {device});
     statusByDevice[device] = status;
     if (device === activeDevice) render(status);
+    if (device === activeDevice && LINEAR_TRAVEL_AVAILABLE) refreshTravelStatus(device).catch(() => {});
+  }
+  return data;
+}
+async function refreshTravelStatus(device) {
+  if (!LINEAR_TRAVEL_AVAILABLE) return null;
+  const res = await fetch('/api/travel?device=' + encodeURIComponent(device));
+  const data = await res.json();
+  if (data && data.ok && data.travel) {
+    travelStateByDevice[device] = data.travel;
+    if (device === activeDevice) renderTravelModel(data.travel, currentStatus(device));
   }
   return data;
 }
@@ -3289,11 +3351,64 @@ function updateGearDirection() {
   currentProfile().gearDirection = Number(gearDirectionSelect.value || 1) < 0 ? -1 : 1;
   updateSliders();
 }
+function renderTravelModel(model, status) {
+  const card = document.getElementById('linearTravelCard');
+  if (!card) return;
+  card.hidden = !LINEAR_TRAVEL_AVAILABLE;
+  if (!LINEAR_TRAVEL_AVAILABLE) return;
+  const data = model || {};
+  const guard = data.guard || {};
+  const valid = Boolean(data.endpoints_valid);
+  const badge = document.getElementById('travelBadge');
+  const state = String(data.calibration_state || 'uncalibrated');
+  const stateText = valid ? '两端已标定' : (state === 'failed' ? '标定失败' : '未标定');
+  if (badge) {
+    badge.textContent = stateText;
+    badge.classList.toggle('good', valid);
+    badge.classList.toggle('warn', !valid);
+  }
+  const left = guard.left_limit_counts;
+  const right = guard.right_limit_counts;
+  const safeLeft = guard.safe_left_counts;
+  const safeRight = guard.safe_right_counts;
+  const pos = guard.position_counts ?? (status && status.pos);
+  const target = guard.target_counts ?? (status && status.target);
+  setText('travelLeftLabel', left === null || left === undefined ? '左端 --' : '左端 ' + fmt(left));
+  setText('travelRightLabel', right === null || right === undefined ? '右端 --' : '右端 ' + fmt(right));
+  setText('travelPositionLabel', pos === null || pos === undefined ? '当前位置 --' : '当前位置 ' + fmt(pos));
+  setText('travelTargetValue', target === null || target === undefined ? '--' : fmt(target) + ' cnt');
+  setText('travelSafeRangeValue', safeLeft === null || safeLeft === undefined ? '--' : fmt(safeLeft) + ' ~ ' + fmt(safeRight) + ' cnt');
+  const anti = data.anti_sway || {};
+  const antiText = anti.ready ? ('已准备 ' + String(anti.sway_period_ms) + ' ms') : (anti.enabled ? '待配置' : '关闭');
+  setText('travelAntiSwayValue', antiText);
+  const toggle = document.getElementById('travelAntiSwayToggle');
+  if (toggle) {
+    toggle.checked = Boolean(anti.enabled);
+    toggle.disabled = !anti.ready || capabilityState.commissioningInhibit;
+  }
+  const reasons = Array.isArray(guard.reasons) ? guard.reasons : [];
+  setText('travelReason', valid
+    ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '端点有效；当前页面仅显示状态，标定动作尚未接入。')
+    : '端点尚未有效；当前页面只读显示，不允许启动标定或运动。');
+  const rail = document.getElementById('travelRailSafe');
+  const marker = document.getElementById('travelMarker');
+  if (rail && marker && safeLeft !== null && safeRight !== null && safeRight > safeLeft) {
+    rail.style.left = '0%';
+    rail.style.width = '100%';
+    const pct = guard.position_percent === null || guard.position_percent === undefined ? 0 : Number(guard.position_percent);
+    marker.style.left = Math.max(0, Math.min(100, pct)) + '%';
+  } else if (rail && marker) {
+    rail.style.left = '0%';
+    rail.style.width = '0%';
+    marker.style.left = '0%';
+  }
+}
 function render(s) {
   const text = UI_TEXT[currentLang];
   const reportedDevice = String(s && s.device || activeDevice).toLowerCase();
   const device = supportsDevice(reportedDevice) ? reportedDevice : activeDevice;
   statusByDevice[device] = s;
+  renderTravelModel(travelStateByDevice[device], s);
   if (typeof s.commissioning_inhibit === 'boolean') {
     capabilityState.commissioningInhibit = Boolean(s.commissioning_inhibit);
   }
@@ -4178,6 +4293,7 @@ HTML = HTML.replace(
     json.dumps(_HMI_DEVICE_ORDER, ensure_ascii=False, separators=(",", ":")),
 )
 HTML = HTML.replace("__GEAR_PROFILE__", "true" if _GEAR_PROFILE else "false")
+HTML = HTML.replace("__LINEAR_TRAVEL_AVAILABLE__", "true" if _LINEAR_TRAVEL_PROFILE else "false")
 
 
 def motiond_command(payload, port=MOTIOND_PORT):
@@ -4274,6 +4390,21 @@ def _normalize_ui_device_state(raw):
                     normalized_curve[key] = value
         if normalized_curve:
             normalized["incrementalCurve"] = normalized_curve
+    travel = raw.get("travel")
+    if isinstance(travel, dict):
+        normalized_travel = {}
+        for key in ("left_limit_counts", "right_limit_counts", "safety_margin_counts", "sway_period_ms", "residual_sway_limit_counts"):
+            if key in travel:
+                value = _finite_float(travel[key])
+                if value is not None and value.is_integer():
+                    normalized_travel[key] = int(value)
+        for key in ("calibration_state", "shaper"):
+            if key in travel and isinstance(travel[key], str):
+                normalized_travel[key] = travel[key]
+        if isinstance(travel.get("anti_sway_enabled"), bool):
+            normalized_travel["anti_sway_enabled"] = travel["anti_sway_enabled"]
+        if normalized_travel:
+            normalized["travel"] = normalized_travel
     return normalized
 
 
@@ -4318,6 +4449,33 @@ def save_ui_state(device, state):
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(merged, fh, ensure_ascii=False, indent=2, allow_nan=False)
         os.replace(tmp_path, UI_STATE_PATH)
+
+
+def travel_status(device):
+    """Return read-only linear-travel UI state; never sends a drive command."""
+
+    if not _LINEAR_TRAVEL_PROFILE or device != _HMI_DEVICE_ORDER[0]:
+        return {"ok": False, "error": "linear_travel_unavailable", "device": device}
+    response = motiond_command({"cmd": "status", "device": device})
+    if not isinstance(response, dict) or not response.get("ok"):
+        return response if isinstance(response, dict) else {"ok": False, "error": "status_unavailable"}
+    status = response.get("status") if isinstance(response.get("status"), dict) else {}
+    ui_state = load_ui_state()
+    device_state = ui_state.get("devices", {}).get(device, {})
+    raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
+    try:
+        model = travel_ui_model(status, raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV)
+    except Exception as exc:
+        model = {
+            "available": True,
+            "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV,
+            "endpoints_valid": False,
+            "calibration_state": "failed",
+            "calibration_actions_available": False,
+            "calibration_actions_reason": "invalid_persisted_config",
+            "error": str(exc),
+        }
+    return {"ok": True, "device": device, "travel": model}
 
 
 _fv3_cache = None
@@ -4855,6 +5013,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(fv3_status())
                 else:
                     self.send_json(motiond_command({"cmd": "status", "device": device}))
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 503)
+        elif path == "/api/travel":
+            device = _normalize_device(device)
+            if device is None:
+                self.send_json({"ok": False, "error": "unsupported_device"}, 400)
+                return
+            try:
+                self.send_json(travel_status(device))
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 503)
         elif path == "/api/capabilities":

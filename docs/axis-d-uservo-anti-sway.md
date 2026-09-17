@@ -46,6 +46,17 @@ Until those values are confirmed, the branch exposes the proven single-axis
 Uservo transport and keeps anti-sway output disabled. No enable, mode change,
 reset, or motion command is part of the baseline deployment.
 
+## Linear travel and HMI phase B/G
+
+The local phase B/G implementation adds a read-only linear-travel model and HMI
+panel for the single-axis D profile. It displays current/target counts, endpoint
+validity, safe travel range, calibration state, commissioning inhibit, and
+anti-sway readiness. Endpoint calibration actions are intentionally not wired to
+motiond yet; the HMI reports `runtime_not_connected` and keeps the anti-sway
+toggle disabled. Targets are rejected by the pure model until both endpoints and
+the safety margin are valid. The read-only model uses the confirmed baseline of
+`10000 counts/rev`, while endpoint values and sway period remain unconfigured.
+
 ## No-motion acceptance
 
 The target must use `axis-d-uservo` with:
