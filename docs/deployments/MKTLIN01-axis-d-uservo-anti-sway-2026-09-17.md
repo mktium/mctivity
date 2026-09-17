@@ -55,3 +55,28 @@ After the restart transition, ten one-second status samples remained healthy:
 No reset, mode change, enable, stop, gear command, or motion command was sent.
 The first motion test and anti-sway tuning remain separate operator-approved
 steps.
+
+## HMI inhibit synchronization follow-up
+
+The first single-axis profile switch exposed a configuration inconsistency:
+motiond correctly read `MCTIVITY_COMMISSIONING_INHIBIT=1` from `axis.env`, but
+an old `MCTIVITY_COMMISSIONING_INHIBIT=0` remained in `hmi.env`. The profile
+switch script now updates both files from the selected Uservo profile, so HMI
+capabilities cannot advertise an enabled control path while motiond is
+inhibited.
+
+- fix commit: `6c372dc` (pushed to `mktium/mctivity`);
+- source archive: `/tmp/mctivity-6c372dc.tar.gz`;
+- source archive SHA-256:
+  `f5ce21b3e26fb7b6b865891054569311357e8f23bc619089447c75d1baaf533a`;
+- active release: `/opt/mctivity-releases/v1.4.1-axis-d-uservo-anti-sway-6c372dc`;
+- pre-deploy backup:
+  `/var/backups/mctivity/pre-axis-d-uservo-anti-sway-6c372dc-20260917T072726Z`;
+- profile-switch backup:
+  `/var/backups/mctivity/profile-20260917T072726Z-21545`;
+- target motiond SHA-256 remains:
+  `fa9a17db7b92c8cb29e3b6a06f9abb8a49880ae637595ef840dbcb0336c31db9`.
+
+Post-fix read-only status reports both axis.env and hmi.env inhibit values as
+`1`, HMI capability `commissioning_inhibit=true`, D OP/WC `3/3`, disabled,
+stationary, and controlword `0`. No control or motion command was sent.
