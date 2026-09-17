@@ -1,8 +1,17 @@
-# Uservo DS1 Axis D
+# Uservo Axis D (DS/UF EtherCAT)
 
 ## Scope
 
-This profile supports the CYMG20241203 DS1-E4806N drive as a single EtherCAT axis displayed as Axis D. It intentionally does not request the legacy MCTIVITY or FV3 slaves.
+This profile supports the CYMG20241203 Uservo family as a single EtherCAT axis
+displayed as Axis D. It covers the previously commissioned DS1-E4806N path and
+the UF-48V03AEDR-P / `UF-48VxxAEDx` EtherCAT family documented by the vendor.
+It intentionally does not request the legacy MCTIVITY or FV3 slaves.
+
+The UF drive and the existing DS1 configuration share the vendor EtherCAT
+identity used by this profile (`0x00666999:0x00004806`, revision `1`) and the
+vendor XML page lists `UF-48VxxAEDx` as an applicable device. The profile is
+therefore identity-compatible, but the motor/encoder parameters and drive-side
+commissioning settings must still be verified from the replacement drive.
 
 Identity, timing, and PDO data were checked against the official `XActant-E-XML-6120R.xml` ESI as well as the live slave on 2026-08-18:
 
