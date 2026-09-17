@@ -20,6 +20,7 @@
 #include "electronic_gear.h"
 #include "realtime_schedule.h"
 #include "realtime_guard.h"
+#include "travel_calibration.h"
 
 #define MCTIVITY_VENDOR_ID 0x000116c7
 #define MCTIVITY_PRODUCT_CODE 0x007e0402
@@ -49,6 +50,9 @@
 #define AXIS_D_SERVER_ACCEPT_BUDGET 1U
 #define AXIS_D_SERVER_COMMAND_BUDGET 2U
 #define AXIS_D_SHUTDOWN_CYCLES 20U
+#define HOMING_CONTROLWORD_START_BIT 0x0010U
+#define HOMING_STATUS_ATTAINED_BIT 0x1000U
+#define HOMING_STATUS_ERROR_BIT 0x2000U
 
 static volatile sig_atomic_t running = 1;
 static int uservo_axis_d_topology = 0;
@@ -362,6 +366,9 @@ typedef struct {
     int32_t jog_velocity_cps;
     int32_t torque_cmd;
     int homed;
+    int homing_active;
+    int homing_attained;
+    int homing_error;
     uint32_t cycles;
     char control_mode[24];
     char last_command[64];
@@ -427,6 +434,7 @@ typedef struct {
     uint32_t gear_last_elapsed_cycles;
     int gear_safety_latched;
     mctivity_electronic_gear_t gear_math;
+    int native_homing_active;
 } axis_runtime_t;
 
 typedef struct {
@@ -1231,6 +1239,76 @@ static void clear_motion(axis_runtime_t *ax)
     memset(&ax->motion, 0, sizeof(ax->motion));
 }
 
+static void native_homing_abort(axis_runtime_t *ax, const char *message, int error)
+{
+    ax->native_homing_active = 0;
+    ax->st.homing_active = 0;
+    ax->st.homing_error = error;
+    ax->st.moving = 0;
+    ax->st.target_raw = ax->st.pos_raw;
+    ax->st.target_user = ax->st.pos_user;
+    clear_motion(ax);
+    ax->stop_velocity_cps = 0;
+    ax->st.jog_velocity_cps = 0;
+    ax->target_velocity_cps = 0;
+    ax->velocity_remainder = 0;
+    ax->commanded_mode = mode_code_for_name("position");
+    set_control_mode(ax, "position");
+    snprintf(ax->st.message, sizeof(ax->st.message), "%s", message);
+}
+
+static int native_homing_start(axis_runtime_t *ax)
+{
+    status_t *s = &ax->st;
+    if (!uservo_axis_d_topology || uservo_pv_topology || uservo_dual_topology) {
+        return 0;
+    }
+    if (!s->servo_request || !ready_for_motion(ax)) {
+        return 0;
+    }
+    if (!s->operational || !s->wc_complete || s->fault) {
+        return 0;
+    }
+    clear_motion(ax);
+    ax->stop_velocity_cps = 0;
+    s->jog_velocity_cps = 0;
+    ax->target_velocity_cps = 0;
+    ax->velocity_remainder = 0;
+    ax->gear_running = 0;
+    ax->gear_has_last_master_pos = 0;
+    ax->native_homing_active = 1;
+    s->homing_active = 1;
+    s->homing_attained = 0;
+    s->homing_error = 0;
+    s->target_raw = s->pos_raw;
+    s->target_user = s->pos_user;
+    set_control_mode(ax, "homing");
+    ax->commanded_mode = mode_code_for_name("homing");
+    snprintf(s->message, sizeof(s->message), "native homing armed; drive method 0x6098 is not changed");
+    return 1;
+}
+
+static void native_homing_complete(axis_runtime_t *ax)
+{
+    status_t *s = &ax->st;
+    ax->native_homing_active = 0;
+    s->homing_active = 0;
+    s->homing_attained = 1;
+    s->homing_error = 0;
+    s->homed = 1;
+    s->soft_zero_raw = s->pos_raw;
+    s->target_raw = s->pos_raw;
+    s->target_user = 0;
+    clear_motion(ax);
+    ax->stop_velocity_cps = 0;
+    s->jog_velocity_cps = 0;
+    ax->target_velocity_cps = 0;
+    ax->velocity_remainder = 0;
+    ax->commanded_mode = mode_code_for_name("position");
+    set_control_mode(ax, "position");
+    snprintf(s->message, sizeof(s->message), "native homing attained; current position stored as zero");
+}
+
 static void start_motion_to(axis_runtime_t *ax, int32_t target_user, uint32_t move_ms, uint32_t speed_rpm,
                             uint32_t accel_rpm_s, int have_limits, int32_t min_target_user, int32_t max_target_user)
 {
@@ -1540,7 +1618,7 @@ static void send_status_fd(int fd, int axis)
     int64_t axis_counts_per_rev = pv ? pv->counts_per_rev
         : (uservo_dual_gear_topology ? (int64_t)uservo_pv_profiles[axis].counts_per_rev : counts_per_rev);
     const axis_runtime_t *gear_slave = &axes[gear_group_slave_axis];
-    char out[2600];
+    char out[3200];
     int n = snprintf(
         out, sizeof(out),
         "{\"ok\":true,\"status\":{\"device\":\"%s\",\"logical_axis\":\"%s\",\"topology\":\"%s\","
@@ -1549,7 +1627,7 @@ static void send_status_fd(int fd, int axis)
         "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,\"commanded_mode\":%d,"
         "\"control_mode\":\"%s\",\"pos_raw\":%d,\"pos\":%d,\"velocity_actual_cps\":%d,\"target_raw\":%d,\"target\":%d,"
         "\"following_error\":%d,\"soft_zero_raw\":%d,\"jog_velocity_cps\":%d,\"torque_cmd\":%d,"
-        "\"torque_feedback\":%d,\"homed\":%s,\"cycles\":%u,"
+        "\"torque_feedback\":%d,\"homed\":%s,\"homing_active\":%s,\"homing_attained\":%s,\"homing_error\":%s,\"cycles\":%u,"
         "\"rt_memory_locked\":%s,\"rt_scheduler_policy\":%d,\"rt_scheduler_priority\":%d,"
         "\"rt_deadline_miss_count\":%llu,\"rt_skipped_periods\":%llu,"
         "\"rt_consecutive_schedule_misses\":%u,\"rt_schedule_timing_fault\":%s,"
@@ -1576,6 +1654,7 @@ static void send_status_fd(int fd, int axis)
         ax->commanded_mode,
         s->control_mode, s->pos_raw, s->pos_user, s->velocity_actual_cps, s->target_raw, s->target_user, s->following_error,
         s->soft_zero_raw, s->jog_velocity_cps, s->torque_cmd, s->torque_feedback, s->homed ? "true" : "false",
+        s->homing_active ? "true" : "false", s->homing_attained ? "true" : "false", s->homing_error ? "true" : "false",
         s->cycles,
         realtime_status.memory_locked ? "true" : "false",
         realtime_status.scheduler_policy,
@@ -1676,6 +1755,8 @@ static void clear_axis_velocity_command(axis_runtime_t *ax, int disable)
     ax->gear_has_last_master_pos = 0;
     ax->gear_position_error = 0;
     ax->gear_math.initialized = 0;
+    ax->native_homing_active = 0;
+    ax->st.homing_active = 0;
     ax->st.moving = 0;
     ax->st.target_raw = ax->st.pos_raw;
     ax->st.target_user = ax->st.pos_user;
@@ -2004,6 +2085,14 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
+    if (ax->native_homing_active && strcmp(cmd, "status") != 0 &&
+        strcmp(cmd, "travel_calibrate_cancel") != 0 && strcmp(cmd, "stop") != 0 &&
+        strcmp(cmd, "disable") != 0 && strcmp(cmd, "fault_reset") != 0 &&
+        strcmp(cmd, "reset_fault") != 0) {
+        send_error_fd(fd, "native_homing_active; issue travel_calibrate_cancel or stop first");
+        return;
+    }
+
     if ((uservo_pv_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
           strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "move_abs") == 0 || strcmp(cmd, "move_rel") == 0 ||
@@ -2017,6 +2106,29 @@ static void handle_command(int fd, const char *line)
 
     if (strcmp(cmd, "status") == 0) {
         strncpy(s->last_command, "status", sizeof(s->last_command) - 1);
+        send_status_fd(fd, axis);
+        return;
+    }
+
+    if (strcmp(cmd, "travel_calibrate_start") == 0) {
+        if (!uservo_axis_d_topology || uservo_pv_topology || uservo_dual_topology) {
+            send_error_fd(fd, "travel_calibration_requires_single_axis_uservo_csp");
+            return;
+        }
+        if (!native_homing_start(ax)) {
+            send_error_fd(fd, "native_homing_requires_enabled_healthy_axis");
+            return;
+        }
+        strncpy(s->last_command, "travel_calibrate_start", sizeof(s->last_command) - 1);
+        send_status_fd(fd, axis);
+        return;
+    }
+
+    if (strcmp(cmd, "travel_calibrate_cancel") == 0) {
+        if (ax->native_homing_active) {
+            native_homing_abort(ax, "native homing cancelled by operator", 0);
+        }
+        strncpy(s->last_command, "travel_calibrate_cancel", sizeof(s->last_command) - 1);
         send_status_fd(fd, axis);
         return;
     }
@@ -2041,6 +2153,9 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "disable") == 0) {
+        if (ax->native_homing_active) {
+            native_homing_abort(ax, "native homing cancelled by operator disable", 0);
+        }
         s->servo_request = 0;
         s->enable_settle_cycles = 0;
         clear_motion(ax);
@@ -2060,6 +2175,12 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "stop") == 0) {
+        if (ax->native_homing_active) {
+            native_homing_abort(ax, "native homing cancelled by operator stop", 0);
+            strncpy(s->last_command, "stop", sizeof(s->last_command) - 1);
+            send_status_fd(fd, axis);
+            return;
+        }
         if (axis_uses_native_pv_control(axis, s->control_mode)) {
             const uservo_pv_profile_t *pv = uservo_pv_profile_for_axis(axis);
             clear_motion(ax);
@@ -2162,6 +2283,9 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "fault_reset") == 0 || strcmp(cmd, "reset_fault") == 0) {
+        if (ax->native_homing_active) {
+            native_homing_abort(ax, "native homing cancelled by fault reset", 0);
+        }
         s->servo_request = 0;
         s->enable_settle_cycles = 0;
         clear_motion(ax);
@@ -2756,6 +2880,30 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         }
     }
 
+    if (ax->native_homing_active) {
+        if (commissioning_inhibit) {
+            native_homing_abort(ax, "native homing cancelled by commissioning inhibit", 1);
+        } else if (!s->operational || !s->wc_complete) {
+            native_homing_abort(ax, "native homing aborted: communication not ready", 1);
+        } else if (!s->enabled || s->enable_settle_cycles != 0) {
+            native_homing_abort(ax, "native homing aborted: drive is not settled", 1);
+        } else if (s->fault || (s->sw & HOMING_STATUS_ERROR_BIT) != 0) {
+            native_homing_abort(ax, "native homing reported drive error", 1);
+        } else if ((s->sw & HOMING_STATUS_ATTAINED_BIT) != 0) {
+            native_homing_complete(ax);
+        } else {
+            clear_motion(ax);
+            ax->stop_velocity_cps = 0;
+            s->jog_velocity_cps = 0;
+            ax->target_velocity_cps = 0;
+            s->target_raw = s->pos_raw;
+            s->target_user = s->pos_user;
+            s->homing_active = 1;
+            set_control_mode(ax, "homing");
+            ax->commanded_mode = mode_code_for_name("homing");
+        }
+    }
+
     if (s->fault) {
         clear_motion(ax);
         ax->stop_velocity_cps = 0;
@@ -2918,7 +3066,8 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         gear_tracking_active = i64_abs_diff_i32(s->target_raw, s->pos_raw) > 1024 ||
                                i64_abs_diff_i32(axes[ax->gear_master_axis].st.target_raw, axes[ax->gear_master_axis].st.pos_raw) > 1024;
     }
-    s->moving = (native_pv_control ? ax->target_velocity_cps != 0 : ax->motion.moving) ||
+    s->moving = ax->native_homing_active ||
+                (native_pv_control ? ax->target_velocity_cps != 0 : ax->motion.moving) ||
                 (!native_pv_control && s->jog_velocity_cps != 0) ||
                 ax->stop_velocity_cps != 0 ||
                 pp_active ||
@@ -2937,6 +3086,8 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         /* 30: long pulse window for staged absolute moves, 2: one-shot pulse for gear tracking updates. */
         s->cw = (ax->pp_pulse_cycles > 15 || ax->pp_pulse_cycles == 2) ? 0x003f : 0x000f;
         ax->pp_pulse_cycles--;
+    } else if (ax->native_homing_active && s->servo_request && s->enabled && s->wc_complete) {
+        s->cw = 0x000f | HOMING_CONTROLWORD_START_BIT;
     } else if (s->servo_request && s->wc_complete) {
         s->cw = next_controlword(s->sw);
         if (s->enabled) {
