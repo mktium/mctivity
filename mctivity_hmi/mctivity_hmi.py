@@ -476,6 +476,16 @@ def capability_manifest():
             "calibration_actions_reason": "runtime_not_connected",
             "calibration_engine": "endpoint_contact_decision_v1",
             "calibration_runtime_connected": False,
+            "native_homing_candidate": {
+                "validated": False,
+                "mode_code": 6,
+                "method_object": "0x6098",
+                "stall_current_object": "0x3637",
+                "timeout_object": "0x3643",
+                "controlword_start_bit": 4,
+                "statusword_attained_bit": 12,
+                "statusword_error_bit": 13,
+            },
             "anti_sway_shaper": "zvd",
         },
         "motiond_restart_control": {

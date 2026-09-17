@@ -40,6 +40,12 @@ The next runtime integration must use a verified vendor-native homing/stall
 current path or an explicitly validated PDO remap; it must not silently change
 the current PDO contract.
 
+The profile now records the vendor-native homing candidate without enabling it:
+mode `6`, homing method `0x6098`, stall-current setting `0x3637`, timeout
+`0x3643`, controlword start bit 4, and statusword attained/error bits 12/13.
+These are implementation metadata only; `validated=false` remains until the
+manual semantics and a no-motion startup check are reviewed together.
+
 ## Anti-sway boundary
 
 Anti-sway is an application-level trajectory/command-shaping function, not an
