@@ -30,6 +30,16 @@ The identity and PDO contract match `profiles/axis-d-uservo.json`. This does
 not replace checking the replacement drive's motor, encoder, current, limits,
 and drive-side parameters.
 
+The live target PDO inspection also confirms that the current single-axis
+contract is exactly RxPDO `0x1600` (`6040/6060/607A/60FE:01`) and TxPDO `0x1A00`
+(`6041/6061/6064/60FD`). There is no cyclic `0x6077`, `0x6078`, or `0x35F6`
+current/torque feedback in this mapping. The new C decision layer therefore
+fails closed with `MCTIVITY_TRAVEL_FAIL_MISSING_CURRENT_FEEDBACK` instead of
+guessing at an SDO value or treating a position sample as current feedback.
+The next runtime integration must use a verified vendor-native homing/stall
+current path or an explicitly validated PDO remap; it must not silently change
+the current PDO contract.
+
 ## Anti-sway boundary
 
 Anti-sway is an application-level trajectory/command-shaping function, not an
@@ -68,6 +78,12 @@ viewport layout keeps the position rail, endpoint/target metrics, and calibratio
 badge visible without relying on vertical scrolling; explanatory text and the
 currently unavailable anti-sway switch collapse at viewport heights at or below
 820 px.
+
+The real-time-side pure state machine is in
+`mctivity_pdo_monitor/travel_calibration.h` and is covered by
+`test_travel_calibration.c`. It checks inhibit, OP/WC, fault, enabled state,
+feedback availability, timeout, sustained current rise, and stalled position
+progress. It is not yet wired to the live Uservo command path.
 
 ## No-motion acceptance
 
