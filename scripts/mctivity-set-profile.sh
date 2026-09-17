@@ -82,15 +82,27 @@ install -m 0644 "${axis_tmp}" "${AXIS_ENV_FILE}"
 rm -f "${axis_tmp}"
 
 hmi_tmp="$(mktemp "${AXIS_ENV_DIR}/hmi.env.XXXXXX")"
+case "${PROFILE_NAME}" in
+  axis-d-uservo|axis-d-uservo-pv|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined)
+    hmi_commissioning_inhibit=1
+    ;;
+  *)
+    hmi_commissioning_inhibit=0
+    ;;
+esac
 if [ -f "${HMI_ENV_FILE}" ]; then
-  awk -v profile="${PROFILE_NAME}" '
-    BEGIN { replaced = 0 }
-    /^MCTIVITY_PROFILE=/ { if (!replaced) print "MCTIVITY_PROFILE=" profile; replaced = 1; next }
+  awk -v profile="${PROFILE_NAME}" -v inhibit="${hmi_commissioning_inhibit}" '
+    BEGIN { profile_replaced = 0; inhibit_replaced = 0 }
+    /^MCTIVITY_PROFILE=/ { if (!profile_replaced) print "MCTIVITY_PROFILE=" profile; profile_replaced = 1; next }
+    /^MCTIVITY_COMMISSIONING_INHIBIT=/ { if (!inhibit_replaced) print "MCTIVITY_COMMISSIONING_INHIBIT=" inhibit; inhibit_replaced = 1; next }
     { print }
-    END { if (!replaced) print "MCTIVITY_PROFILE=" profile }
+    END {
+      if (!profile_replaced) print "MCTIVITY_PROFILE=" profile
+      if (!inhibit_replaced) print "MCTIVITY_COMMISSIONING_INHIBIT=" inhibit
+    }
   ' "${HMI_ENV_FILE}" >"${hmi_tmp}"
 else
-  printf 'MCTIVITY_PROFILE=%s\n' "${PROFILE_NAME}" >"${hmi_tmp}"
+  printf 'MCTIVITY_PROFILE=%s\nMCTIVITY_COMMISSIONING_INHIBIT=%s\n' "${PROFILE_NAME}" "${hmi_commissioning_inhibit}" >"${hmi_tmp}"
 fi
 install -m 0644 "${hmi_tmp}" "${HMI_ENV_FILE}"
 rm -f "${hmi_tmp}"
