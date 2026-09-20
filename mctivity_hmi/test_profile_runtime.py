@@ -75,6 +75,22 @@ class ProfileRuntimeTest(unittest.TestCase):
             self.assertIn("0x60ff:00/32", device["rxpdo"])
             self.assertIn("0x606c:00/32", device["txpdo"])
 
+    def test_single_combined_profile_keeps_csp_position_and_native_pv_velocity(self):
+        runtime = self.runtime("axis-d-uservo-combined")
+        self.assertEqual(runtime["profile"], "axis-d-uservo-combined")
+        self.assertEqual(len(runtime["axis_devices"]), 1)
+        self.assertIn("feature-logic-velocity", runtime["active_features"])
+        device = runtime["axis_devices"][0]
+        self.assertEqual(
+            (device["logical_axis"], device["transport_device"], device["physical_position"]),
+            ("D", "mctivity", 0),
+        )
+        self.assertEqual(device["topology"], "axis-d-uservo-combined")
+        self.assertEqual(device["ethercat_mode"], "mixed")
+        self.assertEqual(device["default_control_mode"], "position")
+        self.assertIn("0x60ff:00/32", device["rxpdo"])
+        self.assertIn("0x606c:00/32", device["txpdo"])
+
     def test_legacy_profiles_have_no_axis_device_parameters(self):
         for name in ("minimal", "standard", "full"):
             with self.subTest(profile=name):

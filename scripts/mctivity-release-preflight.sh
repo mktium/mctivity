@@ -15,7 +15,7 @@ python3 scripts/mctivity-motiond-launch.py --profile axis-d-uservo-pv --dump >/d
 python3 scripts/mctivity-motiond-launch.py --profile axis-de-uservo-pv --dump >/dev/null
 python3 scripts/mctivity-motiond-launch.py --profile axis-de-uservo-gear --dump >/dev/null
 python3 scripts/mctivity-motiond-launch.py --profile axis-de-uservo-combined --dump >/dev/null
-for profile in minimal standard full axis-d-uservo; do
+for profile in minimal standard full axis-d-uservo axis-d-uservo-combined; do
   python3 scripts/mctivity-motiond-launch.py --profile "$profile" --dump >/dev/null
 done
 make -C mctivity_pdo_monitor test

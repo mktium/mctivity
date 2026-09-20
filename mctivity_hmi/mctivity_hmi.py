@@ -354,7 +354,7 @@ _GEAR_PROFILE = (
 _LINEAR_TRAVEL_PROFILE = (
     len(_AXIS_DEVICES) == 1
     and str(_AXIS_DEVICES[0].get("logical_axis", "")).upper() == "D"
-    and _AXIS_DEVICES[0].get("topology") == "axis-d-uservo"
+    and _AXIS_DEVICES[0].get("topology") in {"axis-d-uservo", "axis-d-uservo-combined"}
 )
 _PRIMARY_AXIS_DEVICE = _AXIS_DEVICES[0] if _AXIS_DEVICES else {}
 _PRIMARY_AXIS_LABEL = str(_PRIMARY_AXIS_DEVICE.get("logical_axis", "A")).strip().upper() or "A"

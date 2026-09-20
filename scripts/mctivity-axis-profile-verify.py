@@ -63,15 +63,16 @@ def main():
             if not device["rxpdo"] or not device["txpdo"]:
                 raise SystemExit(f"axis device PDO list empty in {profile_path.name}")
             checked += 1
-        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv"} and len(axis_devices) != 1:
+        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-d-uservo-combined"} and len(axis_devices) != 1:
             raise SystemExit(f"{profile.get('profile')} profile must contain exactly one axis device")
         if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"} and len(axis_devices) != 2:
             raise SystemExit(f"{profile.get('profile')} profile must contain exactly two axis devices")
-        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
+        if profile.get("profile") in {"axis-d-uservo", "axis-d-uservo-pv", "axis-d-uservo-combined", "axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
             modules = set(profile.get("modules", []))
             is_pv = profile.get("profile") in {"axis-d-uservo-pv", "axis-de-uservo-pv"}
             is_gear = profile.get("profile") in {"axis-de-uservo-gear", "axis-de-uservo-combined"}
             is_combined = profile.get("profile") == "axis-de-uservo-combined"
+            is_single_combined = profile.get("profile") == "axis-d-uservo-combined"
             if profile.get("profile") in {"axis-d-uservo"} and {"feature-logic-velocity", "feature-hmi-velocity"} & modules:
                 raise SystemExit("axis-d-uservo must not expose velocity mode without a 0x60ff target-velocity PDO")
             if is_pv and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
@@ -83,8 +84,8 @@ def main():
                 "feature-hmi-electronic-gear",
             } <= modules:
                 raise SystemExit("axis-de-uservo-gear must expose single-point and electronic-gear modules")
-            if is_combined and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
-                raise SystemExit("axis-de-uservo-combined must expose velocity logic and HMI modules")
+            if (is_combined or is_single_combined) and not {"feature-logic-velocity", "feature-hmi-velocity"} <= modules:
+                raise SystemExit("combined Uservo profiles must expose velocity logic and HMI modules")
             expected_instances = ([('D', 'mctivity', 0), ('E', 'mctivity_e', 1)]
                                   if profile.get("profile") in {"axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"} else
                                   [('D', 'mctivity', 0)])
@@ -105,12 +106,12 @@ def main():
             expected_rxpdo = (["0x6040:00/16", "0x6060:00/8", "0x60ff:00/32", "0x60fe:01/32"]
                               if is_pv else
                               (["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60ff:00/32", "0x60fe:01/32"]
-                               if is_combined else
+                               if (is_combined or is_single_combined) else
                                ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60fe:01/32"]))
             expected_txpdo = (["0x6041:00/16", "0x6061:00/8", "0x606c:00/32", "0x60fd:00/32"]
                               if is_pv else
                               (["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x606c:00/32", "0x60fd:00/32"]
-                               if is_combined else
+                               if (is_combined or is_single_combined) else
                                ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x60fd:00/32"]))
             for device in axis_devices:
                 if not (0 < float(device["default_relative_revolutions"]) <= float(device["max_position_revolutions"])):
@@ -155,15 +156,16 @@ def main():
                         raise SystemExit("axis-de-uservo-gear must use a 200-count following-error limit")
                     if int(device.get("gear_max_ratio", 0)) != 200:
                         raise SystemExit("axis-de-uservo-gear must use a 200:1 maximum ratio")
-                if is_combined:
+                if is_combined or is_single_combined:
                     if device.get("ethercat_mode") != "mixed" or device.get("ethercat_mode_code") != 8:
-                        raise SystemExit("axis-de-uservo-combined must select mixed PDO mode with CSP default code 8")
+                        raise SystemExit("combined Uservo profile must select mixed PDO mode with CSP default code 8")
                     if device.get("rxpdo_profile") != "0x1600" or device.get("txpdo_profile") != "0x1A00":
-                        raise SystemExit("axis-de-uservo-combined must select the combined 0x1600/0x1A00 PDO map")
-                    if int(device.get("gear_following_error_limit_counts", 0)) != 200:
-                        raise SystemExit("axis-de-uservo-combined must use a 200-count following-error limit")
-                    if int(device.get("gear_max_ratio", 0)) != 200:
-                        raise SystemExit("axis-de-uservo-combined must use a 200:1 maximum ratio")
+                        raise SystemExit("combined Uservo profile must select the combined 0x1600/0x1A00 PDO map")
+                    if is_combined:
+                        if int(device.get("gear_following_error_limit_counts", 0)) != 200:
+                            raise SystemExit("axis-de-uservo-combined must use a 200-count following-error limit")
+                        if int(device.get("gear_max_ratio", 0)) != 200:
+                            raise SystemExit("axis-de-uservo-combined must use a 200:1 maximum ratio")
         if profile.get("profile") in {"minimal", "standard", "full"} and runtime.get("axis_devices"):
             raise SystemExit(f"legacy profile polluted by axis device parameters: {profile.get('profile')}")
     if checked < 1:

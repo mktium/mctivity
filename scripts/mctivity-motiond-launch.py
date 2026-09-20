@@ -38,6 +38,7 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
         "legacy-dual",
         "axis-d-uservo",
         "axis-d-uservo-pv",
+        "axis-d-uservo-combined",
         "axis-de-uservo-pv",
         "axis-de-uservo-gear",
     }:
@@ -121,6 +122,43 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
                         f"{prefix}_PV_STOP_DECEL_RPM_S": str(item["stop_decel_rpm_s"]),
                     }
                 )
+    if expected_topology == "axis-d-uservo-combined":
+        expected_contract = {
+            "vendor_id": "0x00666999",
+            "product_code": "0x00004806",
+            "revision": "0x00000001",
+            "cycle_ns": 1_000_000,
+            "rxpdo_profile": "0x1600",
+            "txpdo_profile": "0x1A00",
+            "rxpdo": ["0x6040:00/16", "0x6060:00/8", "0x607a:00/32", "0x60ff:00/32", "0x60fe:01/32"],
+            "txpdo": ["0x6041:00/16", "0x6061:00/8", "0x6064:00/32", "0x606c:00/32", "0x60fd:00/32"],
+        }
+        for item in axis_devices:
+            for key, expected in expected_contract.items():
+                if item.get(key) != expected:
+                    raise ProfileRuntimeError(
+                        f"Uservo mixed runtime contract mismatch for {key}: expected {expected!r}, got {item.get(key)!r}"
+                    )
+            if item.get("ethercat_mode") != "mixed" or int(item.get("ethercat_mode_code", 0)) != 8:
+                raise ProfileRuntimeError("single-axis mixed Uservo profile must use CSP default mode code 8")
+        expected_instances = [("D", "mctivity", 0)]
+        actual_instances = [
+            (str(item.get("logical_axis")), str(item.get("transport_device")), int(item.get("physical_position", -1)))
+            for item in axis_devices
+        ]
+        if actual_instances != expected_instances:
+            raise ProfileRuntimeError(
+                f"single-axis mixed Uservo instances mismatch: expected {expected_instances!r}, got {actual_instances!r}"
+            )
+        launch_env.update(
+            {
+                "MCTIVITY_PV_TARGET_SPEED_RPM": str(device["default_speed_rpm"]),
+                "MCTIVITY_PV_MAX_SPEED_RPM": str(device["max_speed_rpm"]),
+                "MCTIVITY_PV_ACCEL_RPM_S": str(device["default_accel_rpm_s"]),
+                "MCTIVITY_PV_DECEL_RPM_S": str(device["default_decel_rpm_s"]),
+                "MCTIVITY_PV_STOP_DECEL_RPM_S": str(device["stop_decel_rpm_s"]),
+            }
+        )
     if expected_topology == "axis-de-uservo-gear":
         is_combined = profile_name == "axis-de-uservo-combined"
         expected_contract = {

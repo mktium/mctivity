@@ -6,12 +6,15 @@ Branch `feature/v1.4.1-axis-d-uservo-anti-sway` starts from the accepted
 `axis-de-uservo-combined` release but uses the existing single-axis Uservo
 profile for the current machine state: one UF-48V03AEDR-P EtherCAT drive and
 the original motor. The runtime identity is Axis D at physical EtherCAT
-position 0 (`mctivity`).
+position 0 (`mctivity`). The active single-axis profile is
+`axis-d-uservo-combined`: CSP remains the position path and native PV is added
+for direct speed control.
 
 This stage establishes a safe, single-axis EtherCAT baseline. It does not claim
 that an anti-sway controller has been tuned or enabled. The existing CSP
 position path remains the baseline for later anti-sway command generation; the
-native PV profile remains available when the application needs velocity mode.
+native PV target is available from the same HMI profile when the application
+needs velocity mode.
 
 ## Vendor compatibility basis
 
@@ -24,16 +27,15 @@ V6.1.20 (backward compatible). The XML identity is:
 - product code `0x00004806`;
 - revision `0x00000001`;
 - 1 ms EtherCAT cycle;
-- CSP RxPDO `0x1600` and TxPDO `0x1A00` for the single-axis position path.
+- mixed RxPDO `0x1600` and TxPDO `0x1A00` for the single-axis position/speed path.
 
-The identity and PDO contract match `profiles/axis-d-uservo.json`. This does
+The identity and mixed PDO contract match `profiles/axis-d-uservo-combined.json`. This does
 not replace checking the replacement drive's motor, encoder, current, limits,
 and drive-side parameters.
 
-The live target PDO inspection also confirms that the current single-axis
-contract is exactly RxPDO `0x1600` (`6040/6060/607A/60FE:01`) and TxPDO `0x1A00`
-(`6041/6061/6064/60FD`). There is no cyclic `0x6077`, `0x6078`, or `0x35F6`
-current/torque feedback in this mapping. The application therefore does not
+The mixed runtime contract is RxPDO `0x1600` (`6040/6060/607A/60FF/60FE:01`)
+and TxPDO `0x1A00` (`6041/6061/6064/606C/60FD`). There is no cyclic `0x6077`,
+`0x6078`, or `0x35F6` current/torque feedback in this mapping. The application therefore does not
 infer a mechanical endpoint from current and does not use the drive's native
 Homing mode. The PDO contract is left unchanged.
 
@@ -79,7 +81,7 @@ for this machine's endpoint teaching.
 
 ## No-motion acceptance
 
-The target must use `axis-d-uservo` with:
+The target must use `axis-d-uservo-combined` with:
 
 - `MCTIVITY_COMMISSIONING_INHIBIT=1`;
 - exactly one Uservo slave at physical position 0;

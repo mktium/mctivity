@@ -69,6 +69,20 @@ class MotiondLaunchTests(unittest.TestCase):
             self.assertEqual(env[f"{prefix}_PV_DECEL_RPM_S"], "2222")
             self.assertEqual(env[f"{prefix}_PV_STOP_DECEL_RPM_S"], "2222")
 
+    def test_single_combined_profile_exports_native_pv_environment(self):
+        runtime, device, env = LAUNCH.resolve_launch_environment(
+            profile_name="axis-d-uservo-combined",
+            environ={"MCTIVITY_COMMISSIONING_INHIBIT": "0"},
+        )
+        self.assertEqual(runtime["profile"], "axis-d-uservo-combined")
+        self.assertEqual(len(runtime["axis_devices"]), 1)
+        self.assertEqual(device["logical_axis"], "D")
+        self.assertEqual(env["MCTIVITY_TOPOLOGY"], "axis-d-uservo-combined")
+        self.assertEqual(env["MCTIVITY_PV_TARGET_SPEED_RPM"], "222")
+        self.assertEqual(env["MCTIVITY_PV_MAX_SPEED_RPM"], "999")
+        self.assertEqual(env["MCTIVITY_PV_ACCEL_RPM_S"], "2222")
+        self.assertEqual(env["MCTIVITY_COMMISSIONING_INHIBIT"], "0")
+
     def test_environment_topology_mismatch_is_rejected(self):
         with self.assertRaises(LAUNCH.ProfileRuntimeError):
             LAUNCH.resolve_launch_environment(

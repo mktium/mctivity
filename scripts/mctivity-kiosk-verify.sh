@@ -37,7 +37,7 @@ profile = capabilities.get("profile")
 if expected_profile and profile != expected_profile:
     raise SystemExit(f"profile mismatch: expected {expected_profile}, got {profile}")
 
-if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
+if profile in {"axis-d-uservo", "axis-d-uservo-pv", "axis-d-uservo-combined", "axis-de-uservo-pv", "axis-de-uservo-gear", "axis-de-uservo-combined"}:
     expected_topology = profile
     assert capabilities.get("primary_axis_label") == "D", capabilities
     assert capabilities.get("counts_per_rev") == 10000, capabilities

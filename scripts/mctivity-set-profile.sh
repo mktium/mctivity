@@ -10,11 +10,11 @@ HMI_ENV_FILE="${AXIS_ENV_DIR}/hmi.env"
 BACKUP_ROOT="${MCTIVITY_BACKUP_ROOT:-/var/backups/mctivity}"
 
 case "${PROFILE_NAME}" in
-  minimal|standard|full|axis-d-uservo|axis-d-uservo-pv|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined)
+  minimal|standard|full|axis-d-uservo|axis-d-uservo-pv|axis-d-uservo-combined|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined)
     ;;
   *)
     echo "invalid profile: ${PROFILE_NAME}" >&2
-    echo "usage: $0 {minimal|standard|full|axis-d-uservo|axis-d-uservo-pv|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined}" >&2
+    echo "usage: $0 {minimal|standard|full|axis-d-uservo|axis-d-uservo-pv|axis-d-uservo-combined|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined}" >&2
     exit 2
     ;;
 esac
@@ -55,7 +55,7 @@ echo "configuration restored; restart services only after the inhibited read-onl
 EOF
 chmod 0755 "${backup_dir}/rollback.sh"
 axis_tmp="$(mktemp "${AXIS_ENV_DIR}/axis.env.XXXXXX")"
-if [ "${PROFILE_NAME}" = "axis-d-uservo" ] || [ "${PROFILE_NAME}" = "axis-d-uservo-pv" ] || [ "${PROFILE_NAME}" = "axis-de-uservo-pv" ] || [ "${PROFILE_NAME}" = "axis-de-uservo-gear" ] || [ "${PROFILE_NAME}" = "axis-de-uservo-combined" ]; then
+if [ "${PROFILE_NAME}" = "axis-d-uservo" ] || [ "${PROFILE_NAME}" = "axis-d-uservo-pv" ] || [ "${PROFILE_NAME}" = "axis-d-uservo-combined" ] || [ "${PROFILE_NAME}" = "axis-de-uservo-pv" ] || [ "${PROFILE_NAME}" = "axis-de-uservo-gear" ] || [ "${PROFILE_NAME}" = "axis-de-uservo-combined" ]; then
   topology="${PROFILE_NAME}"
   if [ "${PROFILE_NAME}" = "axis-de-uservo-combined" ]; then
     topology="axis-de-uservo-gear"
@@ -83,7 +83,7 @@ rm -f "${axis_tmp}"
 
 hmi_tmp="$(mktemp "${AXIS_ENV_DIR}/hmi.env.XXXXXX")"
 case "${PROFILE_NAME}" in
-  axis-d-uservo|axis-d-uservo-pv|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined)
+  axis-d-uservo|axis-d-uservo-pv|axis-d-uservo-combined|axis-de-uservo-pv|axis-de-uservo-gear|axis-de-uservo-combined)
     hmi_commissioning_inhibit=1
     ;;
   *)

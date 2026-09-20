@@ -60,6 +60,7 @@ static int uservo_pv_topology = 0;
 static int uservo_dual_pv_topology = 0;
 static int uservo_dual_gear_topology = 0;
 static int uservo_dual_combined_topology = 0;
+static int uservo_single_combined_topology = 0;
 static int uservo_dual_topology = 0;
 static int sync_group_session_active = 0;
 static int sync_group_motion_active = 0;
@@ -456,6 +457,7 @@ typedef struct {
 static uservo_csp_offsets_t uservo_dual_csp_offsets[AXIS_COUNT];
 static ec_pdo_entry_reg_t uservo_dual_csp_domain_regs[AXIS_COUNT * 8 + 1];
 static ec_pdo_entry_reg_t uservo_dual_combined_domain_regs[AXIS_COUNT * 10 + 1];
+static ec_pdo_entry_reg_t uservo_combined_domain_regs[11];
 
 static axis_runtime_t axes[AXIS_COUNT];
 static client_t clients[MAX_CLIENTS];
@@ -501,13 +503,13 @@ static int env_u32_required(const char *name, uint32_t *result)
 
 static int axis_is_uservo_pv(int axis)
 {
-    return uservo_pv_topology && (uservo_dual_pv_topology || axis == AXIS_MCTIVITY);
+    return uservo_pv_topology && (uservo_single_combined_topology || uservo_dual_pv_topology || axis == AXIS_MCTIVITY);
 }
 
 static int axis_uses_native_pv_control(int axis, const char *mode)
 {
     return mode && strcmp(mode, "velocity") == 0 &&
-           (axis_is_uservo_pv(axis) || uservo_dual_combined_topology);
+           (axis_is_uservo_pv(axis) || uservo_single_combined_topology || uservo_dual_combined_topology);
 }
 
 static int axis_is_uservo_gear(int axis)
@@ -538,6 +540,9 @@ static const char *axis_name(int axis)
 
 static const char *axis_label(int axis)
 {
+    if (uservo_single_combined_topology && axis == AXIS_MCTIVITY) {
+        return "Axis D Uservo PV/CSP";
+    }
     if (uservo_dual_topology) {
         if (uservo_dual_gear_topology) {
             return axis == AXIS_FV3 ? "Axis E Uservo" : "Axis D Uservo";
@@ -1138,6 +1143,13 @@ static int load_axis_profile_parameters(void)
         counts_per_rev = LEGACY_COUNTS_PER_REV;
         return 0;
     }
+    if (uservo_single_combined_topology) {
+        if (load_uservo_pv_profile(&uservo_pv_profiles[AXIS_MCTIVITY], "D", 0) < 0) {
+            return -1;
+        }
+        counts_per_rev = uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev;
+        return 0;
+    }
     if (uservo_dual_combined_topology) {
         if (env_u32_required("MCTIVITY_USERVO_AXIS_COUNT", &configured_axis_count) < 0 ||
             configured_axis_count != AXIS_COUNT) {
@@ -1578,13 +1590,15 @@ static void send_status_fd(int fd, int axis)
     axis_runtime_t *ax = &axes[axis];
     const status_t *s = &ax->st;
     const uservo_pv_profile_t *pv = uservo_pv_profile_for_axis(axis);
-    const char *topology = uservo_dual_combined_topology
+    const char *topology = uservo_single_combined_topology
+        ? "axis-d-uservo-combined"
+        : (uservo_dual_combined_topology
         ? "axis-de-uservo-combined"
         : (uservo_dual_gear_topology
         ? "axis-de-uservo-gear"
         : (uservo_dual_pv_topology
             ? "axis-de-uservo-pv"
-            : (uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual"))));
+            : (uservo_pv_topology ? "axis-d-uservo-pv" : (uservo_axis_d_topology ? "axis-d-uservo" : "legacy-dual")))));
     const char *logical_axis = uservo_dual_topology ? (axis == AXIS_FV3 ? "E" : "D") :
         (uservo_axis_d_topology && axis == AXIS_MCTIVITY ? "D" : (axis == AXIS_FV3 ? "B" : "A"));
     int64_t axis_counts_per_rev = pv ? pv->counts_per_rev
@@ -2065,13 +2079,13 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
-    if ((uservo_pv_topology &&
+    if ((uservo_pv_topology && !uservo_single_combined_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
           strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "move_abs") == 0 || strcmp(cmd, "move_rel") == 0 ||
           strcmp(cmd, "move_curve_rel") == 0 || strcmp(cmd, "torque_cmd") == 0)) ||
-        (uservo_axis_d_topology && !uservo_pv_topology && !uservo_dual_gear_topology &&
+    (uservo_axis_d_topology && !uservo_pv_topology && !uservo_dual_gear_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
-          strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "jog_velocity") == 0 || strcmp(cmd, "torque_cmd") == 0))) {
+          strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "torque_cmd") == 0))) {
         send_error_fd(fd, "unsupported_for_axis_d_uservo");
         return;
     }
@@ -2301,7 +2315,7 @@ static void handle_command(int fd, const char *line)
             send_error_fd(fd, "set_mode requires a supported mode");
             return;
         }
-        if (uservo_pv_topology && strcmp(mode, "velocity") != 0) {
+        if (uservo_pv_topology && !uservo_single_combined_topology && strcmp(mode, "velocity") != 0) {
             send_error_fd(fd, "unsupported_for_axis_d_uservo_pv");
             return;
         }
@@ -3353,6 +3367,28 @@ static void build_uservo_dual_combined_domain_regs(void)
     uservo_dual_combined_domain_regs[AXIS_COUNT * 10] = (ec_pdo_entry_reg_t){};
 }
 
+static void build_uservo_combined_domain_regs(void)
+{
+    static const uint16_t indices[10] = {
+        0x6040, 0x6060, 0x607a, 0x60ff, 0x60fe,
+        0x6041, 0x6061, 0x6064, 0x606c, 0x60fd,
+    };
+    static const uint8_t subindices[10] = {0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    unsigned int *offsets[10] = {
+        &uservo_off_controlword, &uservo_off_mode, &uservo_off_target_position,
+        &uservo_off_target_velocity, &uservo_off_digital_output, &uservo_off_statusword,
+        &uservo_off_mode_display, &uservo_off_position_actual, &uservo_off_velocity_actual,
+        &uservo_off_digital_input,
+    };
+    for (int entry = 0; entry < 10; entry++) {
+        uservo_combined_domain_regs[entry] = (ec_pdo_entry_reg_t){
+            0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE,
+            indices[entry], subindices[entry], offsets[entry], NULL
+        };
+    }
+    uservo_combined_domain_regs[10] = (ec_pdo_entry_reg_t){};
+}
+
 static int configure_uservo_pv_profile(
     ec_slave_config_t *slave_config,
     const uservo_pv_profile_t *profile,
@@ -3378,6 +3414,189 @@ static int configure_uservo_pv_profile(
         profile->accel_cps2,
         profile->decel_rpm_s,
         profile->decel_cps2);
+    return 0;
+}
+
+/* Single-axis mixed Uservo map: CSP remains the position mode, while CiA 402
+ * PV uses the native 0x60ff target velocity.  This is deliberately separate
+ * from the D/E gear loop: a single assembled axis must not require a phantom
+ * second slave or enter the gear-group state machine. */
+static int run_uservo_axis_combined(void)
+{
+    ec_master_t *master;
+    ec_domain_t *domain;
+    ec_slave_config_t *slave_config;
+    uint8_t *process_data;
+    uint64_t deadline_ns;
+    axis_runtime_t *axis = &axes[AXIS_MCTIVITY];
+
+    if (prepare_axis_d_realtime() < 0) {
+        return 1;
+    }
+    master = ecrt_request_master(0);
+    if (!master) {
+        fprintf(stderr, "failed to request EtherCAT master 0\n");
+        return 1;
+    }
+    domain = ecrt_master_create_domain(master);
+    slave_config = ecrt_master_slave_config(master, 0, 0, USERVO_VENDOR_ID, USERVO_PRODUCT_CODE);
+    if (!domain || !slave_config) {
+        fprintf(stderr, "failed to create mixed Uservo axis D domain or slave config\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    if (ecrt_slave_config_pdos(slave_config, EC_END, uservo_combined_syncs)) {
+        fprintf(stderr, "failed to configure mixed Uservo axis D PDOs\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    if (configure_uservo_pv_profile(
+            slave_config,
+            uservo_pv_profile_for_axis(AXIS_MCTIVITY),
+            "Axis D Uservo PV/CSP") < 0) {
+        ecrt_release_master(master);
+        return 1;
+    }
+    ecrt_slave_config_dc(slave_config, 0x0300, PERIOD_NS, 0, 0, 0);
+    if (ecrt_master_select_reference_clock(master, slave_config)) {
+        fprintf(stderr, "failed to select mixed Uservo axis D DC reference clock\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    build_uservo_combined_domain_regs();
+    if (ecrt_domain_reg_pdo_entry_list(domain, uservo_combined_domain_regs)) {
+        fprintf(stderr, "failed to register mixed Uservo axis D PDO entries\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    if (ecrt_master_activate(master)) {
+        fprintf(stderr, "failed to activate EtherCAT master for mixed Uservo axis D\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    process_data = ecrt_domain_data(domain);
+    if (!process_data) {
+        fprintf(stderr, "failed to get mixed Uservo axis D domain data\n");
+        ecrt_release_master(master);
+        return 1;
+    }
+    axis->commanded_mode = 0;
+    axis->st.servo_request = 0;
+    axis->st.target_raw = 0;
+    axis->st.target_user = 0;
+    snprintf(axis->st.message, sizeof(axis->st.message), "Axis D Uservo PV/CSP commissioning inhibit active");
+    printf(
+        "Axis D Uservo PV/CSP daemon listening on 127.0.0.1:%d (inhibit=%s, counts/rev=%u)\n",
+        SERVER_PORT,
+        commissioning_inhibit ? "on" : "off",
+        uservo_pv_profiles[AXIS_MCTIVITY].counts_per_rev);
+    fflush(stdout);
+
+    deadline_ns = monotonic_now_ns();
+    while (running) {
+        uint64_t scheduled_time_ns;
+        uint64_t cycle_started_ns;
+        uint64_t cycle_finished_ns;
+        ec_slave_config_state_t slave_state;
+        ec_domain_state_t domain_state;
+
+        if (wait_for_axis_d_cycle(&deadline_ns, &scheduled_time_ns) < 0) {
+            perror("Axis D mixed Uservo cycle sleep");
+            break;
+        }
+        cycle_started_ns = monotonic_now_ns();
+        ecrt_master_application_time(master, scheduled_time_ns);
+        ecrt_master_receive(master);
+        ecrt_domain_process(domain);
+        ecrt_slave_config_state(slave_config, &slave_state);
+        ecrt_domain_state(domain, &domain_state);
+
+        axis->st.sw = EC_READ_U16(process_data + uservo_off_statusword);
+        axis->st.err = 0;
+        axis->st.mode_display = EC_READ_S8(process_data + uservo_off_mode_display);
+        axis->st.pos_raw = EC_READ_S32(process_data + uservo_off_position_actual);
+        axis->st.velocity_actual_cps = EC_READ_S32(process_data + uservo_off_velocity_actual);
+        axis->st.following_error = 0;
+        axis->st.torque_feedback = 0;
+        axis->st.al_state = slave_state.al_state;
+        axis->st.operational = slave_state.operational;
+        axis->st.wc = domain_state.working_counter;
+        axis->st.wc_complete = domain_state.wc_state == EC_WC_COMPLETE;
+        axis->st.enabled = operation_enabled(axis->st.sw);
+        axis->st.fault = (axis->st.sw & 0x0008) != 0;
+        axis->st.pos_user = axis->st.pos_raw - axis->st.soft_zero_raw;
+
+        update_axis_d_communication_guard(axis);
+        if (commissioning_inhibit) {
+            axis->st.servo_request = 0;
+            axis->st.target_raw = axis->st.pos_raw;
+            axis->st.target_user = axis->st.pos_user;
+            axis->st.jog_velocity_cps = 0;
+            axis->target_velocity_cps = 0;
+        }
+        axis_cycle_logic(axis, AXIS_MCTIVITY);
+        if (realtime_status.communication_timing_fault) {
+            axis->st.cw = 0;
+        }
+
+        EC_WRITE_U16(
+            process_data + uservo_off_controlword,
+            realtime_status.communication_timing_fault
+                ? 0x0000
+                : (commissioning_inhibit ? (axis->st.cw == 0x0080 ? 0x0080 : 0x0000) : axis->st.cw));
+        EC_WRITE_S8(
+            process_data + uservo_off_mode,
+            commissioning_inhibit || realtime_status.communication_timing_fault ? 0 : axis->commanded_mode);
+        EC_WRITE_S32(
+            process_data + uservo_off_target_position,
+            commissioning_inhibit || realtime_status.communication_timing_fault ? axis->st.pos_raw : axis->st.target_raw);
+        EC_WRITE_S32(
+            process_data + uservo_off_target_velocity,
+            commissioning_inhibit || realtime_status.communication_timing_fault ||
+                    !axis_uses_native_pv_control(AXIS_MCTIVITY, axis->st.control_mode)
+                ? 0
+                : axis->target_velocity_cps);
+        EC_WRITE_U32(process_data + uservo_off_digital_output, 0);
+
+        ecrt_domain_queue(domain);
+        ecrt_master_sync_reference_clock(master);
+        ecrt_master_sync_slave_clocks(master);
+        ecrt_master_send(master);
+        poll_server(AXIS_D_SERVER_ACCEPT_BUDGET, AXIS_D_SERVER_COMMAND_BUDGET, 1);
+        axis->st.cycles++;
+
+        cycle_finished_ns = monotonic_now_ns();
+        realtime_status.last_cycle_runtime_ns = cycle_finished_ns - cycle_started_ns;
+        if (realtime_status.last_cycle_runtime_ns > realtime_status.max_cycle_runtime_ns) {
+            realtime_status.max_cycle_runtime_ns = realtime_status.last_cycle_runtime_ns;
+        }
+    }
+
+    printf("Disabling mixed Uservo axis D output before exit...\n");
+    for (unsigned int i = 0; i < AXIS_D_SHUTDOWN_CYCLES; i++) {
+        uint64_t scheduled_time_ns;
+        if (wait_for_axis_d_cycle(&deadline_ns, &scheduled_time_ns) < 0) {
+            break;
+        }
+        ecrt_master_application_time(master, scheduled_time_ns);
+        ecrt_master_receive(master);
+        ecrt_domain_process(domain);
+        EC_WRITE_U16(process_data + uservo_off_controlword, 0x0000);
+        EC_WRITE_S8(process_data + uservo_off_mode, 0);
+        EC_WRITE_S32(process_data + uservo_off_target_position,
+                     EC_READ_S32(process_data + uservo_off_position_actual));
+        EC_WRITE_S32(process_data + uservo_off_target_velocity, 0);
+        EC_WRITE_U32(process_data + uservo_off_digital_output, 0);
+        ecrt_domain_queue(domain);
+        ecrt_master_sync_reference_clock(master);
+        ecrt_master_sync_slave_clocks(master);
+        ecrt_master_send(master);
+    }
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        close_client(&clients[i]);
+    }
+    close(listen_fd);
+    ecrt_release_master(master);
     return 0;
 }
 
@@ -4018,11 +4237,12 @@ int main(void)
     uservo_dual_gear_topology = topology && strcmp(topology, "axis-de-uservo-gear") == 0;
     uservo_dual_combined_topology = uservo_dual_gear_topology && profile &&
         strcmp(profile, "axis-de-uservo-combined") == 0;
+    uservo_single_combined_topology = topology && strcmp(topology, "axis-d-uservo-combined") == 0;
     uservo_dual_topology = uservo_dual_pv_topology || uservo_dual_gear_topology;
     uservo_pv_topology = topology &&
-        (strcmp(topology, "axis-d-uservo-pv") == 0 || uservo_dual_pv_topology);
+        (strcmp(topology, "axis-d-uservo-pv") == 0 || uservo_dual_pv_topology || uservo_single_combined_topology);
     uservo_axis_d_topology = topology &&
-        (strcmp(topology, "axis-d-uservo") == 0 || uservo_pv_topology || uservo_dual_topology);
+        (strcmp(topology, "axis-d-uservo") == 0 || uservo_pv_topology || uservo_dual_topology || uservo_single_combined_topology);
     commissioning_inhibit = uservo_axis_d_topology
         ? env_flag_default("MCTIVITY_COMMISSIONING_INHIBIT", 1)
         : 0;
@@ -4041,9 +4261,11 @@ int main(void)
     }
     for (int axis = 0; axis < AXIS_COUNT; axis++) {
         memset(&axes[axis], 0, sizeof(axes[axis]));
-        set_control_mode(&axes[axis], axis_is_uservo_pv(axis) ? "velocity" : "position");
+        set_control_mode(&axes[axis], uservo_single_combined_topology ? "position" :
+            (axis_is_uservo_pv(axis) ? "velocity" : "position"));
         axes[axis].commanded_mode = axis_mode_code(
-            axis, axis_is_uservo_pv(axis) ? "velocity" : "position");
+            axis, uservo_single_combined_topology ? "position" :
+                (axis_is_uservo_pv(axis) ? "velocity" : "position"));
         axes[axis].gear_master_axis = axis == AXIS_FV3 ? AXIS_MCTIVITY : AXIS_FV3;
         axes[axis].gear_master_ratio = 1;
         axes[axis].gear_slave_ratio = 1;
@@ -4063,6 +4285,9 @@ int main(void)
     }
     if (uservo_dual_pv_topology) {
         return run_uservo_axes_de_pv();
+    }
+    if (uservo_single_combined_topology) {
+        return run_uservo_axis_combined();
     }
     if (uservo_axis_d_topology) {
         return run_uservo_axis_d();
