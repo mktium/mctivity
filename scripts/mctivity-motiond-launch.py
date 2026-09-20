@@ -152,11 +152,12 @@ def resolve_launch_environment(profile_name=None, profile_path=None, modules_roo
             )
         launch_env.update(
             {
-                "MCTIVITY_PV_TARGET_SPEED_RPM": str(device["default_speed_rpm"]),
-                "MCTIVITY_PV_MAX_SPEED_RPM": str(device["max_speed_rpm"]),
-                "MCTIVITY_PV_ACCEL_RPM_S": str(device["default_accel_rpm_s"]),
-                "MCTIVITY_PV_DECEL_RPM_S": str(device["default_decel_rpm_s"]),
-                "MCTIVITY_PV_STOP_DECEL_RPM_S": str(device["stop_decel_rpm_s"]),
+                "MCTIVITY_AXIS_D_COUNTS_PER_REV": str(device["counts_per_rev"]),
+                "MCTIVITY_AXIS_D_PV_TARGET_SPEED_RPM": str(device["default_speed_rpm"]),
+                "MCTIVITY_AXIS_D_PV_MAX_SPEED_RPM": str(device["max_speed_rpm"]),
+                "MCTIVITY_AXIS_D_PV_ACCEL_RPM_S": str(device["default_accel_rpm_s"]),
+                "MCTIVITY_AXIS_D_PV_DECEL_RPM_S": str(device["default_decel_rpm_s"]),
+                "MCTIVITY_AXIS_D_PV_STOP_DECEL_RPM_S": str(device["stop_decel_rpm_s"]),
             }
         )
     if expected_topology == "axis-de-uservo-gear":

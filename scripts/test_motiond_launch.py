@@ -78,9 +78,10 @@ class MotiondLaunchTests(unittest.TestCase):
         self.assertEqual(len(runtime["axis_devices"]), 1)
         self.assertEqual(device["logical_axis"], "D")
         self.assertEqual(env["MCTIVITY_TOPOLOGY"], "axis-d-uservo-combined")
-        self.assertEqual(env["MCTIVITY_PV_TARGET_SPEED_RPM"], "222")
-        self.assertEqual(env["MCTIVITY_PV_MAX_SPEED_RPM"], "999")
-        self.assertEqual(env["MCTIVITY_PV_ACCEL_RPM_S"], "2222")
+        self.assertEqual(env["MCTIVITY_AXIS_D_COUNTS_PER_REV"], "10000")
+        self.assertEqual(env["MCTIVITY_AXIS_D_PV_TARGET_SPEED_RPM"], "222")
+        self.assertEqual(env["MCTIVITY_AXIS_D_PV_MAX_SPEED_RPM"], "999")
+        self.assertEqual(env["MCTIVITY_AXIS_D_PV_ACCEL_RPM_S"], "2222")
         self.assertEqual(env["MCTIVITY_COMMISSIONING_INHIBIT"], "0")
 
     def test_environment_topology_mismatch_is_rejected(self):
