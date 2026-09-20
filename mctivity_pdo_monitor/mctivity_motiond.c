@@ -2153,6 +2153,7 @@ static void handle_command(int fd, const char *line)
             return;
         }
         s->soft_zero_raw = raw_zero;
+        s->pos_user = s->pos_raw - s->soft_zero_raw;
         s->target_raw = s->pos_raw;
         s->target_user = s->pos_raw - s->soft_zero_raw;
         clear_motion(ax);
