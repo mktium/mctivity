@@ -19,10 +19,10 @@ profile 中启用；防摇仍未启用，首次运动测试另行授权。
 ## 源码、构建和 release
 
 - 分支：`feature/v1.4.1-axis-d-uservo-anti-sway`。
-- 功能提交：`95cb0c4`；启动器修复提交：`86cb81d`。
-- 源码归档：`/tmp/mctivity-build-86cb81d.tar`。
-- 源码归档 SHA-256：`e1b7fc5c65a93b5198597c6bd70208fb4326e36a04282f9b82bfe0078c157267`。
-- 目标 release：`/opt/mctivity-releases/v1.4.1-axis-d-uservo-anti-sway-86cb81d`。
+- 功能提交：`95cb0c4`；启动器修复提交：`86cb81d`；界面文案提交：`e230a1e`。
+- 源码归档：`/tmp/mctivity-build-e230a1e.tar`。
+- 源码归档 SHA-256：`1afebf4da113bced7b492bd2656b464a72acc5801b344f4bd82aab1a7e2cc05e`。
+- 目标 release：`/opt/mctivity-releases/v1.4.1-axis-d-uservo-anti-sway-e230a1e`。
 - 目标 motiond SHA-256：`def767613145077760422babcb09ab35acc2946811c84b525a61e894130a1343`。
 - 目标使用真实 `/opt/etherlab`，以 `gcc -O2 -Wall -Wextra -Werror` 编译通过。
 - 未推送远端；本地分支和提交保留，待用户明确要求后再处理远端同步。
@@ -32,8 +32,9 @@ profile 中启用；防摇仍未启用，首次运动测试另行授权。
 - 当前 `/opt/mctivity` 指向上述 release。
 - `/etc/mctivity/axis.env` 和 `hmi.env` 已切换到 `axis-d-uservo-combined`。
 - `MCTIVITY_COMMISSIONING_INHIBIT=0` 按操作者此前明确要求保持解除；本次没有发送使能、模式切换、复位、停止或运动命令。
-- 部署前备份：`/var/backups/mctivity/pre-native-pv-csp-95cb0c4-20260920`。
+- 首次部署前备份：`/var/backups/mctivity/pre-native-pv-csp-95cb0c4-20260920`。
 - 修复部署前备份：`/var/backups/mctivity/pre-native-pv-csp-86cb81d-20260920`。
+- 最终 HMI release 切换前备份：`/var/backups/mctivity/pre-native-pv-csp-e230a1e-20260920`。
 - 旧 release 未删除，可通过备份中的 `active-release.txt` 找回旧链接；失败时保持当前门禁值，恢复旧链接和配置后再重启服务。
 
 ## 无运动验收
