@@ -21,7 +21,13 @@ from feature_registry import (
     resolve_enabled_feature_keys,
 )
 from profile_runtime import build_module_runtime
-from travel_runtime import normalize_travel_config, travel_ui_model
+from travel_runtime import (
+    TravelConfigError,
+    endpoint_recording_guard,
+    normalize_travel_config,
+    record_manual_endpoint,
+    travel_ui_model,
+)
 
 
 def _env_int(name, default):
@@ -223,7 +229,7 @@ _COMMAND_FIELD_ORDER = {
         "min_pos",
         "max_pos",
     ],
-    "jog_velocity": ["cmd", "device", "velocity"],
+    "jog_velocity": ["cmd", "device", "velocity", "min_pos", "max_pos"],
     "torque_cmd": ["cmd", "device", "torque"],
     "gear_config": [
         "cmd",
@@ -268,6 +274,7 @@ _OPTIONAL_INT_FIELDS = {
     "move_abs": ["move_ms", "speed_rpm", "acceleration_rpm_s", "min_pos", "max_pos"],
     "move_rel": ["move_ms", "speed_rpm", "acceleration_rpm_s", "min_pos", "max_pos"],
     "move_curve_rel": ["dwell_ms", "min_pos", "max_pos"],
+    "jog_velocity": ["min_pos", "max_pos"],
     "gear_config": ["master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"],
     "gear_start": ["master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"],
     "sync_jog_velocity": ["acceleration_rpm_s"],
@@ -472,20 +479,11 @@ def capability_manifest():
             "device": _HMI_DEVICE_ORDER[0] if _LINEAR_TRAVEL_PROFILE else None,
             "logical_axis": _PRIMARY_AXIS_LABEL if _LINEAR_TRAVEL_PROFILE else None,
             "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV if _LINEAR_TRAVEL_PROFILE else None,
-            "calibration_actions_available": False,
-            "calibration_actions_reason": "runtime_not_connected",
-            "calibration_engine": "endpoint_contact_decision_v1",
-            "calibration_runtime_connected": False,
-            "native_homing_candidate": {
-                "validated": False,
-                "mode_code": 6,
-                "method_object": "0x6098",
-                "stall_current_object": "0x3637",
-                "timeout_object": "0x3643",
-                "controlword_start_bit": 4,
-                "statusword_attained_bit": 12,
-                "statusword_error_bit": 13,
-            },
+            "calibration_actions_available": True,
+            "calibration_actions_reason": "manual_endpoint_recording",
+            "calibration_engine": "manual_endpoint_recording_v1",
+            "calibration_runtime_connected": True,
+            "native_homing_required": False,
             "anti_sway_shaper": "zvd",
         },
         "motiond_restart_control": {
@@ -681,6 +679,52 @@ def _sanitize_command_payload(payload, device):
     if not _validate_command_numbers(cmd, clean, device):
         return None
     return clean
+
+
+def _travel_command_guard(clean, device):
+    """Apply taught linear limits before a motion command reaches motiond."""
+
+    if not _LINEAR_TRAVEL_PROFILE or device != _HMI_DEVICE_ORDER[0]:
+        return None
+    cmd = clean.get("cmd")
+    if cmd not in {"move_abs", "move_rel", "move_curve_rel", "jog_velocity", "torque_cmd", "set_zero"}:
+        return None
+    ui_state = load_ui_state()
+    device_state = ui_state.get("devices", {}).get(device, {})
+    raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
+    try:
+        config = normalize_travel_config(raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV)
+    except TravelConfigError:
+        return "invalid_persisted_travel_config"
+    if cmd == "set_zero":
+        return "clear_travel_endpoints_before_set_zero" if config.endpoints_valid else None
+    if cmd == "jog_velocity" and not config.endpoints_valid:
+        return None
+    if cmd == "torque_cmd":
+        return "torque_control_blocked_after_endpoint_calibration" if config.endpoints_valid else None
+    if not config.endpoints_valid:
+        return "travel_not_calibrated"
+    try:
+        status_response = motiond_command({"cmd": "status", "device": device})
+        status = status_response.get("status", {}) if isinstance(status_response, dict) else {}
+        current = int(status["pos"])
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return "position_unavailable"
+    safe_left = int(config.safe_left_counts)
+    safe_right = int(config.safe_right_counts)
+    clean["min_pos"] = safe_left
+    clean["max_pos"] = safe_right
+    if cmd == "move_abs":
+        requested = int(clean["pos"])
+    elif cmd == "move_rel":
+        requested = current + int(clean["delta"])
+    elif cmd == "move_curve_rel":
+        requested = current + int(clean["target_delta_counts"])
+    else:
+        return None
+    if requested < safe_left or requested > safe_right:
+        return "target_outside_safe_travel"
+    return None
 
 
 def _normalize_device(raw):
@@ -881,6 +925,10 @@ button.stop { background:var(--warn); } button.blue { background:var(--theme-dee
 .travel-switch { display:flex; align-items:center; gap:7px; margin-top:8px; color:#47515a; font-size:11px; font-weight:900; }
 .travel-switch input { width:18px; height:18px; margin:0; accent-color:var(--theme-blue); }
 .travel-switch input:disabled { opacity:.55; }
+.travel-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-top:6px; }
+.travel-actions button { min-height:30px; padding:4px 6px; border:1px solid rgba(42,131,183,.28); border-radius:7px; background:#fff; color:var(--theme-deep); font:inherit; font-size:10px; font-weight:900; }
+.travel-actions button:disabled { opacity:.45; }
+.travel-actions .clear { color:var(--bad); border-color:rgba(186,26,26,.25); }
 .travel-reason { min-height:16px; margin-top:4px; color:#6b747d; font-size:10px; line-height:1.15; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @media (max-height: 820px) {
   main { padding:4px 10px 6px; gap:4px; }
@@ -1155,8 +1203,13 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <div class="travel-metric"><span class="label">安全范围</span><span id="travelSafeRangeValue" class="value">--</span></div>
             <div class="travel-metric"><span class="label">防摇</span><span id="travelAntiSwayValue" class="value">未配置</span></div>
           </div>
+          <div class="travel-actions">
+            <button id="travelRecordLeft" type="button" onclick="recordTravelEndpoint('left')">记录左端点</button>
+            <button id="travelRecordRight" type="button" onclick="recordTravelEndpoint('right')">记录右端点</button>
+            <button id="travelClear" class="clear" type="button" onclick="clearTravelEndpoints()">清除标定</button>
+          </div>
           <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled><span>启用防摇轨迹（需先完成端点标定和摆动周期配置）</span></label>
-          <div id="travelReason" class="travel-reason">当前仅显示只读状态；端点标定流程尚未接入。</div>
+          <div id="travelReason" class="travel-reason">请手动点动到端点并停止后记录；记录按钮不会让电机运动。</div>
         </div>
         <div id="panel-incremental" class="mode-panel">
           <div class="slider-card">
@@ -1766,7 +1819,8 @@ function newDeviceProfile(device) {
     stopDecelRpmS:config.stop_decel_rpm_s, relDelta:config.default_relative_counts,
     moveMs:3000, velRpm:config.default_speed_rpm, velCps:rpmToCountsS(config.default_speed_rpm, device),
     torqueCmd:0, gearMaster:defaultGearMaster, gearMasterRatio:1, gearSlaveRatio:1, gearDirection:1,
-    travel:{left_limit_counts:null, right_limit_counts:null, safety_margin_counts:0,
+    travel:{left_limit_counts:null, right_limit_counts:null, safety_margin_counts:100,
+      calibration_data_version:0,
       calibration_state:'uncalibrated', anti_sway_enabled:false, sway_period_ms:null,
       shaper:'zvd', residual_sway_limit_counts:0},
     incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'},
@@ -2027,6 +2081,38 @@ async function refreshTravelStatus(device) {
   if (data && data.ok && data.travel) {
     travelStateByDevice[device] = data.travel;
     if (device === activeDevice) renderTravelModel(data.travel, currentStatus(device));
+  }
+  return data;
+}
+async function recordTravelEndpoint(side) {
+  const device = activeDevice;
+  const res = await fetch('/api/travel/record', {
+    method:'POST',
+    headers:apiHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({device, side})
+  });
+  const data = await res.json();
+  if (data && data.ok && data.travel) {
+    travelStateByDevice[device] = data.travel;
+    renderTravelModel(data.travel, currentStatus(device));
+  } else {
+    showApiError(data);
+  }
+  return data;
+}
+async function clearTravelEndpoints() {
+  const device = activeDevice;
+  const res = await fetch('/api/travel/clear', {
+    method:'POST',
+    headers:apiHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({device})
+  });
+  const data = await res.json();
+  if (data && data.ok && data.travel) {
+    travelStateByDevice[device] = data.travel;
+    renderTravelModel(data.travel, currentStatus(device));
+  } else {
+    showApiError(data);
   }
   return data;
 }
@@ -3407,10 +3493,17 @@ function renderTravelModel(model, status) {
     toggle.checked = Boolean(anti.enabled);
     toggle.disabled = !anti.ready || capabilityState.commissioningInhibit;
   }
+  const recordingAvailable = Boolean(data.recording_available);
+  const leftButton = document.getElementById('travelRecordLeft');
+  const rightButton = document.getElementById('travelRecordRight');
+  const clearButton = document.getElementById('travelClear');
+  if (leftButton) leftButton.disabled = !recordingAvailable;
+  if (rightButton) rightButton.disabled = !recordingAvailable;
+  if (clearButton) clearButton.disabled = Boolean(status && (status.enabled || status.servo_request || status.moving));
   const reasons = Array.isArray(guard.reasons) ? guard.reasons : [];
   setText('travelReason', valid
-    ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '端点有效；当前页面仅显示状态，标定动作尚未接入。')
-    : '端点尚未有效；当前页面只读显示，不允许启动标定或运动。');
+    ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '两端已标定；软件行程限制已生效。')
+    : (recordingAvailable ? '轴已停止：点动到左/右端后分别记录；记录不会让电机运动。' : '当前不可记录：' + String(data.recording_reason || '请停机并检查通信/使能状态。')));
   const rail = document.getElementById('travelRailSafe');
   const marker = document.getElementById('travelMarker');
   if (rail && marker && safeLeft !== null && safeRight !== null && safeRight > safeLeft) {
@@ -4414,7 +4507,7 @@ def _normalize_ui_device_state(raw):
     travel = raw.get("travel")
     if isinstance(travel, dict):
         normalized_travel = {}
-        for key in ("left_limit_counts", "right_limit_counts", "safety_margin_counts", "sway_period_ms", "residual_sway_limit_counts"):
+        for key in ("left_limit_counts", "right_limit_counts", "safety_margin_counts", "calibration_data_version", "sway_period_ms", "residual_sway_limit_counts"):
             if key in travel:
                 value = _finite_float(travel[key])
                 if value is not None and value.is_integer():
@@ -4473,7 +4566,7 @@ def save_ui_state(device, state):
 
 
 def travel_status(device):
-    """Return read-only linear-travel UI state; never sends a drive command."""
+    """Return linear-travel UI state; status reads are the only drive access."""
 
     if not _LINEAR_TRAVEL_PROFILE or device != _HMI_DEVICE_ORDER[0]:
         return {"ok": False, "error": "linear_travel_unavailable", "device": device}
@@ -4486,6 +4579,9 @@ def travel_status(device):
     raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
     try:
         model = travel_ui_model(status, raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV)
+        record_ok, record_reason = endpoint_recording_guard(status)
+        model["recording_available"] = record_ok
+        model["recording_reason"] = record_reason
     except Exception as exc:
         model = {
             "available": True,
@@ -4497,6 +4593,61 @@ def travel_status(device):
             "error": str(exc),
         }
     return {"ok": True, "device": device, "travel": model}
+
+
+def record_travel_endpoint(device, side):
+    """Persist the current stopped encoder position as one manual endpoint."""
+
+    if not _LINEAR_TRAVEL_PROFILE or device != _HMI_DEVICE_ORDER[0]:
+        return {"ok": False, "error": "linear_travel_unavailable", "device": device}, 400
+    response = motiond_command({"cmd": "status", "device": device})
+    if not isinstance(response, dict) or not response.get("ok"):
+        return response if isinstance(response, dict) else {"ok": False, "error": "status_unavailable"}, 503
+    status = response.get("status") if isinstance(response.get("status"), dict) else {}
+    allowed, reason = endpoint_recording_guard(status)
+    if not allowed:
+        return {"ok": False, "error": "endpoint_recording_blocked", "reason": reason}, 409
+    ui_state = load_ui_state()
+    device_state = ui_state.get("devices", {}).get(device, {})
+    raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
+    try:
+        updated = record_manual_endpoint(raw_travel, side, status.get("pos"), _PRIMARY_AXIS_COUNTS_PER_REV)
+    except (TravelConfigError, TypeError, ValueError) as exc:
+        return {"ok": False, "error": "endpoint_recording_invalid", "detail": str(exc)}, 409
+    next_state = dict(device_state) if isinstance(device_state, dict) else {}
+    next_state["travel"] = updated
+    save_ui_state(device, next_state)
+    result = travel_status(device)
+    result["recorded_side"] = str(side).strip().lower()
+    result["recorded_position_counts"] = updated.get(f"{str(side).strip().lower()}_limit_counts")
+    return result, 200
+
+
+def clear_travel_endpoints(device):
+    """Clear taught endpoints only while the axis is stopped and disabled."""
+
+    if not _LINEAR_TRAVEL_PROFILE or device != _HMI_DEVICE_ORDER[0]:
+        return {"ok": False, "error": "linear_travel_unavailable", "device": device}, 400
+    response = motiond_command({"cmd": "status", "device": device})
+    if not isinstance(response, dict) or not response.get("ok"):
+        return response if isinstance(response, dict) else {"ok": False, "error": "status_unavailable"}, 503
+    status = response.get("status") if isinstance(response.get("status"), dict) else {}
+    if status.get("moving") or status.get("enabled") or status.get("servo_request"):
+        return {"ok": False, "error": "clear_requires_disabled_stopped_axis"}, 409
+    ui_state = load_ui_state()
+    device_state = ui_state.get("devices", {}).get(device, {})
+    next_state = dict(device_state) if isinstance(device_state, dict) else {}
+    travel = dict(next_state.get("travel", {})) if isinstance(next_state.get("travel"), dict) else {}
+    travel.update({
+        "left_limit_counts": None,
+        "right_limit_counts": None,
+        "calibration_data_version": 0,
+        "calibration_state": "uncalibrated",
+        "anti_sway_enabled": False,
+    })
+    next_state["travel"] = travel
+    save_ui_state(device, next_state)
+    return travel_status(device), 200
 
 
 _fv3_cache = None
@@ -5077,6 +5228,8 @@ class Handler(BaseHTTPRequestHandler):
         if path not in (
             "/api/command",
             "/api/ui_state",
+            "/api/travel/record",
+            "/api/travel/clear",
             "/api/system/poweroff",
             "/api/system/restart_motiond",
         ):
@@ -5102,6 +5255,16 @@ class Handler(BaseHTTPRequestHandler):
                 state = payload.get("state", {})
                 save_ui_state(device, state)
                 self.send_json({"ok": True, "state": load_ui_state()})
+            elif path in ("/api/travel/record", "/api/travel/clear"):
+                device = _normalize_device(payload.get("device", "mctivity"))
+                if device is None:
+                    self.send_json({"ok": False, "error": "unsupported_device"}, 400)
+                    return
+                if path == "/api/travel/record":
+                    response, status = record_travel_endpoint(device, payload.get("side", ""))
+                else:
+                    response, status = clear_travel_endpoints(device)
+                self.send_json(response, status)
             elif path == "/api/system/poweroff":
                 response, status = system_poweroff_request(payload)
                 self.send_json(response, status)
@@ -5125,6 +5288,10 @@ class Handler(BaseHTTPRequestHandler):
                 payload = _sanitize_command_payload(payload, device)
                 if payload is None:
                     self.send_json({"ok": False, "error": "unsupported_command"}, 400)
+                    return
+                travel_error = _travel_command_guard(payload, device)
+                if travel_error:
+                    self.send_json({"ok": False, "error": travel_error}, 409)
                     return
                 enabled, required = _command_is_enabled(payload)
                 if not enabled:

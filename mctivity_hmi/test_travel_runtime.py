@@ -6,6 +6,8 @@ from travel_runtime import (
     build_travel_guard,
     normalize_travel_config,
     travel_ui_model,
+    endpoint_recording_guard,
+    record_manual_endpoint,
     validate_target_counts,
 )
 
@@ -73,12 +75,32 @@ class TravelRuntimeTests(unittest.TestCase):
             ["commissioning_inhibit", "not_operational", "wc_incomplete", "drive_fault", "travel_not_calibrated"],
         )
 
-    def test_ui_model_does_not_advertise_actions_before_runtime_exists(self):
+    def test_ui_model_advertises_manual_recording_without_drive_motion(self):
         model = travel_ui_model({"pos": 0, "target": 0}, {}, 10000)
         self.assertTrue(model["available"])
         self.assertFalse(model["endpoints_valid"])
-        self.assertFalse(model["calibration_actions_available"])
-        self.assertEqual(model["calibration_actions_reason"], "runtime_not_connected")
+        self.assertTrue(model["calibration_actions_available"])
+        self.assertEqual(model["calibration_actions_reason"], "manual_endpoint_recording")
+        self.assertEqual(model["calibration_engine"], "manual_endpoint_recording_v1")
+
+    def test_manual_recording_preserves_first_endpoint_and_validates_order(self):
+        raw = {}
+        raw = record_manual_endpoint(raw, "left", -1000, 10000)
+        self.assertEqual(raw["calibration_state"], "left_valid")
+        raw = record_manual_endpoint(raw, "right", 5000, 10000)
+        self.assertEqual(raw["calibration_state"], "both_valid")
+        self.assertEqual(raw["calibration_data_version"], 1)
+        self.assertEqual(normalize_travel_config(raw, 10000).safe_left_counts, -900)
+        with self.assertRaises(TravelConfigError):
+            record_manual_endpoint(record_manual_endpoint({}, "right", 10, 10000), "left", 20, 10000)
+
+    def test_recording_guard_requires_stopped_enabled_healthy_axis(self):
+        ok, reason = endpoint_recording_guard({"operational": True, "wc_complete": True, "enabled": True, "servo_request": True, "moving": False, "fault": False, "pos": 0})
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        ok, reason = endpoint_recording_guard({"operational": True, "wc_complete": True, "enabled": True, "servo_request": True, "moving": True, "fault": False, "pos": 0})
+        self.assertFalse(ok)
+        self.assertEqual(reason, "axis_must_be_stopped")
 
 
 if __name__ == "__main__":

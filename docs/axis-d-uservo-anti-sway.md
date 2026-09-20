@@ -33,18 +33,9 @@ and drive-side parameters.
 The live target PDO inspection also confirms that the current single-axis
 contract is exactly RxPDO `0x1600` (`6040/6060/607A/60FE:01`) and TxPDO `0x1A00`
 (`6041/6061/6064/60FD`). There is no cyclic `0x6077`, `0x6078`, or `0x35F6`
-current/torque feedback in this mapping. The new C decision layer therefore
-fails closed with `MCTIVITY_TRAVEL_FAIL_MISSING_CURRENT_FEEDBACK` instead of
-guessing at an SDO value or treating a position sample as current feedback.
-The next runtime integration must use a verified vendor-native homing/stall
-current path or an explicitly validated PDO remap; it must not silently change
-the current PDO contract.
-
-The profile now records the vendor-native homing candidate without enabling it:
-mode `6`, homing method `0x6098`, stall-current setting `0x3637`, timeout
-`0x3643`, controlword start bit 4, and statusword attained/error bits 12/13.
-These are implementation metadata only; `validated=false` remains until the
-manual semantics and a no-motion startup check are reviewed together.
+current/torque feedback in this mapping. The application therefore does not
+infer a mechanical endpoint from current and does not use the drive's native
+Homing mode. The PDO contract is left unchanged.
 
 ## Anti-sway boundary
 
@@ -64,20 +55,17 @@ reset, or motion command is part of the baseline deployment.
 
 ## Linear travel and HMI phase B/G
 
-The local phase B/G implementation adds a read-only linear-travel model and HMI
-panel for the single-axis D profile. It displays current/target counts, endpoint
-validity, safe travel range, calibration state, commissioning inhibit, and
-anti-sway readiness. The endpoint decision layer is implemented as the pure
-`endpoint_contact_decision_v1` state machine in
-`mctivity_hmi/travel_calibration.py`: it requires a healthy enabled axis, a
-current baseline, a sustained current rise, and a position-progress stall, with
-timeout/fault/communication fail-closed paths. It has no EtherCAT or subprocess
-side effects. Endpoint calibration actions are intentionally not wired to
-motiond yet; the HMI reports `runtime_not_connected` and keeps the anti-sway
-toggle disabled. Targets are rejected by the pure model until both endpoints
-and the safety margin are valid. The read-only model uses the confirmed
-baseline of `10000 counts/rev`, while endpoint values and sway period remain
-unconfigured.
+The current implementation uses manual endpoint teaching. The operator moves
+the enabled axis with the existing jog control, stops it, and presses `记录左端点`
+or `记录右端点`. The HMI reads status only, persists the stopped encoder
+position with calibration data version 1, validates left/right ordering and
+the configured safety margin, and exposes `未标定` / `左端已记录` /
+`两端已标定` states. No endpoint button sends an enable, mode, stop, or motion
+command. After both endpoints are valid, position and jog commands receive the
+safe bounds; out-of-range position targets are rejected and a bounded jog is
+held at the safe edge. `set_zero` and torque control are blocked until the
+operator clears the endpoint calibration. The anti-sway switch remains disabled
+until a later, separately validated trajectory implementation is ready.
 
 The HMI panel is deliberately compact for the fixed touch display. Its short
 viewport layout keeps the position rail, endpoint/target metrics, and calibration
@@ -85,11 +73,9 @@ badge visible without relying on vertical scrolling; explanatory text and the
 currently unavailable anti-sway switch collapse at viewport heights at or below
 820 px.
 
-The real-time-side pure state machine is in
-`mctivity_pdo_monitor/travel_calibration.h` and is covered by
-`test_travel_calibration.c`. It checks inhibit, OP/WC, fault, enabled state,
-feedback availability, timeout, sustained current rise, and stalled position
-progress. It is not yet wired to the live Uservo command path.
+The earlier current-spike/contact state machine remains as isolated regression
+coverage only; it is not wired to the live Uservo command path and is not used
+for this machine's endpoint teaching.
 
 ## No-motion acceptance
 

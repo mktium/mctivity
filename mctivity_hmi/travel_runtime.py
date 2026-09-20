@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Pure validation and presentation helpers for single-axis linear travel.
 
-This module deliberately has no transport or drive-writing code.  It models the
-safe UI state needed before endpoint calibration and point-to-point motion are
-connected to motiond.
+Endpoint calibration is operator-taught: the HMI records the actual encoder
+position while the axis is stopped at the left or right mechanical end.  This
+module deliberately has no transport or drive-writing code.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ CALIBRATION_STATES = {
     "failed",
 }
 SHAPER_TYPES = {"zvd"}
+CALIBRATION_DATA_VERSION = 1
 
 
 class TravelConfigError(ValueError):
@@ -35,7 +36,8 @@ class TravelConfig:
     counts_per_rev: int
     left_limit_counts: int | None = None
     right_limit_counts: int | None = None
-    safety_margin_counts: int = 0
+    safety_margin_counts: int = 100
+    calibration_data_version: int = 0
     calibration_state: str = "uncalibrated"
     anti_sway_enabled: bool = False
     sway_period_ms: int | None = None
@@ -106,13 +108,20 @@ def normalize_travel_config(raw: Mapping[str, Any] | None, counts_per_rev: int) 
 
     left = optional_count("left_limit_counts")
     right = optional_count("right_limit_counts")
-    margin = _int(raw.get("safety_margin_counts", 0), name="safety_margin_counts", minimum=0)
+    margin = _int(raw.get("safety_margin_counts", 100), name="safety_margin_counts", minimum=0)
     if left is not None and right is not None and left >= right:
         raise TravelConfigError("left_limit_counts must be below right_limit_counts")
     if left is not None and right is not None and left + margin >= right - margin:
         raise TravelConfigError("safety margin leaves no usable travel")
     if state == "both_valid" and (left is None or right is None):
         raise TravelConfigError("both_valid requires both endpoints")
+    version_raw = raw.get("calibration_data_version")
+    if version_raw in (None, ""):
+        version = CALIBRATION_DATA_VERSION if left is not None or right is not None else 0
+    else:
+        version = _int(version_raw, name="calibration_data_version", minimum=0, maximum=CALIBRATION_DATA_VERSION)
+    if (left is not None or right is not None) and version != CALIBRATION_DATA_VERSION:
+        raise TravelConfigError("endpoint data version is not supported")
 
     period = raw.get("sway_period_ms")
     period_ms = None if period in (None, "") else _int(period, name="sway_period_ms", minimum=10, maximum=120000)
@@ -137,6 +146,7 @@ def normalize_travel_config(raw: Mapping[str, Any] | None, counts_per_rev: int) 
         right_limit_counts=right,
         safety_margin_counts=margin,
         calibration_state=state,
+        calibration_data_version=version,
         anti_sway_enabled=anti_sway,
         sway_period_ms=period_ms,
         shaper=shaper,
@@ -201,6 +211,51 @@ def build_travel_guard(status: Mapping[str, Any] | None, config: TravelConfig) -
     }
 
 
+def endpoint_recording_guard(status: Mapping[str, Any] | None) -> tuple[bool, str | None]:
+    """Allow a record operation only at a healthy, stopped, enabled axis."""
+
+    status = status if isinstance(status, Mapping) else {}
+    if status.get("fault"):
+        return False, "drive_fault"
+    if not status.get("operational", False):
+        return False, "not_operational"
+    if not status.get("wc_complete", False):
+        return False, "wc_incomplete"
+    if not status.get("enabled", False) or not status.get("servo_request", False):
+        return False, "axis_must_be_enabled"
+    if status.get("moving"):
+        return False, "axis_must_be_stopped"
+    if status.get("pos") is None:
+        return False, "position_unavailable"
+    return True, None
+
+
+def record_manual_endpoint(raw: Mapping[str, Any] | None, side: str, position_counts: Any, counts_per_rev: int) -> dict[str, Any]:
+    """Return a new persisted config after recording one stopped endpoint."""
+
+    side_name = str(side or "").strip().lower()
+    if side_name not in {"left", "right"}:
+        raise TravelConfigError("endpoint side must be left or right")
+    config = normalize_travel_config(raw, counts_per_rev)
+    position = _int(position_counts, name="position_counts")
+    values = {
+        "left_limit_counts": config.left_limit_counts,
+        "right_limit_counts": config.right_limit_counts,
+        "safety_margin_counts": config.safety_margin_counts,
+        "calibration_data_version": CALIBRATION_DATA_VERSION,
+        "anti_sway_enabled": config.anti_sway_enabled,
+        "sway_period_ms": config.sway_period_ms,
+        "shaper": config.shaper,
+        "residual_sway_limit_counts": config.residual_sway_limit_counts,
+    }
+    values[f"{side_name}_limit_counts"] = position
+    left = values["left_limit_counts"]
+    right = values["right_limit_counts"]
+    values["calibration_state"] = "both_valid" if left is not None and right is not None else f"{side_name}_valid"
+    normalize_travel_config(values, counts_per_rev)
+    return values
+
+
 def travel_ui_model(status: Mapping[str, Any] | None, raw_config: Mapping[str, Any] | None, counts_per_rev: int) -> dict[str, Any]:
     """Return JSON-ready UI data for a single linear axis."""
 
@@ -210,11 +265,16 @@ def travel_ui_model(status: Mapping[str, Any] | None, raw_config: Mapping[str, A
         "available": True,
         "counts_per_rev": config.counts_per_rev,
         "calibration_state": config.calibration_state,
+        "calibration_data_version": config.calibration_data_version,
         "endpoints_valid": config.endpoints_valid,
-        "calibration_actions_available": False,
-        "calibration_actions_reason": "runtime_not_connected",
-        "calibration_engine": "endpoint_contact_decision_v1",
-        "calibration_engine_available": False,
+        "calibration_actions_available": True,
+        "calibration_actions_reason": "manual_endpoint_recording",
+        "calibration_engine": "manual_endpoint_recording_v1",
+        "calibration_engine_available": True,
+        "recorded_positions": {
+            "left": config.left_limit_counts,
+            "right": config.right_limit_counts,
+        },
         "anti_sway": {
             "enabled": config.anti_sway_enabled,
             "ready": config.anti_sway_ready,

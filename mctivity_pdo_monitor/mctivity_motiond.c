@@ -435,6 +435,9 @@ typedef struct {
     int gear_safety_latched;
     mctivity_electronic_gear_t gear_math;
     int native_homing_active;
+    int travel_guard_active;
+    int32_t travel_min_user;
+    int32_t travel_max_user;
 } axis_runtime_t;
 
 typedef struct {
@@ -2111,16 +2114,7 @@ static void handle_command(int fd, const char *line)
     }
 
     if (strcmp(cmd, "travel_calibrate_start") == 0) {
-        if (!uservo_axis_d_topology || uservo_pv_topology || uservo_dual_topology) {
-            send_error_fd(fd, "travel_calibration_requires_single_axis_uservo_csp");
-            return;
-        }
-        if (!native_homing_start(ax)) {
-            send_error_fd(fd, "native_homing_requires_enabled_healthy_axis");
-            return;
-        }
-        strncpy(s->last_command, "travel_calibrate_start", sizeof(s->last_command) - 1);
-        send_status_fd(fd, axis);
+        send_error_fd(fd, "manual_endpoint_recording_only; no native homing is used");
         return;
     }
 
@@ -2670,6 +2664,11 @@ static void handle_command(int fd, const char *line)
 
     if (strcmp(cmd, "jog_velocity") == 0) {
         int32_t velocity = 0;
+        int32_t travel_min_user = 0;
+        int32_t travel_max_user = 0;
+        int have_travel_limits = find_i32(line, "min_pos", &travel_min_user) &&
+                                 find_i32(line, "max_pos", &travel_max_user) &&
+                                 travel_min_user <= travel_max_user;
         const uservo_pv_profile_t *pv = uservo_pv_profile_for_axis(axis);
         if (!ready_for_motion(ax)) {
             send_error_fd(fd, "servo is not ready for velocity jog; enable and wait for settle first");
@@ -2700,6 +2699,11 @@ static void handle_command(int fd, const char *line)
         ax->velocity_remainder = 0;
         ax->pp_pulse_cycles = 0;
         ax->fv3_halt_cycles = 0;
+        ax->travel_guard_active = have_travel_limits;
+        if (have_travel_limits) {
+            ax->travel_min_user = travel_min_user;
+            ax->travel_max_user = travel_max_user;
+        }
         strncpy(s->last_command, "jog_velocity", sizeof(s->last_command) - 1);
         snprintf(s->message, sizeof(s->message), "%s velocity jog %d counts/s using %s target", axis_label(axis), velocity,
                  pv ? "native PV" : "CSP increment");
@@ -3043,8 +3047,20 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         s->target_user = s->pos_user;
         ax->fv3_halt_cycles--;
     } else if (s->jog_velocity_cps != 0 && s->enabled) {
-        s->target_raw += velocity_step_counts(ax, s->jog_velocity_cps);
-        s->target_user = s->target_raw - s->soft_zero_raw;
+        int64_t next_target_user = (int64_t)s->target_user + (int64_t)velocity_step_counts(ax, s->jog_velocity_cps);
+        if (ax->travel_guard_active &&
+            (next_target_user < (int64_t)ax->travel_min_user || next_target_user > (int64_t)ax->travel_max_user)) {
+            next_target_user = next_target_user < (int64_t)ax->travel_min_user
+                ? ax->travel_min_user : ax->travel_max_user;
+            s->target_user = (int32_t)next_target_user;
+            s->target_raw = s->soft_zero_raw + s->target_user;
+            s->jog_velocity_cps = 0;
+            ax->travel_guard_active = 0;
+            snprintf(s->message, sizeof(s->message), "%s software travel limit reached; velocity cleared", axis_label(axis));
+        } else {
+            s->target_user = clamp_i64_to_i32(next_target_user);
+            s->target_raw = s->soft_zero_raw + s->target_user;
+        }
     } else if (!s->servo_request) {
         s->target_raw = s->pos_raw;
         s->target_user = s->pos_user;
