@@ -157,6 +157,7 @@ _COMMAND_CAPABILITY = {
     "set_zero": "axis.control.zero",
     "home": "axis.control.zero",
     "move_abs": "axis.mode.position.execute",
+    "move_shaped_abs": "axis.mode.position.execute",
     "move_rel": "axis.mode.position.execute",
     "move_curve_rel": "axis.mode.incremental.execute",
     "jog_velocity": "axis.mode.velocity.execute",
@@ -207,6 +208,17 @@ _COMMAND_FIELD_ORDER = {
         "acceleration_rpm_s",
         "min_pos",
         "max_pos",
+    ],
+    "move_shaped_abs": [
+        "cmd",
+        "device",
+        "pos",
+        "speed_rpm",
+        "acceleration_rpm_s",
+        "min_pos",
+        "max_pos",
+        "shaper_period_ms",
+        "shaper_damping_permille",
     ],
     "move_rel": [
         "cmd",
@@ -264,6 +276,7 @@ _INT32_MIN = -(2**31)
 _INT32_MAX = 2**31 - 1
 _REQUIRED_INT_FIELDS = {
     "move_abs": ["pos"],
+    "move_shaped_abs": ["pos"],
     "move_rel": ["delta"],
     "move_curve_rel": ["target_delta_counts", "vmax_counts_s", "accel_counts_s2", "decel_counts_s2"],
     "jog_velocity": ["velocity"],
@@ -273,6 +286,14 @@ _REQUIRED_INT_FIELDS = {
 _OPTIONAL_INT_FIELDS = {
     "stop": ["deceleration_rpm_s", "acceleration_rpm_s", "deceleration_counts_s2", "deceleration"],
     "move_abs": ["move_ms", "speed_rpm", "acceleration_rpm_s", "min_pos", "max_pos"],
+    "move_shaped_abs": [
+        "speed_rpm",
+        "acceleration_rpm_s",
+        "min_pos",
+        "max_pos",
+        "shaper_period_ms",
+        "shaper_damping_permille",
+    ],
     "move_rel": ["move_ms", "speed_rpm", "acceleration_rpm_s", "min_pos", "max_pos"],
     "move_curve_rel": ["dwell_ms", "min_pos", "max_pos"],
     "jog_velocity": ["min_pos", "max_pos"],
@@ -290,6 +311,7 @@ _NONNEGATIVE_INT_FIELDS = {
     "speed_rpm",
     "acceleration_rpm_s",
     "dwell_ms",
+    "shaper_damping_permille",
 }
 _POSITIVE_INT_FIELDS = {
     "vmax_counts_s",
@@ -299,6 +321,7 @@ _POSITIVE_INT_FIELDS = {
     "slave_ratio",
     "gear_master_ratio",
     "gear_slave_ratio",
+    "shaper_period_ms",
 }
 _MODE_HMI_MODULE = {
     "position": "feature-hmi-single-point",
@@ -597,6 +620,10 @@ def _validate_command_numbers(cmd, clean, device):
             return False
     if "move_ms" in clean and clean["move_ms"] > MAX_MOVE_MS:
         return False
+    if "shaper_period_ms" in clean and clean["shaper_period_ms"] > 10000:
+        return False
+    if "shaper_damping_permille" in clean and clean["shaper_damping_permille"] >= 1000:
+        return False
     if "torque" in clean and abs(clean["torque"]) > MAX_TORQUE_PERCENT:
         return False
     for key in ("master_ratio", "slave_ratio", "gear_master_ratio", "gear_slave_ratio"):
@@ -647,6 +674,8 @@ def _sanitize_command_payload(payload, device):
         return None
     if cmd in _SYNC_VELOCITY_COMMANDS and not _SYNC_VELOCITY_PROFILE:
         return None
+    if cmd == "move_shaped_abs" and not _LINEAR_TRAVEL_PROFILE:
+        return None
     clean = {"cmd": cmd}
     if cmd not in _SYNC_VELOCITY_COMMANDS:
         clean["device"] = device
@@ -692,7 +721,7 @@ def _travel_command_guard(clean, device):
     if not _LINEAR_TRAVEL_PROFILE or device != _HMI_DEVICE_ORDER[0]:
         return None
     cmd = clean.get("cmd")
-    if cmd not in {"move_abs", "move_rel", "move_curve_rel", "jog_velocity", "torque_cmd", "set_zero"}:
+    if cmd not in {"move_abs", "move_shaped_abs", "move_rel", "move_curve_rel", "jog_velocity", "torque_cmd", "set_zero"}:
         return None
     ui_state = load_ui_state()
     device_state = ui_state.get("devices", {}).get(device, {})
@@ -719,7 +748,7 @@ def _travel_command_guard(clean, device):
     safe_right = int(config.safe_right_counts)
     clean["min_pos"] = min(safe_left, safe_right)
     clean["max_pos"] = max(safe_left, safe_right)
-    if cmd == "move_abs":
+    if cmd in {"move_abs", "move_shaped_abs"}:
         requested = int(clean["pos"])
     elif cmd == "move_rel":
         requested = current + int(clean["delta"])
@@ -729,6 +758,11 @@ def _travel_command_guard(clean, device):
         return None
     if requested < min(safe_left, safe_right) or requested > max(safe_left, safe_right):
         return "target_outside_safe_travel"
+    if cmd == "move_shaped_abs":
+        if not config.anti_sway_enabled or not config.anti_sway_ready:
+            return "anti_sway_not_enabled"
+        clean["shaper_period_ms"] = int(config.sway_period_ms)
+        clean["shaper_damping_permille"] = 50
     return None
 
 
@@ -930,6 +964,9 @@ button.stop { background:var(--warn); } button.blue { background:var(--theme-dee
 .travel-switch { display:flex; align-items:center; gap:7px; margin-top:8px; color:#47515a; font-size:11px; font-weight:900; }
 .travel-switch input { width:18px; height:18px; margin:0; accent-color:var(--theme-blue); }
 .travel-switch input:disabled { opacity:.55; }
+.travel-period { display:flex; align-items:center; gap:5px; margin-top:6px; color:#47515a; font-size:10px; font-weight:900; }
+.travel-period input { width:74px; min-height:26px; padding:3px 5px; border:1px solid rgba(42,131,183,.28); border-radius:6px; background:#fff; color:#20262b; font:inherit; font-size:11px; font-weight:900; }
+.travel-period input:disabled { opacity:.55; }
 .travel-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-top:6px; }
 .travel-actions button { min-height:30px; padding:4px 6px; border:1px solid rgba(42,131,183,.28); border-radius:7px; background:#fff; color:var(--theme-deep); font:inherit; font-size:10px; font-weight:900; }
 .travel-actions button:disabled { opacity:.45; }
@@ -1213,7 +1250,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <button id="travelRecordRight" type="button" onclick="recordTravelEndpoint('right')">记录右端点</button>
             <button id="travelClear" class="clear" type="button" onclick="clearTravelEndpoints()">清除标定</button>
           </div>
-          <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled><span>启用防摇轨迹（需先完成端点标定和摆动周期配置）</span></label>
+          <label class="travel-period"><span>摆动周期</span><input id="travelSwayPeriod" type="number" min="10" max="10000" step="10" value="1150" onchange="updateTravelSwayConfig()"><span>ms（先保存参数）</span></label>
+          <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled onchange="toggleTravelAntiSway()"><span>启用防摇轨迹（需先完成端点标定和摆动周期配置）</span></label>
           <div id="travelReason" class="travel-reason">请手动点动到端点并停止后记录；记录按钮不会让电机运动。</div>
         </div>
         <div id="panel-incremental" class="mode-panel">
@@ -2094,6 +2132,41 @@ async function refreshTravelStatus(device) {
   }
   return data;
 }
+function updateTravelSwayConfig() {
+  const input = document.getElementById('travelSwayPeriod');
+  if (!input) return false;
+  const period = Math.round(clamp(Number(input.value || 1150), 10, 10000));
+  input.value = String(period);
+  const profile = currentProfile(activeDevice);
+  profile.travel = Object.assign({}, profile.travel || {}, {
+    sway_period_ms: period,
+    shaper: 'zvd',
+    anti_sway_enabled: false
+  });
+  const toggle = document.getElementById('travelAntiSwayToggle');
+  if (toggle) toggle.checked = false;
+  saveUiState(activeDevice);
+  refreshTravelStatus(activeDevice).catch(() => {});
+  return true;
+}
+function toggleTravelAntiSway() {
+  const toggle = document.getElementById('travelAntiSwayToggle');
+  const model = travelStateByDevice[activeDevice];
+  const anti = model && model.anti_sway;
+  if (!toggle || !anti || !anti.ready || capabilityState.commissioningInhibit) {
+    if (toggle) toggle.checked = false;
+    return false;
+  }
+  const profile = currentProfile(activeDevice);
+  profile.travel = Object.assign({}, profile.travel || {}, {
+    anti_sway_enabled: Boolean(toggle.checked),
+    shaper: 'zvd',
+    sway_period_ms: Number(anti.sway_period_ms)
+  });
+  saveUiState(activeDevice);
+  refreshTravelStatus(activeDevice).catch(() => {});
+  return true;
+}
 async function recordTravelEndpoint(side) {
   const device = activeDevice;
   const res = await fetch('/api/travel/record', {
@@ -2726,14 +2799,30 @@ function absoluteMoveMs(target) {
   const ms = distance === 0 ? 500 : Math.round(distance / (speed * REV / 60) * 1000);
   return Math.min(60000, Math.max(200, ms));
 }
+function activeAntiSwayConfig() {
+  if (!LINEAR_TRAVEL_AVAILABLE) return null;
+  const model = travelStateByDevice[activeDevice];
+  const anti = model && model.anti_sway;
+  if (!anti || !anti.enabled || !anti.ready || !Number.isFinite(Number(anti.sway_period_ms))) return null;
+  return {
+    shaper_period_ms: Math.round(Number(anti.sway_period_ms)),
+    shaper_damping_permille: 50
+  };
+}
 function motionPayload(target) {
-  return Object.assign({
+  const payload = {
     cmd:'move_abs',
     pos:axisCounts(target),
     move_ms:absoluteMoveMs(target),
     speed_rpm:Number(absSpeedRpm.value || 0),
     acceleration_rpm_s:Number(absAccel.value || 0)
-  }, currentMotionBoundsPayload());
+  };
+  const anti = activeAntiSwayConfig();
+  if (anti) {
+    payload.cmd = 'move_shaped_abs';
+    Object.assign(payload, anti);
+  }
+  return Object.assign(payload, currentMotionBoundsPayload());
 }
 function currentTravelNativeBounds(device = activeDevice) {
   if (!LINEAR_TRAVEL_AVAILABLE || device !== activeDevice) return null;
@@ -3532,6 +3621,13 @@ function renderTravelModel(model, status) {
   const anti = data.anti_sway || {};
   const antiText = anti.ready ? ('已准备 ' + String(anti.sway_period_ms) + ' ms') : (anti.enabled ? '待配置' : '关闭');
   setText('travelAntiSwayValue', antiText);
+  const periodInput = document.getElementById('travelSwayPeriod');
+  if (periodInput && document.activeElement !== periodInput) {
+    periodInput.value = anti.sway_period_ms === null || anti.sway_period_ms === undefined
+      ? '1150'
+      : String(anti.sway_period_ms);
+  }
+  if (periodInput) periodInput.disabled = Boolean(anti.enabled) || capabilityState.commissioningInhibit;
   const toggle = document.getElementById('travelAntiSwayToggle');
   if (toggle) {
     toggle.checked = Boolean(anti.enabled);
@@ -4305,6 +4401,12 @@ async function startSinglePointMotion() {
 function moveAbs() { return api(motionPayload(Number(absPos.value))); }
 function returnZero() { absPos.value = 0; updateSliders(); return api(motionPayload(0)); }
 function moveRel() {
+  const anti = activeAntiSwayConfig();
+  if (anti) {
+    const status = currentStatus();
+    const current = status ? axisCounts(Number(status.pos)) : Number(absPos.value || 0);
+    return api(Object.assign(motionPayload(current + Number(relDelta.value || 0)), anti));
+  }
   return api(Object.assign({
     cmd:'move_rel',
     delta:Number(relDelta.value),

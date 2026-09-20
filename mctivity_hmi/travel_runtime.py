@@ -24,6 +24,7 @@ CALIBRATION_STATES = {
     "failed",
 }
 SHAPER_TYPES = {"zvd"}
+ANTI_SWAY_MAX_PERIOD_MS = 10000
 CALIBRATION_DATA_VERSION = 1
 
 
@@ -70,8 +71,7 @@ class TravelConfig:
     @property
     def anti_sway_ready(self) -> bool:
         return (
-            self.anti_sway_enabled
-            and self.endpoints_valid
+            self.endpoints_valid
             and self.sway_period_ms is not None
             and self.sway_period_ms > 0
             and self.shaper in SHAPER_TYPES
@@ -141,7 +141,12 @@ def normalize_travel_config(
         raise TravelConfigError("endpoint data version is not supported")
 
     period = raw.get("sway_period_ms")
-    period_ms = None if period in (None, "") else _int(period, name="sway_period_ms", minimum=10, maximum=120000)
+    period_ms = None if period in (None, "") else _int(
+        period,
+        name="sway_period_ms",
+        minimum=10,
+        maximum=ANTI_SWAY_MAX_PERIOD_MS,
+    )
     shaper = str(raw.get("shaper", "zvd")).strip().lower()
     if shaper not in SHAPER_TYPES:
         raise TravelConfigError("unsupported anti-sway shaper")

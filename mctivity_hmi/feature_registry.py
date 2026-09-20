@@ -10,7 +10,7 @@ _DEFAULT_FEATURE_REGISTRY = {
             "feature-logic-point",
             "feature-logic-homing",
         },
-        "commands": {"move_abs", "move_rel"},
+        "commands": {"move_abs", "move_shaped_abs", "move_rel"},
         "modes": {"position", "jog", "point", "homing"},
     },
     "incremental": {

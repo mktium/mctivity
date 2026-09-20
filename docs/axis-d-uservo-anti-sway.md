@@ -98,13 +98,25 @@ the target value; the explicit `移动到目标` action is still required before
 position command can be sent. The backend repeats the native-count safety check,
 so the browser range is a usability aid and not the safety boundary by itself.
 
-The first anti-sway implementation step is now a pure ZVD input-shaper planner.
-It uses the measured damped sway period as the three-impulse spacing (initial
-prototype value about `1150 ms`), preserves the signed integer move distance,
-and has no motiond or drive access. It is covered by unit tests but is not yet
-wired into the live command path; the HMI anti-sway switch therefore remains
-disabled until a real-time adapter, travel-edge handling, and a separately
-approved low-speed test plan are complete.
+The anti-sway command path is now implemented for this CSP profile as a
+real-time ZVD input shaper inside `motiond`. A shaped absolute-position command
+first generates the existing bounded S-curve, then feeds its nominal CSP target
+through three positive impulses at `0`, `T/2`, and `T`, where `T` is the measured
+damped sway period. The shaper is initialized at the current actual position,
+keeps the target inside the software travel limits, and runs a bounded tail for
+one period after the nominal move. The default period is `1150 ms` and the
+default damping parameter is 50 permille; the period must be between 10 ms and
+10000 ms. Native PV velocity control is unchanged and does not use this shaper.
+
+The fixed HMI exposes the period and an explicit anti-sway switch only after
+both endpoints are valid. Saving the period does not enable the feature; the
+switch must be turned on separately. With the switch on, absolute and relative
+position actions are converted to `move_shaped_abs`, while direct velocity/jog
+actions remain native PV. The backend rechecks the persisted configuration,
+travel bounds, and numeric limits, so a stale or malformed browser request is
+rejected. The feature remains off by default and has not been motion-tested in
+this deployment; first motion and period tuning still require a separate
+operator-approved plan.
 
 The earlier current-spike/contact state machine remains as isolated regression
 coverage only; it is not wired to the live Uservo command path and is not used

@@ -78,6 +78,8 @@ class TravelRuntimeTests(unittest.TestCase):
             self.valid_config(anti_sway_enabled=True)
         config = self.valid_config(anti_sway_enabled=True, sway_period_ms=900)
         self.assertTrue(config.anti_sway_ready)
+        configured_but_disabled = self.valid_config(anti_sway_enabled=False, sway_period_ms=900)
+        self.assertTrue(configured_but_disabled.anti_sway_ready)
         uncalibrated = normalize_travel_config(
             {"anti_sway_enabled": False, "sway_period_ms": 900}, 10000
         )

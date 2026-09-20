@@ -12,7 +12,7 @@ from feature_contract import motion_not_ready
 def handle_axis_command(ctx):
     cmd = ctx.cmd()
     mode = ctx.mode()
-    if cmd in ("move_abs", "move_rel", "move_curve_rel"):
+    if cmd in ("move_abs", "move_shaped_abs", "move_rel", "move_curve_rel"):
         ready, message = ctx.adapter.wait_motion_ready(ctx.device)
         if not ready:
             return motion_not_ready(message)

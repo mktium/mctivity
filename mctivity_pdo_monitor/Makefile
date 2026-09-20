@@ -7,12 +7,13 @@ LDLIBS ?= -lethercat
 
 all: mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond
 
-test: test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear test_travel_calibration
+test: test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear test_travel_calibration test_anti_sway
 	./test_realtime_schedule
 	./test_realtime_guard
 	./test_communication_guard
 	./test_electronic_gear
 	./test_travel_calibration
+	./test_anti_sway
 	$(MAKE) clean-test
 
 test_realtime_schedule: test_realtime_schedule.c realtime_schedule.h
@@ -30,6 +31,9 @@ test_electronic_gear: test_electronic_gear.c electronic_gear.h
 test_travel_calibration: test_travel_calibration.c travel_calibration.h
 	$(CC) $(CFLAGS) -Werror -o $@ test_travel_calibration.c
 
+test_anti_sway: test_anti_sway.c anti_sway.h
+	$(CC) $(CFLAGS) -Werror -o $@ test_anti_sway.c -lm
+
 mctivity_pdo_monitor: mctivity_pdo_monitor.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
@@ -46,9 +50,9 @@ mctivity_motiond: mctivity_motiond.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -lm
 
 clean:
-	rm -f mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear test_travel_calibration
+	rm -f mctivity_pdo_monitor mctivity_enable_hold mctivity_csp_step mctivity_csp_roundtrip mctivity_motiond test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear test_travel_calibration test_anti_sway
 
 clean-test:
-	rm -f test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear test_travel_calibration
+	rm -f test_realtime_schedule test_realtime_guard test_communication_guard test_electronic_gear test_travel_calibration test_anti_sway
 
 .PHONY: all clean clean-test test

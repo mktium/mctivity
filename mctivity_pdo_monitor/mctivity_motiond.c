@@ -17,6 +17,7 @@
 #include <ecrt.h>
 
 #include "communication_guard.h"
+#include "anti_sway.h"
 #include "electronic_gear.h"
 #include "realtime_schedule.h"
 #include "realtime_guard.h"
@@ -403,6 +404,8 @@ typedef struct {
     double curve_vpeak_cps;
     double curve_accel_cps2_f;
     double curve_decel_cps2_f;
+    int curve_shaper_active;
+    uint32_t curve_shaper_tail_ms;
 } motion_t;
 
 typedef struct {
@@ -460,6 +463,7 @@ static ec_pdo_entry_reg_t uservo_dual_combined_domain_regs[AXIS_COUNT * 10 + 1];
 static ec_pdo_entry_reg_t uservo_combined_domain_regs[11];
 
 static axis_runtime_t axes[AXIS_COUNT];
+static mctivity_zvd_shaper_t axis_zvd_shapers[AXIS_COUNT];
 static client_t clients[MAX_CLIENTS];
 static int listen_fd = -1;
 
@@ -1423,9 +1427,11 @@ static void update_profile_motion(axis_runtime_t *ax)
 
 static void start_curve_motion(axis_runtime_t *ax, int32_t target_delta_user, uint32_t vmax_counts_s,
                                uint32_t accel_counts_s2, uint32_t decel_counts_s2, uint32_t dwell_ms,
-                               int have_limits, int32_t min_target_user, int32_t max_target_user, int curve_blend)
+                               int have_limits, int32_t min_target_user, int32_t max_target_user, int curve_blend,
+                               uint32_t shaper_period_ms, uint32_t shaper_damping_permille)
 {
     status_t *s = &ax->st;
+    int axis_index = (int)(ax - axes);
     int32_t requested_target_user = s->target_user + target_delta_user;
     int32_t final_target_user = requested_target_user;
     int32_t final_target_raw;
@@ -1460,6 +1466,9 @@ static void start_curve_motion(axis_runtime_t *ax, int32_t target_delta_user, ui
     dec = (double)(decel_counts_s2 > 0 ? decel_counts_s2 : 0U);
 
     clear_motion(ax);
+    if (axis_index >= 0 && axis_index < AXIS_COUNT) {
+        mctivity_zvd_disable(&axis_zvd_shapers[axis_index]);
+    }
     ax->stop_velocity_cps = 0;
     ax->st.jog_velocity_cps = 0;
     ax->velocity_remainder = 0;
@@ -1479,6 +1488,11 @@ static void start_curve_motion(axis_runtime_t *ax, int32_t target_delta_user, ui
     ax->motion.curve_accel_cps2_f = acc;
     ax->motion.curve_decel_cps2_f = dec;
     ax->motion.current_velocity_cps = 0;
+    if (shaper_period_ms > 0U && axis_index >= 0 && axis_index < AXIS_COUNT &&
+        mctivity_zvd_init(&axis_zvd_shapers[axis_index], shaper_period_ms, shaper_damping_permille, s->pos_raw)) {
+        ax->motion.curve_shaper_active = 1;
+        ax->motion.curve_shaper_tail_ms = 0U;
+    }
     s->target_raw = s->pos_raw;
     s->target_user = s->pos_user;
 
@@ -1531,10 +1545,15 @@ static void update_curve_motion(axis_runtime_t *ax)
 {
     motion_t *motion = &ax->motion;
     status_t *s = &ax->st;
+    int axis_index = (int)(ax - axes);
+    mctivity_zvd_shaper_t *shaper =
+        (axis_index >= 0 && axis_index < AXIS_COUNT) ? &axis_zvd_shapers[axis_index] : NULL;
     double next_elapsed_s;
     double velocity;
     int32_t direction;
+    int32_t nominal_target_raw;
     int32_t next_target_raw;
+    int nominal_complete = 0;
 
     direction = sign_i32(motion->to - motion->from);
     if (direction == 0 || motion->curve_distance_counts < 0.5) {
@@ -1556,25 +1575,37 @@ static void update_curve_motion(axis_runtime_t *ax)
         if (motion->curve_position_counts > motion->curve_distance_counts) {
             motion->curve_position_counts = motion->curve_distance_counts;
         }
-        next_target_raw = motion->from + direction * (int32_t)llround(motion->curve_position_counts);
-        if ((direction > 0 && next_target_raw > motion->to) || (direction < 0 && next_target_raw < motion->to)) {
-            next_target_raw = motion->to;
+        nominal_target_raw = motion->from + direction * (int32_t)llround(motion->curve_position_counts);
+        if ((direction > 0 && nominal_target_raw > motion->to) || (direction < 0 && nominal_target_raw < motion->to)) {
+            nominal_target_raw = motion->to;
         }
-        s->target_raw = next_target_raw;
-        s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
-        s->target_raw = s->soft_zero_raw + s->target_user;
         motion->current_velocity_cps = direction * (int32_t)llround(velocity);
         motion->curve_elapsed_s = next_elapsed_s;
         if (motion->curve_elapsed_s + 1e-12 >= motion->curve_total_motion_s) {
-            s->target_raw = motion->to;
-            s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
             motion->current_velocity_cps = 0;
+            nominal_complete = 1;
         }
-        return;
+    } else {
+        nominal_target_raw = motion->to;
+        nominal_complete = 1;
     }
 
+    next_target_raw = motion->curve_shaper_active && shaper
+        ? mctivity_zvd_step(shaper, nominal_target_raw)
+        : nominal_target_raw;
+    s->target_raw = next_target_raw;
+    s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+    s->target_raw = s->soft_zero_raw + s->target_user;
+    if (!nominal_complete) {
+        return;
+    }
+    if (motion->curve_shaper_active && shaper && motion->curve_shaper_tail_ms < shaper->period_ms) {
+        motion->curve_shaper_tail_ms++;
+        return;
+    }
     s->target_raw = motion->to;
     s->target_user = clamp_i32(s->target_raw - s->soft_zero_raw, motion->min_target_user, motion->max_target_user);
+    s->target_raw = s->soft_zero_raw + s->target_user;
     motion->current_velocity_cps = 0;
     if (motion->curve_dwell_elapsed_ms < motion->curve_dwell_ms) {
         motion->curve_dwell_elapsed_ms++;
@@ -2082,7 +2113,7 @@ static void handle_command(int fd, const char *line)
     if ((uservo_pv_topology && !uservo_single_combined_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
           strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "move_abs") == 0 || strcmp(cmd, "move_rel") == 0 ||
-          strcmp(cmd, "move_curve_rel") == 0 || strcmp(cmd, "torque_cmd") == 0)) ||
+          strcmp(cmd, "move_curve_rel") == 0 || strcmp(cmd, "move_shaped_abs") == 0 || strcmp(cmd, "torque_cmd") == 0)) ||
     (uservo_axis_d_topology && !uservo_pv_topology && !uservo_dual_gear_topology &&
          (strcmp(cmd, "home") == 0 || strcmp(cmd, "gear_config") == 0 || strcmp(cmd, "gear_start") == 0 ||
           strcmp(cmd, "gear_stop") == 0 || strcmp(cmd, "torque_cmd") == 0))) {
@@ -2542,6 +2573,69 @@ static void handle_command(int fd, const char *line)
         return;
     }
 
+    if (strcmp(cmd, "move_shaped_abs") == 0) {
+        int32_t pos;
+        int32_t min_pos = 0;
+        int32_t max_pos = 0;
+        uint32_t speed_rpm = 0;
+        uint32_t accel_rpm_s = 0;
+        uint32_t shaper_period_ms = 0;
+        uint32_t shaper_damping_permille = 50U;
+        int have_limits = 0;
+        if (!ready_for_motion(ax)) {
+            send_error_fd(fd, "servo is not ready for shaped motion; enable and wait for settle first");
+            return;
+        }
+        if (!find_i32(line, "pos", &pos)) {
+            send_error_fd(fd, "move_shaped_abs requires pos");
+            return;
+        }
+        if (!find_u32(line, "speed_rpm", &speed_rpm) || speed_rpm == 0U) {
+            send_error_fd(fd, "move_shaped_abs requires speed_rpm > 0");
+            return;
+        }
+        if (!find_u32(line, "acceleration_rpm_s", &accel_rpm_s) || accel_rpm_s == 0U) {
+            send_error_fd(fd, "move_shaped_abs requires acceleration_rpm_s > 0");
+            return;
+        }
+        if (!find_u32(line, "shaper_period_ms", &shaper_period_ms) ||
+            shaper_period_ms < MCTIVITY_ZVD_MIN_PERIOD_MS ||
+            shaper_period_ms > MCTIVITY_ZVD_MAX_PERIOD_MS) {
+            send_error_fd(fd, "move_shaped_abs requires a valid shaper_period_ms");
+            return;
+        }
+        (void)find_u32(line, "shaper_damping_permille", &shaper_damping_permille);
+        if (shaper_damping_permille >= 1000U) {
+            send_error_fd(fd, "shaper_damping_permille must be below 1000");
+            return;
+        }
+        have_limits = find_i32(line, "min_pos", &min_pos) && find_i32(line, "max_pos", &max_pos);
+        set_control_mode(ax, "position");
+        ax->commanded_mode = mode_code_for_name("position");
+        ax->gear_running = 0;
+        ax->gear_has_last_master_pos = 0;
+        ax->pp_pulse_cycles = 0;
+        ax->fv3_halt_cycles = 0;
+        s->target_user = s->pos_user;
+        s->target_raw = s->pos_raw;
+        start_curve_motion(
+            ax,
+            pos - s->pos_user,
+            rpm_to_counts_s(speed_rpm),
+            rpm_s_to_counts_s2(accel_rpm_s),
+            rpm_s_to_counts_s2(accel_rpm_s),
+            0U,
+            have_limits,
+            min_pos,
+            max_pos,
+            CURVE_BLEND_SMOOTH,
+            shaper_period_ms,
+            shaper_damping_permille);
+        strncpy(s->last_command, "move_shaped_abs", sizeof(s->last_command) - 1);
+        send_status_fd(fd, axis);
+        return;
+    }
+
     if (strcmp(cmd, "move_rel") == 0) {
         int32_t delta;
         int32_t min_pos = 0;
@@ -2639,7 +2733,9 @@ static void handle_command(int fd, const char *line)
             have_limits,
             min_pos,
             max_pos,
-            curve_blend);
+            curve_blend,
+            0U,
+            0U);
         strncpy(s->last_command, "move_curve_rel", sizeof(s->last_command) - 1);
         send_status_fd(fd, axis);
         return;

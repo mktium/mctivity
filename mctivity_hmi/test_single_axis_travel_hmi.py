@@ -110,6 +110,36 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
             self.assertEqual(clean["min_pos"], -900)
             self.assertEqual(clean["max_pos"], 4900)
 
+    def test_shaped_motion_requires_explicit_enabled_config_and_injects_persisted_period(self):
+        state = {
+            "devices": {
+                "mctivity": {
+                    "travel": {
+                        "left_limit_counts": 5000,
+                        "right_limit_counts": -1000,
+                        "safety_margin_counts": 100,
+                        "calibration_data_version": 1,
+                        "calibration_state": "both_valid",
+                        "anti_sway_enabled": False,
+                        "sway_period_ms": 900,
+                        "shaper": "zvd",
+                    }
+                }
+            }
+        }
+        with mock.patch.object(mctivity_hmi, "load_ui_state", return_value=state), mock.patch.object(
+            mctivity_hmi,
+            "motiond_command",
+            return_value={"ok": True, "status": {"pos": 0}},
+        ):
+            clean = {"cmd": "move_shaped_abs", "pos": 200, "speed_rpm": 30, "acceleration_rpm_s": 300}
+            self.assertEqual(mctivity_hmi._travel_command_guard(clean, "mctivity"), "anti_sway_not_enabled")
+            state["devices"]["mctivity"]["travel"]["anti_sway_enabled"] = True
+            clean = {"cmd": "move_shaped_abs", "pos": 200, "speed_rpm": 30, "acceleration_rpm_s": 300}
+            self.assertIsNone(mctivity_hmi._travel_command_guard(clean, "mctivity"))
+            self.assertEqual(clean["shaper_period_ms"], 900)
+            self.assertEqual(clean["shaper_damping_permille"], 50)
+
     def test_rendered_ui_contains_read_only_linear_travel_panel(self):
         html = mctivity_hmi.HTML
         self.assertIn('id="linearTravelCard"', html)
@@ -122,6 +152,9 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         self.assertIn("clear_calibration_guard", Path(mctivity_hmi.__file__).read_text(encoding="utf-8"))
         self.assertIn("statusAllowsRecording", html)
         self.assertIn("data.recording_available || statusAllowsRecording", html)
+        self.assertIn("move_shaped_abs", html)
+        self.assertIn("updateTravelSwayConfig", html)
+        self.assertIn("toggleTravelAntiSway", html)
         self.assertIn("@media (max-height: 820px)", html)
         self.assertIn("overflow:hidden", html)
         self.assertNotIn("__LINEAR_TRAVEL_AVAILABLE__", html)
