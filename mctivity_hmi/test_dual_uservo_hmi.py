@@ -66,6 +66,28 @@ class DualUservoHmiTests(unittest.TestCase):
         self.assertEqual(state["devices"]["mctivity"]["velRpm"], 111)
         self.assertEqual(state["devices"]["mctivity_e"]["velRpm"], 333)
 
+    def test_ordinary_profile_save_preserves_runtime_travel_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = str(Path(directory) / "state.json")
+            with mock.patch.object(mctivity_hmi, "UI_STATE_PATH", state_path):
+                mctivity_hmi.save_ui_state(
+                    "mctivity",
+                    {
+                        "velRpm": 111,
+                        "travel": {
+                            "left_limit_counts": 5000,
+                            "right_limit_counts": -1000,
+                            "calibration_data_version": 1,
+                            "calibration_state": "both_valid",
+                        },
+                    },
+                )
+                mctivity_hmi.save_ui_state("mctivity", {"velRpm": 222, "mode": "velocity"})
+                state = mctivity_hmi.load_ui_state()
+        self.assertEqual(state["devices"]["mctivity"]["velRpm"], 222)
+        self.assertEqual(state["devices"]["mctivity"]["travel"]["left_limit_counts"], 5000)
+        self.assertEqual(state["devices"]["mctivity"]["travel"]["right_limit_counts"], -1000)
+
     def test_poweroff_status_gate_reads_both_uservo_axes(self):
         def status(payload):
             return {

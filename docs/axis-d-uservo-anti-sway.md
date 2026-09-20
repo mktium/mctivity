@@ -79,6 +79,12 @@ percentage display, and safe-margin calculation use the physical direction.
 fast status cache is stale; the backend accepts it only when the axis is
 stationary, disabled, and not requesting servo output.
 
+The persisted `travel` block is runtime-owned. Ordinary HMI profile saves
+(speed, mode, slider, and transmission settings) are merged into the existing
+device state and cannot remove recorded endpoints. This prevents a successful
+endpoint record from appearing to work in the page and then disappearing after
+the next periodic profile save.
+
 The HMI panel is deliberately compact for the fixed touch display. Its short
 viewport layout keeps the position rail, endpoint/target metrics, and calibration
 badge visible without relying on vertical scrolling; explanatory text and the

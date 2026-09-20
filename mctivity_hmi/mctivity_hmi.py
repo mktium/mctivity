@@ -4582,7 +4582,14 @@ def save_ui_state(device, state):
         raise ValueError("invalid ui state payload")
     with _ui_state_lock:
         merged = load_ui_state()
-        merged["devices"][device] = normalized_state
+        # The browser's ordinary profile save does not carry runtime-owned
+        # travel calibration fields. Merge the validated UI fields into the
+        # existing device state so a speed/mode/slider save cannot erase
+        # endpoints recorded by /api/travel/record.
+        existing_state = merged["devices"].get(device, {})
+        preserved_state = dict(existing_state) if isinstance(existing_state, dict) else {}
+        preserved_state.update(normalized_state)
+        merged["devices"][device] = preserved_state
         directory = os.path.dirname(UI_STATE_PATH)
         if directory:
             os.makedirs(directory, exist_ok=True)
