@@ -2735,7 +2735,26 @@ function motionPayload(target) {
     acceleration_rpm_s:Number(absAccel.value || 0)
   }, currentMotionBoundsPayload());
 }
+function currentTravelNativeBounds(device = activeDevice) {
+  if (!LINEAR_TRAVEL_AVAILABLE || device !== activeDevice) return null;
+  const model = travelStateByDevice[device];
+  const guard = model && model.guard;
+  if (!model || !model.endpoints_valid || !guard) return null;
+  const safeMin = Number(guard.safe_min_counts);
+  const safeMax = Number(guard.safe_max_counts);
+  if (!Number.isFinite(safeMin) || !Number.isFinite(safeMax) || safeMin > safeMax) return null;
+  return {min_pos:safeMin, max_pos:safeMax};
+}
+function currentTravelTargetBounds(device = activeDevice) {
+  const native = currentTravelNativeBounds(device);
+  if (!native) return null;
+  const min = Math.min(axisCounts(native.min_pos), axisCounts(native.max_pos));
+  const max = Math.max(axisCounts(native.min_pos), axisCounts(native.max_pos));
+  return {minCounts:min, maxCounts:max};
+}
 function currentMotionBoundsPayload(profile = currentProfile()) {
+  const travelBounds = currentTravelNativeBounds();
+  if (travelBounds && profile === currentProfile(activeDevice)) return travelBounds;
   const bounds = transmissionMotionBounds(profile);
   if (!bounds) return {};
   const minNative = axisCounts(bounds.minCounts);
@@ -3430,9 +3449,20 @@ function renderMotionToggle(active, activeText) {
   motionIndicator.classList.toggle('motion-on', Boolean(active));
   motionText.textContent = active ? (activeText || text.inMotion) : text.standstill;
 }
+function syncMotionActionLabel() {
+  const title = document.querySelector('#motionIndicator .toggle-title');
+  if (!title) return;
+  const isLinearPosition = LINEAR_TRAVEL_AVAILABLE && modeSelect && modeSelect.value === 'position';
+  title.textContent = isLinearPosition
+    ? (currentLang === 'zh' ? '移动到目标' : 'Move to Target')
+    : UI_TEXT[currentLang].startStop;
+}
 function syncModePanels(mode, force=false) {
   const active = modeIsAssembled(mode || 'position') ? (mode || 'position') : 'position';
-  if (!force && modePanelStateByDevice[activeDevice] === active) return;
+  if (!force && modePanelStateByDevice[activeDevice] === active) {
+    syncMotionActionLabel();
+    return;
+  }
   modePanelStateByDevice[activeDevice] = active;
   const text = UI_TEXT[currentLang];
   const activeModeCard = document.querySelector('.active-mode-card');
@@ -3453,6 +3483,7 @@ function syncModePanels(mode, force=false) {
     setText('modePanelTitle', modeLabel(active) + ' ' + text.controlSuffix);
   }
   syncIncrementalEditor(active === 'incremental');
+  syncMotionActionLabel();
 }
 function updateGearMaster() {
   if (isGearPanelLocked()) return;
@@ -3528,7 +3559,7 @@ function renderTravelModel(model, status) {
   }
   const reasons = Array.isArray(guard.reasons) ? guard.reasons : [];
   setText('travelReason', valid
-    ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '两端已标定；软件行程限制已生效。')
+    ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '两端已标定；拖动目标滑块后按“移动到目标”，滑块不会自动运动。')
     : (recordingAvailable ? '轴已停止：点动到左/右端后分别记录；记录不会让电机运动。' : '当前不可记录：' + String(data.recording_reason || '请停机并检查通信/使能状态。')));
   const rail = document.getElementById('travelRailSafe');
   const marker = document.getElementById('travelMarker');
@@ -3542,6 +3573,7 @@ function renderTravelModel(model, status) {
     rail.style.width = '0%';
     marker.style.left = '0%';
   }
+  updateSliders();
 }
 function render(s) {
   const text = UI_TEXT[currentLang];
@@ -3721,8 +3753,9 @@ function updateSliders() {
   profile.transmission = normalizedTransmission(profile);
   const tx = profile.transmission;
   const bounds = transmissionBounds(profile);
-  const rangeMin = Math.min(bounds.minCounts, bounds.maxCounts);
-  const rangeMax = Math.max(bounds.minCounts, bounds.maxCounts);
+  const taughtBounds = currentTravelTargetBounds();
+  const rangeMin = taughtBounds ? taughtBounds.minCounts : Math.min(bounds.minCounts, bounds.maxCounts);
+  const rangeMax = taughtBounds ? taughtBounds.maxCounts : Math.max(bounds.minCounts, bounds.maxCounts);
   if (String(absPos.min) !== String(rangeMin)) absPos.min = String(rangeMin);
   if (String(absPos.max) !== String(rangeMax)) absPos.max = String(rangeMax);
   absPos.value = String(clamp(Number(absPos.value), rangeMin, rangeMax));
@@ -3746,6 +3779,7 @@ function updateSliders() {
   setText('targetAngleBig', isLinear ? '' : UI_TEXT[currentLang].motorPrefix + formatMotorRevScalar(abs, 3));
   const targetUnit = document.querySelector('.target-unit');
   if (targetUnit) targetUnit.textContent = tx.unit;
+  syncMotionActionLabel();
   setText('axisMinRev', formatTransmissionScalar(bounds.minLoad, tx.unit, 1));
   setText('axisMaxRev', formatTransmissionScalar(bounds.maxLoad, tx.unit, 1));
   const targetReadout = document.querySelector('.target-readout');

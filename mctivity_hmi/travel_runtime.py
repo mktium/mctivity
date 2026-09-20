@@ -188,6 +188,20 @@ def validate_target_counts(target_counts: int, config: TravelConfig) -> tuple[bo
     return True, None
 
 
+def ui_target_bounds(config: TravelConfig) -> tuple[int, int] | None:
+    """Return the safe target range in the HMI mechanical-position sign."""
+
+    if not config.endpoints_valid:
+        return None
+    safe_left = config.safe_left_counts
+    safe_right = config.safe_right_counts
+    if safe_left is None or safe_right is None:
+        return None
+    logical_left = config.position_direction * safe_left
+    logical_right = config.position_direction * safe_right
+    return min(logical_left, logical_right), max(logical_left, logical_right)
+
+
 def build_travel_guard(status: Mapping[str, Any] | None, config: TravelConfig) -> dict[str, Any]:
     """Build a read-only HMI guard summary from status and travel config."""
 
@@ -233,6 +247,7 @@ def build_travel_guard(status: Mapping[str, Any] | None, config: TravelConfig) -
         "safe_right_counts": config.safe_right_counts,
         "safe_min_counts": safe_min,
         "safe_max_counts": safe_max,
+        "ui_target_bounds": ui_target_bounds(config),
         "position_percent": percent,
         "anti_sway_enabled": config.anti_sway_enabled,
         "anti_sway_ready": config.anti_sway_ready,

@@ -91,6 +91,21 @@ badge visible without relying on vertical scrolling; explanatory text and the
 currently unavailable anti-sway switch collapse at viewport heights at or below
 820 px.
 
+After endpoint calibration, the absolute-position target slider is narrowed to
+the persisted software-safe range, with the installed `position_direction`
+applied before the range is shown. Dragging the slider only changes and saves
+the target value; the explicit `移动到目标` action is still required before a
+position command can be sent. The backend repeats the native-count safety check,
+so the browser range is a usability aid and not the safety boundary by itself.
+
+The first anti-sway implementation step is now a pure ZVD input-shaper planner.
+It uses the measured damped sway period as the three-impulse spacing (initial
+prototype value about `1150 ms`), preserves the signed integer move distance,
+and has no motiond or drive access. It is covered by unit tests but is not yet
+wired into the live command path; the HMI anti-sway switch therefore remains
+disabled until a real-time adapter, travel-edge handling, and a separately
+approved low-speed test plan are complete.
+
 The earlier current-spike/contact state machine remains as isolated regression
 coverage only; it is not wired to the live Uservo command path and is not used
 for this machine's endpoint teaching.

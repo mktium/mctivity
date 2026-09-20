@@ -7,6 +7,7 @@ from travel_runtime import (
     clear_calibration_guard,
     normalize_travel_config,
     travel_ui_model,
+    ui_target_bounds,
     endpoint_recording_guard,
     record_manual_endpoint,
     validate_target_counts,
@@ -40,6 +41,31 @@ class TravelRuntimeTests(unittest.TestCase):
         self.assertEqual(validate_target_counts(-901, config), (False, "target_outside_safe_travel"))
         self.assertEqual(validate_target_counts(4901, config), (False, "target_outside_safe_travel"))
         self.assertEqual(validate_target_counts(0, config), (True, None))
+
+    def test_ui_target_bounds_follow_reversed_mechanical_direction(self):
+        reversed_config = normalize_travel_config(
+            {
+                "left_limit_counts": 1000,
+                "right_limit_counts": -5000,
+                "safety_margin_counts": 100,
+                "calibration_state": "both_valid",
+            },
+            10000,
+            position_direction=-1,
+        )
+        self.assertEqual(ui_target_bounds(reversed_config), (-900, 4900))
+        model = travel_ui_model(
+            {"pos": 0, "target": 0},
+            {
+                "left_limit_counts": 1000,
+                "right_limit_counts": -5000,
+                "safety_margin_counts": 100,
+                "calibration_state": "both_valid",
+            },
+            10000,
+            position_direction=-1,
+        )
+        self.assertEqual(model["guard"]["ui_target_bounds"], (-900, 4900))
 
     def test_invalid_endpoints_and_margin_fail_closed(self):
         with self.assertRaises(TravelConfigError):
