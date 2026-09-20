@@ -79,6 +79,14 @@ percentage display, and safe-margin calculation use the physical direction.
 fast status cache is stale; the backend accepts it only when the axis is
 stationary, disabled, and not requesting servo output.
 
+The D axis drives the linear belt through a 40 mm/rev transmission. The HMI
+therefore presents the absolute target, taught endpoints, current position, and
+safe range as signed millimetres; encoder counts remain a secondary diagnostic
+value. `rev` is retained only as a transmission concept (one motor revolution),
+not as the operator's target-position unit. The position screen uses compact
+horizontal speed and acceleration sliders so the travel card remains usable on
+the fixed 976x731 touch display.
+
 The persisted `travel` block is runtime-owned. Ordinary HMI profile saves
 (speed, mode, slider, and transmission settings) are merged into the existing
 device state and cannot remove recorded endpoints. This prevents a successful
@@ -86,10 +94,10 @@ endpoint record from appearing to work in the page and then disappearing after
 the next periodic profile save.
 
 The HMI panel is deliberately compact for the fixed touch display. Its short
-viewport layout keeps the position rail, endpoint/target metrics, and calibration
-badge visible without relying on vertical scrolling; explanatory text and the
-currently unavailable anti-sway switch collapse at viewport heights at or below
-820 px.
+viewport layout keeps the position rail, endpoint/target metrics, calibration
+badge, sway-period field, and anti-sway switch visible without relying on
+vertical scrolling; only the explanatory reason text collapses at viewport
+heights at or below 820 px.
 
 After endpoint calibration, the absolute-position target slider is narrowed to
 the persisted software-safe range, with the installed `position_direction`

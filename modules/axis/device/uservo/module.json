@@ -38,6 +38,7 @@
       "calibration_engine": "manual_endpoint_recording_v1",
       "calibration_runtime_connected": true,
       "encoder_counts_per_rev": 10000,
+      "millimeters_per_motor_revolution": 40,
       "calibration_data_version": 1,
       "position_direction": -1,
       "safety_margin_counts_default": 100,

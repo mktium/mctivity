@@ -386,6 +386,12 @@ _PRIMARY_AXIS_DIRECTION = -1 if int(
     (_PRIMARY_AXIS_DEVICE.get("linear_travel") or {}).get("position_direction", -1)
 ) < 0 else 1
 _PRIMARY_AXIS_COUNTS_PER_REV = max(1, int(_PRIMARY_AXIS_DEVICE.get("counts_per_rev", 8388608)))
+_PRIMARY_AXIS_LINEAR_MM_PER_REV = max(
+    0.001,
+    float((_PRIMARY_AXIS_DEVICE.get("linear_travel") or {}).get("millimeters_per_motor_revolution", 40.0))
+    if _LINEAR_TRAVEL_PROFILE
+    else 1.0,
+)
 _PRIMARY_AXIS_MAX_POSITION_REVS = max(1, int(_PRIMARY_AXIS_DEVICE.get("max_position_revolutions", 200)))
 _PRIMARY_AXIS_MAX_POSITION_COUNTS = _PRIMARY_AXIS_COUNTS_PER_REV * _PRIMARY_AXIS_MAX_POSITION_REVS
 _PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS = max(
@@ -449,6 +455,7 @@ def _hmi_axis_config(device_key):
     max_speed_rpm = max(1, int(device.get("max_speed_rpm", MAX_SPEED_RPM if is_fv3 else _PRIMARY_AXIS_MAX_SPEED_RPM)))
     default_accel_rpm_s = max(1, int(device.get("default_accel_rpm_s", 300 if is_fv3 else _PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S)))
     max_accel_rpm_s = max(1, int(device.get("max_accel_rpm_s", MAX_ACCEL_RPM_S if is_fv3 else _PRIMARY_AXIS_MAX_ACCEL_RPM_S)))
+    linear_travel = device.get("linear_travel") or {}
     return {
         "device_key": device_key,
         "logical_axis": logical_axis or ("B" if is_fv3 else "A"),
@@ -459,6 +466,12 @@ def _hmi_axis_config(device_key):
         "velocity_step_rpm": max(1, int(device.get("velocity_step_rpm", 1))),
         "default_accel_rpm_s": default_accel_rpm_s,
         "max_accel_rpm_s": max_accel_rpm_s,
+        "linear_mm_per_rev": max(
+            0.001,
+            float(linear_travel.get("millimeters_per_motor_revolution", 40.0))
+            if linear_travel.get("enabled")
+            else 1.0,
+        ),
         "stop_decel_rpm_s": max(1, int(device.get("stop_decel_rpm_s", device.get("default_decel_rpm_s", default_accel_rpm_s)))),
         "default_relative_counts": max(
             1,
@@ -967,6 +980,10 @@ button.stop { background:var(--warn); } button.blue { background:var(--theme-dee
 .travel-period { display:flex; align-items:center; gap:5px; margin-top:6px; color:#47515a; font-size:10px; font-weight:900; }
 .travel-period input { width:74px; min-height:26px; padding:3px 5px; border:1px solid rgba(42,131,183,.28); border-radius:6px; background:#fff; color:#20262b; font:inherit; font-size:11px; font-weight:900; }
 .travel-period input:disabled { opacity:.55; }
+.travel-tuning { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px; align-items:center; margin-top:5px; }
+.travel-tuning .travel-period, .travel-tuning .travel-switch { margin-top:0; min-width:0; }
+.travel-tuning .travel-switch { padding:4px 7px; border:1px solid rgba(42,131,183,.22); border-radius:7px; background:#fff; }
+.travel-tuning .travel-switch span { white-space:nowrap; }
 .travel-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-top:6px; }
 .travel-actions button { min-height:30px; padding:4px 6px; border:1px solid rgba(42,131,183,.28); border-radius:7px; background:#fff; color:var(--theme-deep); font:inherit; font-size:10px; font-weight:900; }
 .travel-actions button:disabled { opacity:.45; }
@@ -979,7 +996,7 @@ button.stop { background:var(--warn); } button.blue { background:var(--theme-dee
   .travel-card { margin-top:3px; padding:5px; }
   .travel-title { font-size:12px; }
   .travel-grid { margin-top:3px; }
-  .travel-switch, .travel-reason { display:none; }
+  .travel-reason { display:none; }
 }
 .slider-head { display:flex; justify-content:space-between; gap:10px; align-items:baseline; margin-bottom:4px; }
 .slider-title { font-size:13px; font-weight:900; color:var(--dark); }
@@ -990,10 +1007,10 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 #absPos::-webkit-slider-thumb { -webkit-appearance:none; width:36px; height:36px; margin-top:-14px; border-radius:50%; background:var(--warn); border:4px solid #fff; box-shadow:0 5px 14px rgba(0,0,0,.30); }
 #absPos::-moz-range-track { height:9px; border-radius:999px; border:1px solid rgba(120,130,140,.45); background:linear-gradient(90deg,#b8bec5 0 50%,#fff 50% 100%); box-shadow:inset 0 1px 2px rgba(0,0,0,.12); }
 #absPos::-moz-range-thumb { width:30px; height:30px; border-radius:50%; background:var(--warn); border:4px solid #fff; box-shadow:0 5px 14px rgba(0,0,0,.30); }
-.position-param { --side-width:130px; --position-gap:12px; --slider-top-offset:122px; --slider-track-height:150px; display:grid; grid-template-columns:minmax(0,1fr) var(--side-width); gap:var(--position-gap); align-items:stretch; }
-.axis-control { position:relative; min-height:346px; height:100%; display:grid; grid-template-rows:auto auto minmax(150px,1fr); gap:10px; align-content:stretch; }
+.position-param { display:grid; gap:8px; align-items:stretch; }
+.axis-control { position:relative; min-height:0; display:grid; grid-template-rows:auto auto auto; gap:7px; align-content:start; }
 .axis-control > button.blue { position:relative; top:12px; }
-.position-axis { position:relative; z-index:3; width:calc(100% + var(--side-width) + var(--position-gap)); padding:0 0 10px; }
+.position-axis { position:relative; z-index:3; width:100%; padding:0 0 5px; }
 .current-position-marker { position:absolute; left:calc((var(--abs-thumb-size) / 2) + (var(--marker-pct, 0) * (100% - var(--abs-thumb-size)))); top:18px; width:0; height:0; border-left:10px solid transparent; border-right:10px solid transparent; border-top:14px solid var(--ok); transform:translateX(-50%); filter:drop-shadow(0 2px 4px rgba(22,134,74,.28)); pointer-events:none; opacity:0; transition:left .16s linear, opacity .16s linear; }
 .position-axis.linear-mode .current-position-marker { opacity:1; }
 .axis-scale { display:none; }
@@ -1002,8 +1019,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .axis-labels { display:grid; grid-template-columns:1fr auto 1fr; margin:0 0 2px; color:#666; font-size:12px; font-weight:900; }
 .axis-labels span:nth-child(2) { color:var(--bad); padding:0 8px; }
 .axis-labels span:last-child { text-align:right; }
-.target-readout { min-height:150px; border:1px solid rgba(42,131,183,.22); border-radius:12px; background:var(--soft); display:grid; grid-template-columns:minmax(0,1fr) minmax(86px,.62fr); align-items:center; gap:12px; padding:12px; text-align:center; }
-.target-readout.linear-mode { grid-template-columns:1fr; }
+.target-readout { min-height:112px; border:1px solid rgba(42,131,183,.22); border-radius:12px; background:var(--soft); display:grid; grid-template-columns:minmax(0,1fr) minmax(86px,.62fr); align-items:center; gap:12px; padding:9px 12px; text-align:center; }
+.target-readout.linear-mode { grid-template-columns:minmax(0,1fr) minmax(112px,.7fr); min-height:86px; }
 .target-readout.linear-mode .target-cell.secondary { display:none; }
 .target-cell { display:grid; gap:5px; min-width:0; }
 .target-cell:first-child { transform:translateY(.5em); }
@@ -1013,6 +1030,17 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .target-number { display:block; width:100%; color:var(--theme-deep); font-size:clamp(41px,5.1vw,68px); line-height:.92; font-weight:900; font-variant-numeric:tabular-nums; text-align:right; }
 .target-unit { display:inline-block; color:#667; font-size:15px; font-weight:900; margin-left:6px; white-space:nowrap; }
 .target-angle { display:inline-block; transform:translateY(-2em); color:var(--theme-deep); font-size:clamp(15px,1.5vw,21px); line-height:.95; font-weight:900; font-variant-numeric:tabular-nums; }
+.target-readout.linear-mode .target-cell.secondary { display:grid; }
+.target-readout.linear-mode .target-cell:first-child { transform:none; }
+.target-readout.linear-mode .target-cell:first-child > div { grid-template-columns:auto auto; }
+.target-readout.linear-mode .target-number { font-size:clamp(36px,4.7vw,58px); }
+.target-readout.linear-mode .target-unit { font-size:14px; }
+.target-readout.linear-mode .target-angle { transform:none; font-size:13px; color:#667; }
+.rate-sliders { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.rate-slider { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; min-width:0; padding:7px 8px; border:1px solid rgba(166,166,166,.30); border-radius:10px; background:#fff; }
+.rate-slider label { color:#666; font-size:11px; line-height:1.1; font-weight:900; white-space:nowrap; }
+.rate-slider input[type=range] { width:100%; min-width:0; height:30px; accent-color:var(--theme-blue); cursor:pointer; touch-action:pan-x; }
+.rate-slider span { color:var(--theme-deep); font-size:11px; font-weight:900; text-align:right; white-space:nowrap; }
 .vertical-sliders { position:relative; z-index:1; display:grid; grid-template-columns:1fr 1fr; gap:8px; min-height:210px; height:calc(100% - var(--slider-top-offset)); align-self:start; margin-top:var(--slider-top-offset); }
 .vertical-slider { display:grid; grid-template-rows:auto 1fr auto; gap:6px; justify-items:center; min-width:0; padding:8px 5px; border:1px solid rgba(166,166,166,.30); border-radius:10px; background:#fff; }
 .vertical-slider label { color:#666; font-size:11px; line-height:1.1; font-weight:900; text-align:center; }
@@ -1089,7 +1117,7 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
 .motiond-restart-status.good { color:var(--ok); }
 .diag-body { max-height:min(56dvh,460px); overflow:auto; border:1px solid rgba(166,166,166,.28); border-radius:10px; background:#f8fafc; padding:10px; color:#304050; font-size:12px; line-height:1.5; font-weight:700; white-space:pre-wrap; }
 @media (max-width:1180px) { .feedback-card.encoder { grid-template-columns:128px minmax(0,1fr); column-gap:8px; } .feedback-card.encoder .feedback-metrics { min-width:0; max-width:100%; } .feedback-metric { grid-template-columns:minmax(0,1fr) minmax(0,9.5ch); gap:6px; padding:7px 8px; min-height:48px; } .feedback-metric .label { font-size:10px; min-width:0; overflow-wrap:anywhere; word-break:break-word; } .feedback-metric .value { min-width:0; max-width:100%; font-size:15px; white-space:normal; overflow-wrap:anywhere; word-break:break-word; align-self:start; } .feedback-metric.vertical { min-height:70px; } }
-@media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .protocol-chip { font-size:24px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .position-param { --side-width:108px; --slider-top-offset:114px; --slider-track-height:150px; } .axis-control { min-height:324px; } .vertical-sliders { min-height:188px; } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
+@media (max-width:980px) { main { padding:7px 9px 9px; } .monitor-grid { grid-template-columns:minmax(245px,1fr) minmax(190px,.68fr) minmax(245px,.95fr); gap:8px; } .card { padding:8px; } .protocol-chip { font-size:24px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } .axis-card { grid-template-columns:128px minmax(0,1fr); gap:8px; } .dial { width:128px; height:128px; } .hand { height:48px; margin-top:-48px; } .big-angle { font-size:38px; } .tile { min-height:44px; padding:5px 7px; } .value { font-size:15px; } .slider-number { font-size:13px; } .meta { font-size:10px; } .param-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .target-number { font-size:41px; } .target-angle { font-size:15px; } }
 @media (max-width:820px) { .feedback-card.encoder { grid-template-columns:1fr; } .encoder-title { grid-column:1; grid-row:auto; justify-self:center; align-self:auto; margin-bottom:0; } .encoder-dial { grid-column:1; grid-row:auto; } .feedback-card.encoder .feedback-metrics { grid-column:1; grid-row:auto; } }
 @media (max-width:720px) { .monitor-grid { grid-template-columns:1fr; overflow:hidden; } .right-stack { display:none; } .middle-stack { grid-template-columns:1fr 1fr; } .axis-card { grid-template-columns:140px 1fr; } .status { grid-template-columns:repeat(3,1fr); } .subbar { flex-wrap:wrap; } .tabs { flex:1 0 100%; order:3; } .assembly-status { order:2; width:100%; margin-left:0; flex-wrap:wrap; } .protocol-chip { font-size:20px; } .brand-wordmark { font-size:19px; } .logo { width:34px; height:34px; } h1 { font-size:18px; } }
 </style>
@@ -1189,8 +1217,8 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
           <span class="label-stack"><span id="transmissionLabel" class="label">传动</span><span id="transmissionTypeLabel" class="label-subtext">旋转</span></span>
           <button class="transmission-trigger" onclick="openTransmissionDialog()">
             <span class="transmission-copy">
-              <span id="transmissionLoadSummary" class="transmission-primary">负载 360.0 deg</span>
-              <span id="transmissionMotorSummary" class="transmission-secondary">电机 1 Rev</span>
+              <span id="transmissionLoadSummary" class="transmission-primary">传动参数</span>
+              <span id="transmissionMotorSummary" class="transmission-secondary">--</span>
             </span>
             <span class="transmission-chevron">›</span>
           </button>
@@ -1213,22 +1241,22 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <div class="axis-control">
               <div class="slider-head"><span class="slider-title">目标绝对位置</span></div>
               <div class="position-axis">
-                <div class="axis-labels"><span id="axisMinRev">-__PRIMARY_AXIS_MAX_POSITION_REVS__ rev</span><span></span><span id="axisMaxRev">+__PRIMARY_AXIS_MAX_POSITION_REVS__ rev</span></div>
+                <div class="axis-labels"><span id="axisMinPosition">--</span><span></span><span id="axisMaxPosition">--</span></div>
                 <div id="currentPositionMarker" class="current-position-marker"></div>
                 <input id="absPos" type="range" min="-__PRIMARY_AXIS_MAX_POSITION_COUNTS__" max="__PRIMARY_AXIS_MAX_POSITION_COUNTS__" step="__PRIMARY_AXIS_POSITION_STEP_COUNTS__" value="0" oninput="updateSliders()">
               </div>
               <div class="target-readout">
-                <div class="target-cell"><div><span id="targetRevBig" class="target-number">0</span><span class="target-unit">rev</span></div></div>
-                <div class="target-cell secondary"><span id="targetAngleBig" class="target-angle">0.0 deg</span></div>
+                <div class="target-cell"><div><span id="targetPositionBig" class="target-number">0</span><span class="target-unit">mm</span></div></div>
+                <div class="target-cell secondary"><span id="targetPositionSecondary" class="target-angle">编码器 0 cnt</span></div>
               </div>
             </div>
-            <div class="vertical-sliders">
-              <div class="vertical-slider">
+            <div class="rate-sliders">
+              <div class="rate-slider">
                 <label for="absSpeedRpm">速度</label>
                 <input id="absSpeedRpm" type="range" min="1" max="__PRIMARY_AXIS_MAX_SPEED_RPM__" step="1" value="__PRIMARY_AXIS_DEFAULT_SPEED_RPM__" oninput="updateSliders()">
                 <span id="absSpeedText">__PRIMARY_AXIS_DEFAULT_SPEED_RPM__ rpm</span>
               </div>
-              <div class="vertical-slider">
+              <div class="rate-slider">
                 <label for="absAccel">加速度</label>
                 <input id="absAccel" type="range" min="10" max="__PRIMARY_AXIS_MAX_ACCEL_RPM_S__" step="10" value="__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__" oninput="updateSliders()">
                 <span id="absAccelText">__PRIMARY_AXIS_DEFAULT_ACCEL_RPM_S__ rpm/s</span>
@@ -1250,8 +1278,10 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <button id="travelRecordRight" type="button" onclick="recordTravelEndpoint('right')">记录右端点</button>
             <button id="travelClear" class="clear" type="button" onclick="clearTravelEndpoints()">清除标定</button>
           </div>
-          <label class="travel-period"><span>摆动周期</span><input id="travelSwayPeriod" type="number" min="10" max="10000" step="10" value="1150" onchange="updateTravelSwayConfig()"><span>ms（先保存参数）</span></label>
-          <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled onchange="toggleTravelAntiSway()"><span>启用防摇轨迹（需先完成端点标定和摆动周期配置）</span></label>
+          <div class="travel-tuning">
+            <label class="travel-period"><span>摆动周期</span><input id="travelSwayPeriod" type="number" min="10" max="10000" step="10" value="1150" onchange="updateTravelSwayConfig()"><span>ms</span></label>
+            <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled onchange="toggleTravelAntiSway()"><span>启用防摇</span></label>
+          </div>
           <div id="travelReason" class="travel-reason">请手动点动到端点并停止后记录；记录按钮不会让电机运动。</div>
         </div>
         <div id="panel-incremental" class="mode-panel">
@@ -1530,6 +1560,7 @@ const PRIMARY_AXIS_MAX_ACCEL_RPM_S = __PRIMARY_AXIS_MAX_ACCEL_RPM_S__;
 const AXIS_CONFIG_BY_DEVICE = __AXIS_CONFIG_BY_DEVICE__;
 const ASSEMBLED_DEVICE_ORDER = __ASSEMBLED_DEVICE_ORDER__;
 const LINEAR_TRAVEL_AVAILABLE = __LINEAR_TRAVEL_AVAILABLE__;
+const PRIMARY_AXIS_LINEAR_MM_PER_REV = __PRIMARY_AXIS_LINEAR_MM_PER_REV__;
 const AXIS_DIR = __PRIMARY_AXIS_DIRECTION__;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
@@ -1626,6 +1657,7 @@ const UI_TEXT = {
     syncPeriod:'同步周期',
     record:'记录',
     currentTurns:'当前圈数',
+    currentLinearPosition:'当前位移',
     currentAngle:'当前编码器角度',
     currentPulses:'编码器脉冲数',
     singleTurn:'单圈计数',
@@ -1672,6 +1704,9 @@ const UI_TEXT = {
     reverseDirection:'反方向',
     loadPrefix:'负载 ',
     motorPrefix:'电机 ',
+    linearPerRev:'每转 ',
+    linearPosition:'直线位置',
+    encoderPrefix:'编码器 ',
     systemMenu:'系统菜单',
     poweroff:'关机',
     poweroffTitle:'关闭工控机',
@@ -1766,6 +1801,7 @@ const UI_TEXT = {
     syncPeriod:'Sync Period',
     record:'Record',
     currentTurns:'Turns',
+    currentLinearPosition:'Displacement',
     currentAngle:'Encoder Angle',
     currentPulses:'Encoder Pulses',
     singleTurn:'Single-turn Count',
@@ -1812,6 +1848,9 @@ const UI_TEXT = {
     reverseDirection:'Reverse',
     loadPrefix:'Load ',
     motorPrefix:'Motor ',
+    linearPerRev:'Per rev ',
+    linearPosition:'Linear position',
+    encoderPrefix:'Encoder ',
     systemMenu:'System Menu',
     poweroff:'Power Off',
     poweroffTitle:'Power Off Controller',
@@ -1861,6 +1900,7 @@ function newMotionState() {
 function newDeviceProfile(device) {
   const config = axisConfig(device);
   const counts = config.counts_per_rev;
+  const linear = LINEAR_TRAVEL_AVAILABLE && device === (ASSEMBLED_DEVICE_ORDER[0] || 'mctivity');
   const defaultGearMaster = device === 'mctivity_e' ? 'mctivity' : (ASSEMBLED_DEVICE_ORDER.includes('mctivity_e') ? 'mctivity_e' : (device === 'fv3' ? 'mctivity' : (ASSEMBLED_DEVICE_ORDER.includes('fv3') ? 'fv3' : 'virtual')));
   return {mode:config.default_mode, absPos:0, absSpeedRpm:config.default_speed_rpm,
     absAccel:config.default_accel_rpm_s, velocityAccelRpmS:config.default_accel_rpm_s,
@@ -1872,7 +1912,9 @@ function newDeviceProfile(device) {
       calibration_state:'uncalibrated', anti_sway_enabled:false, sway_period_ms:null,
       shaper:'zvd', residual_sway_limit_counts:0},
     incrementalCurve:{mode:'position', targetPosition:0, targetSpeed:0, accel:0, decel:0, dwell:0, blend:'smooth'},
-    transmission:{type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360},
+    transmission:linear
+      ? {type:'linear', revs:1, amount:PRIMARY_AXIS_LINEAR_MM_PER_REV, unit:'mm', direction:'forward', travelMode:'reciprocating', period:PRIMARY_AXIS_LINEAR_MM_PER_REV, forwardLimit:PRIMARY_AXIS_LINEAR_MM_PER_REV, reverseLimit:-PRIMARY_AXIS_LINEAR_MM_PER_REV}
+      : {type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:360, forwardLimit:360, reverseLimit:-360},
     points:{1:0, 2:counts/2, 3:counts}};
 }
 const statusByDevice = {};
@@ -2488,7 +2530,18 @@ let incrementalEditorDevice = '';
 let incrementalEditorLanguage = '';
 function normalizedTransmission(profile = currentProfile()) {
   const source = profile && profile.transmission ? profile.transmission : profile;
+  const forceLinearTravel = Boolean(LINEAR_TRAVEL_AVAILABLE && profile === currentProfile(activeDevice));
   const tx = Object.assign({type:'rotary', revs:1, amount:360, unit:'deg', direction:'forward', travelMode:'periodic', period:null, forwardLimit:null, reverseLimit:null}, source || {});
+  if (forceLinearTravel) {
+    tx.type = 'linear';
+    tx.revs = 1;
+    tx.amount = PRIMARY_AXIS_LINEAR_MM_PER_REV;
+    tx.unit = 'mm';
+    tx.travelMode = 'reciprocating';
+    tx.period = PRIMARY_AXIS_LINEAR_MM_PER_REV;
+    tx.forwardLimit = PRIMARY_AXIS_LINEAR_MM_PER_REV;
+    tx.reverseLimit = -PRIMARY_AXIS_LINEAR_MM_PER_REV;
+  }
   tx.type = tx.type === 'linear' ? 'linear' : 'rotary';
   tx.revs = Math.max(0.001, Number(tx.revs) || 1);
   tx.amount = Math.max(0.001, Number(tx.amount) || (tx.type === 'linear' ? 1 : 360));
@@ -2500,6 +2553,16 @@ function normalizedTransmission(profile = currentProfile()) {
   const options = transmissionUnitSets[tx.type] || transmissionUnitSets.rotary;
   if (!options.some(opt => opt.value === tx.unit)) {
     tx.unit = options[0].value;
+  }
+  if (forceLinearTravel) {
+    tx.type = 'linear';
+    tx.revs = 1;
+    tx.amount = PRIMARY_AXIS_LINEAR_MM_PER_REV;
+    tx.unit = 'mm';
+    tx.travelMode = 'reciprocating';
+    tx.period = PRIMARY_AXIS_LINEAR_MM_PER_REV;
+    tx.forwardLimit = PRIMARY_AXIS_LINEAR_MM_PER_REV;
+    tx.reverseLimit = -PRIMARY_AXIS_LINEAR_MM_PER_REV;
   }
   return tx;
 }
@@ -2559,8 +2622,13 @@ function syncTransmissionSummary(device = activeDevice) {
   const text = UI_TEXT[currentLang];
   setText('transmissionLabel', text.transmissionLabel);
   setText('transmissionTypeLabel', tx.type === 'linear' ? text.linearType : text.rotaryType);
-  setText('transmissionLoadSummary', text.loadPrefix + transmissionPerRev(tx).toFixed(1) + ' ' + tx.unit);
-  setText('transmissionMotorSummary', text.motorPrefix + '1 rev');
+  if (tx.type === 'linear' && LINEAR_TRAVEL_AVAILABLE && device === activeDevice) {
+    setText('transmissionLoadSummary', text.linearPerRev + transmissionPerRev(tx).toFixed(1) + ' ' + tx.unit);
+    setText('transmissionMotorSummary', text.linearPosition);
+  } else {
+    setText('transmissionLoadSummary', text.loadPrefix + transmissionPerRev(tx).toFixed(1) + ' ' + tx.unit);
+    setText('transmissionMotorSummary', text.motorPrefix + '1 rev');
+  }
 }
 function refillTransmissionUnitOptions(type, preferred) {
   const options = transmissionUnitSets[type] || transmissionUnitSets.rotary;
@@ -2771,6 +2839,12 @@ async function hydrateUiStateFromServer() {
 }
 function fmt(n) { return Math.round(Number(n)).toLocaleString('en-US'); }
 function rev(n) { return Number(n) / REV; }
+function linearMmFromNativeCounts(nativeCounts) {
+  return Number(nativeCounts) * AXIS_DIR / REV * PRIMARY_AXIS_LINEAR_MM_PER_REV;
+}
+function linearPositionText(nativeCounts, digits = 1) {
+  return formatTransmissionScalar(linearMmFromNativeCounts(nativeCounts), 'mm', digits);
+}
 function revText(n, digits=3) {
   const value = Number(n);
   const prefix = value > 0 ? '+' : '';
@@ -3083,7 +3157,7 @@ function refreshStaticText() {
   if (feedbackTitles[1]) feedbackTitles[1].textContent = text.torque;
   if (feedbackTitles[2]) feedbackTitles[2].textContent = text.speed;
   const feedbackLabels = document.querySelectorAll('.feedback-metric .label');
-  if (feedbackLabels[0]) feedbackLabels[0].textContent = text.currentTurns;
+  if (feedbackLabels[0]) feedbackLabels[0].textContent = LINEAR_TRAVEL_AVAILABLE ? text.currentLinearPosition : text.currentTurns;
   if (feedbackLabels[1]) feedbackLabels[1].textContent = text.currentAngle;
   if (feedbackLabels[2]) feedbackLabels[2].textContent = text.currentPulses;
   if (feedbackLabels[3]) feedbackLabels[3].textContent = text.singleTurn;
@@ -3122,7 +3196,7 @@ function refreshStaticText() {
   if (controlButtons[4]) controlButtons[4].textContent = text.setZero;
   const positionTitles = document.querySelectorAll('#panel-position .slider-title');
   if (positionTitles[0]) positionTitles[0].textContent = text.targetAbs;
-  const positionLabels = document.querySelectorAll('#panel-position .vertical-slider label');
+  const positionLabels = document.querySelectorAll('#panel-position .rate-slider label');
   if (positionLabels[0]) positionLabels[0].textContent = text.speed;
   if (positionLabels[1]) positionLabels[1].textContent = text.accel;
   const targetUnit = document.querySelector('.target-unit');
@@ -3611,13 +3685,13 @@ function renderTravelModel(model, status) {
   const safeRight = guard.safe_right_counts;
   const pos = guard.position_counts ?? (status && status.pos);
   const target = guard.target_counts ?? (status && status.target);
-  setText('travelLeftLabel', left === null || left === undefined ? '左端 --' : '左端 ' + fmt(left));
-  setText('travelRightLabel', right === null || right === undefined ? '右端 --' : '右端 ' + fmt(right));
-  setText('travelPositionLabel', pos === null || pos === undefined ? '当前位置 --' : '当前位置 ' + fmt(pos));
-  setText('travelTargetValue', target === null || target === undefined ? '--' : fmt(target) + ' cnt');
+  setText('travelLeftLabel', left === null || left === undefined ? '左端 --' : '左端 ' + linearPositionText(left));
+  setText('travelRightLabel', right === null || right === undefined ? '右端 --' : '右端 ' + linearPositionText(right));
+  setText('travelPositionLabel', pos === null || pos === undefined ? '当前位置 --' : '当前位置 ' + linearPositionText(pos));
+  setText('travelTargetValue', target === null || target === undefined ? '--' : linearPositionText(target));
   const safeMin = guard.safe_min_counts ?? (safeLeft === null || safeLeft === undefined || safeRight === null || safeRight === undefined ? null : Math.min(safeLeft, safeRight));
   const safeMax = guard.safe_max_counts ?? (safeLeft === null || safeLeft === undefined || safeRight === null || safeRight === undefined ? null : Math.max(safeLeft, safeRight));
-  setText('travelSafeRangeValue', safeMin === null || safeMin === undefined ? '--' : fmt(safeMin) + ' ~ ' + fmt(safeMax) + ' cnt');
+  setText('travelSafeRangeValue', safeMin === null || safeMin === undefined ? '--' : linearPositionText(safeMin) + ' ~ ' + linearPositionText(safeMax));
   const anti = data.anti_sway || {};
   const antiText = anti.ready ? ('已准备 ' + String(anti.sway_period_ms) + ' ms') : (anti.enabled ? '待配置' : '关闭');
   setText('travelAntiSwayValue', antiText);
@@ -3837,7 +3911,7 @@ function render(s) {
   const a = deg(s.pos);
   setText('encoderAngle', a.toFixed(1) + ' deg');
   setText('encoderSingleTurn', fmt(phaseCounts(s.pos)) + ' cnt');
-  setText('encoderTurns', rev(axisCounts(s.pos)).toFixed(3) + ' rev');
+  setText('encoderTurns', LINEAR_TRAVEL_AVAILABLE ? linearPositionText(Number(s.pos)) : rev(axisCounts(s.pos)).toFixed(3) + ' rev');
   setText('encoderPulses', fmt(axisCounts(s.pos)) + ' cnt');
   const encoderHand = document.getElementById('encoderHand');
   if (encoderHand) encoderHand.style.transform = 'rotate(' + continuousDeg(s.pos) + 'deg)';
@@ -3871,13 +3945,19 @@ function updateSliders() {
   setText('relDeg', UI_TEXT[currentLang].loadPrefix + formatTransmissionScalar(relValue, tx.unit, 1));
   setText('relRpm', rpm(rel, ms).toFixed(1) + ' rpm');
   setText('absText', formatTransmissionScalar(targetValue, tx.unit, 1));
-  setText('targetRevBig', formatTransmissionValue(targetValue, 1));
-  setText('targetAngleBig', isLinear ? '' : UI_TEXT[currentLang].motorPrefix + formatMotorRevScalar(abs, 3));
+  setText('targetPositionBig', formatTransmissionValue(targetValue, 1));
+  setText('targetPositionSecondary', isLinear
+    ? UI_TEXT[currentLang].encoderPrefix + fmt(abs) + ' cnt'
+    : UI_TEXT[currentLang].motorPrefix + formatMotorRevScalar(abs, 3));
   const targetUnit = document.querySelector('.target-unit');
   if (targetUnit) targetUnit.textContent = tx.unit;
   syncMotionActionLabel();
-  setText('axisMinRev', formatTransmissionScalar(bounds.minLoad, tx.unit, 1));
-  setText('axisMaxRev', formatTransmissionScalar(bounds.maxLoad, tx.unit, 1));
+  const displayMinCounts = taughtBounds ? rangeMin : bounds.minCounts;
+  const displayMaxCounts = taughtBounds ? rangeMax : bounds.maxCounts;
+  const displayMinLoad = transmissionValueFromCounts(displayMinCounts, profile);
+  const displayMaxLoad = transmissionValueFromCounts(displayMaxCounts, profile);
+  setText('axisMinPosition', formatTransmissionScalar(Math.min(displayMinLoad, displayMaxLoad), tx.unit, 1));
+  setText('axisMaxPosition', formatTransmissionScalar(Math.max(displayMinLoad, displayMaxLoad), tx.unit, 1));
   const targetReadout = document.querySelector('.target-readout');
   if (targetReadout) targetReadout.classList.toggle('linear-mode', isLinear);
   const positionAxis = document.querySelector('.position-axis');
@@ -3885,8 +3965,10 @@ function updateSliders() {
   const currentPositionMarker = document.getElementById('currentPositionMarker');
   if (currentPositionMarker) {
     const currentLoadPos = transmissionValueFromCounts(current, profile);
-    const loadSpan = Math.max(0.001, bounds.maxLoad - bounds.minLoad);
-    const markerPct = clamp((currentLoadPos - bounds.minLoad) / loadSpan, 0, 1);
+    const displayLoadMin = Math.min(displayMinLoad, displayMaxLoad);
+    const displayLoadMax = Math.max(displayMinLoad, displayMaxLoad);
+    const loadSpan = Math.max(0.001, displayLoadMax - displayLoadMin);
+    const markerPct = clamp((currentLoadPos - displayLoadMin) / loadSpan, 0, 1);
     currentPositionMarker.style.setProperty('--marker-pct', String(markerPct));
   }
   setText('absSpeedText', fmt(speed) + ' rpm'); setText('absAccelText', fmt(accel) + ' rpm/s');
@@ -4543,6 +4625,7 @@ bootstrapUi();
 """
 
 HTML = HTML.replace("__PRIMARY_AXIS_COUNTS_PER_REV__", str(_PRIMARY_AXIS_COUNTS_PER_REV))
+HTML = HTML.replace("__PRIMARY_AXIS_LINEAR_MM_PER_REV__", str(_PRIMARY_AXIS_LINEAR_MM_PER_REV))
 HTML = HTML.replace("__PRIMARY_AXIS_LABEL__", _PRIMARY_AXIS_LABEL)
 HTML = HTML.replace("__PRIMARY_AXIS_DIRECTION__", str(_PRIMARY_AXIS_DIRECTION))
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_POSITION_COUNTS__", str(_PRIMARY_AXIS_MAX_POSITION_COUNTS))
