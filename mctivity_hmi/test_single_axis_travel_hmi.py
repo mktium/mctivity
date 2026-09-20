@@ -116,6 +116,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         self.assertIn("记录左端点", html)
         self.assertIn("记录右端点", html)
         self.assertIn("/api/travel/record", html)
+        self.assertIn("statusAllowsRecording", html)
+        self.assertIn("data.recording_available || statusAllowsRecording", html)
         self.assertIn("@media (max-height: 820px)", html)
         self.assertIn("overflow:hidden", html)
         self.assertNotIn("__LINEAR_TRAVEL_AVAILABLE__", html)

@@ -3493,7 +3493,14 @@ function renderTravelModel(model, status) {
     toggle.checked = Boolean(anti.enabled);
     toggle.disabled = !anti.ready || capabilityState.commissioningInhibit;
   }
-  const recordingAvailable = Boolean(data.recording_available);
+  // The status poll is faster than the travel-model poll.  Do not leave the
+  // endpoint buttons disabled when the cached travel model still reflects the
+  // previous (disabled or moving) state.  The backend re-checks this same
+  // guard when the record command is submitted.
+  const statusAllowsRecording = Boolean(status && !status.fault && status.operational &&
+    status.wc_complete && status.enabled && status.servo_request && !status.moving &&
+    status.pos !== null && status.pos !== undefined);
+  const recordingAvailable = Boolean(data.recording_available || statusAllowsRecording);
   const leftButton = document.getElementById('travelRecordLeft');
   const rightButton = document.getElementById('travelRecordRight');
   const clearButton = document.getElementById('travelClear');
