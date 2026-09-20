@@ -2072,7 +2072,8 @@ static void handle_command(int fd, const char *line)
 
     if (uservo_axis_d_topology && commissioning_inhibit &&
         strcmp(cmd, "status") != 0 && strcmp(cmd, "disable") != 0 && strcmp(cmd, "stop") != 0 &&
-        strcmp(cmd, "fault_reset") != 0 && strcmp(cmd, "reset_fault") != 0 && strcmp(cmd, "gear_stop") != 0) {
+        strcmp(cmd, "fault_reset") != 0 && strcmp(cmd, "reset_fault") != 0 && strcmp(cmd, "gear_stop") != 0 &&
+        strcmp(cmd, "restore_zero_raw") != 0) {
         send_error_fd(fd, "commissioning_inhibit");
         return;
     }
@@ -2137,6 +2138,31 @@ static void handle_command(int fd, const char *line)
             native_homing_abort(ax, "native homing cancelled by operator", 0);
         }
         strncpy(s->last_command, "travel_calibrate_cancel", sizeof(s->last_command) - 1);
+        send_status_fd(fd, axis);
+        return;
+    }
+
+    if (strcmp(cmd, "restore_zero_raw") == 0) {
+        int32_t raw_zero;
+        if (!find_i32(line, "raw_zero", &raw_zero)) {
+            send_error_fd(fd, "restore_zero_raw requires raw_zero");
+            return;
+        }
+        if (s->enabled || s->servo_request || s->moving || s->fault || !s->operational || !s->wc_complete) {
+            send_error_fd(fd, "restore_zero_raw requires a healthy disabled stopped axis");
+            return;
+        }
+        s->soft_zero_raw = raw_zero;
+        s->target_raw = s->pos_raw;
+        s->target_user = s->pos_raw - s->soft_zero_raw;
+        clear_motion(ax);
+        ax->stop_velocity_cps = 0;
+        s->jog_velocity_cps = 0;
+        ax->velocity_remainder = 0;
+        ax->pp_pulse_cycles = 0;
+        ax->fv3_halt_cycles = 0;
+        strncpy(s->last_command, "restore_zero_raw", sizeof(s->last_command) - 1);
+        snprintf(s->message, sizeof(s->message), "%s software zero restored without motion", axis_label(axis));
         send_status_fd(fd, axis);
         return;
     }

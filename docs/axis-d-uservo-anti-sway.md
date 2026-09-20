@@ -118,6 +118,13 @@ rejected. The feature remains off by default and has not been motion-tested in
 this deployment; first motion and period tuning still require a separate
 operator-approved plan.
 
+The HMI also persists the motiond software-zero raw count alongside the taught
+endpoints. On a service restart it may restore that coordinate only when the
+axis is healthy, stopped, and disabled; `restore_zero_raw` changes no raw
+position target and sends no drive enable or mode command. This is required so
+the saved travel limits continue to describe the same coordinate system after
+motiond is restarted.
+
 The earlier current-spike/contact state machine remains as isolated regression
 coverage only; it is not wired to the live Uservo command path and is not used
 for this machine's endpoint teaching.

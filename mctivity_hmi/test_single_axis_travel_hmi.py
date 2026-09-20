@@ -79,6 +79,7 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
             }
         )
         self.assertEqual(normalized["travel"]["left_limit_counts"], 5000)
+        self.assertNotIn("soft_zero_raw", normalized["travel"])
         self.assertTrue(normalized["travel"]["anti_sway_enabled"])
         self.assertNotIn("unexpected_command", normalized["travel"])
 
@@ -139,6 +140,34 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
             self.assertIsNone(mctivity_hmi._travel_command_guard(clean, "mctivity"))
             self.assertEqual(clean["shaper_period_ms"], 900)
             self.assertEqual(clean["shaper_damping_permille"], 50)
+
+    def test_travel_zero_is_restored_only_when_axis_is_stopped_and_disabled(self):
+        status = {
+            "device": "mctivity",
+            "pos": 238891,
+            "target": 238891,
+            "soft_zero_raw": 0,
+            "commissioning_inhibit": True,
+            "operational": True,
+            "wc_complete": True,
+            "fault": False,
+            "enabled": False,
+            "servo_request": False,
+            "moving": False,
+        }
+        restored = dict(status, pos=-7337, target=-7337, soft_zero_raw=246228)
+        with mock.patch.object(
+            mctivity_hmi,
+            "motiond_command",
+            side_effect=[{"ok": True, "status": restored}],
+        ) as command:
+            result = mctivity_hmi._reconcile_travel_zero(
+                "mctivity",
+                status,
+                {"calibration_state": "both_valid", "soft_zero_raw": 246228},
+            )
+        self.assertEqual(result["soft_zero_raw"], 246228)
+        command.assert_called_once_with({"cmd": "restore_zero_raw", "device": "mctivity", "raw_zero": 246228})
 
     def test_rendered_ui_contains_read_only_linear_travel_panel(self):
         html = mctivity_hmi.HTML

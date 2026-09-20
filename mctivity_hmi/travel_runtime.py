@@ -41,6 +41,7 @@ class TravelConfig:
     safety_margin_counts: int = 100
     calibration_data_version: int = 0
     calibration_state: str = "uncalibrated"
+    soft_zero_raw: int | None = None
     anti_sway_enabled: bool = False
     sway_period_ms: int | None = None
     shaper: str = "zvd"
@@ -139,6 +140,7 @@ def normalize_travel_config(
         version = _int(version_raw, name="calibration_data_version", minimum=0, maximum=CALIBRATION_DATA_VERSION)
     if (left is not None or right is not None) and version != CALIBRATION_DATA_VERSION:
         raise TravelConfigError("endpoint data version is not supported")
+    soft_zero = optional_count("soft_zero_raw")
 
     period = raw.get("sway_period_ms")
     period_ms = None if period in (None, "") else _int(
@@ -170,6 +172,7 @@ def normalize_travel_config(
         safety_margin_counts=margin,
         calibration_state=state,
         calibration_data_version=version,
+        soft_zero_raw=soft_zero,
         anti_sway_enabled=anti_sway,
         sway_period_ms=period_ms,
         shaper=shaper,
@@ -306,6 +309,7 @@ def record_manual_endpoint(
         "right_limit_counts": config.right_limit_counts,
         "safety_margin_counts": config.safety_margin_counts,
         "calibration_data_version": CALIBRATION_DATA_VERSION,
+        "soft_zero_raw": config.soft_zero_raw,
         "anti_sway_enabled": config.anti_sway_enabled,
         "sway_period_ms": config.sway_period_ms,
         "shaper": config.shaper,

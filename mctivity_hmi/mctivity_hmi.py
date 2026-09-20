@@ -4670,7 +4670,7 @@ def _normalize_ui_device_state(raw):
     travel = raw.get("travel")
     if isinstance(travel, dict):
         normalized_travel = {}
-        for key in ("left_limit_counts", "right_limit_counts", "safety_margin_counts", "calibration_data_version", "sway_period_ms", "residual_sway_limit_counts"):
+        for key in ("left_limit_counts", "right_limit_counts", "safety_margin_counts", "calibration_data_version", "soft_zero_raw", "sway_period_ms", "residual_sway_limit_counts"):
             if key in travel:
                 value = _finite_float(travel[key])
                 if value is not None and value.is_integer():
@@ -4743,10 +4743,11 @@ def travel_status(device):
     response = motiond_command({"cmd": "status", "device": device})
     if not isinstance(response, dict) or not response.get("ok"):
         return response if isinstance(response, dict) else {"ok": False, "error": "status_unavailable"}
-    status = response.get("status") if isinstance(response.get("status"), dict) else {}
     ui_state = load_ui_state()
     device_state = ui_state.get("devices", {}).get(device, {})
     raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
+    status = response.get("status") if isinstance(response.get("status"), dict) else {}
+    status = _reconcile_travel_zero(device, status, raw_travel)
     try:
         model = travel_ui_model(status, raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV, _PRIMARY_AXIS_DIRECTION)
         record_ok, record_reason = endpoint_recording_guard(status)
@@ -4768,6 +4769,53 @@ def travel_status(device):
             "error": str(exc),
         }
     return {"ok": True, "device": device, "travel": model}
+
+
+def _reconcile_travel_zero(device, status, raw_travel):
+    """Keep the HMI travel coordinate stable across a motiond restart.
+
+    This only writes the software coordinate while the axis is stopped and
+    disabled. It never enables a drive, changes its mode, or changes the raw
+    target. If no persisted coordinate exists yet, the current motiond value
+    is captured for future restarts.
+    """
+
+    if not isinstance(status, dict) or not isinstance(raw_travel, dict):
+        return status
+    actual = status.get("soft_zero_raw")
+    try:
+        actual_value = int(actual) if actual is not None else None
+    except (TypeError, ValueError):
+        actual_value = None
+    persisted = raw_travel.get("soft_zero_raw")
+    try:
+        persisted_value = int(persisted) if persisted is not None else None
+    except (TypeError, ValueError):
+        persisted_value = None
+    if persisted_value is None:
+        if actual_value is not None and raw_travel.get("calibration_state") == "both_valid":
+            next_state = load_ui_state()
+            next_device = dict(next_state.get("devices", {}).get(device, {}))
+            next_travel = dict(next_device.get("travel", {}))
+            next_travel["soft_zero_raw"] = actual_value
+            next_device["travel"] = next_travel
+            save_ui_state(device, next_device)
+        return status
+    if actual_value == persisted_value:
+        return status
+    if (
+        status.get("enabled")
+        or status.get("servo_request")
+        or status.get("moving")
+        or status.get("fault")
+        or not status.get("operational")
+        or not status.get("wc_complete")
+    ):
+        return status
+    restored = motiond_command({"cmd": "restore_zero_raw", "device": device, "raw_zero": persisted_value})
+    if isinstance(restored, dict) and restored.get("ok") and isinstance(restored.get("status"), dict):
+        return restored["status"]
+    return status
 
 
 def record_travel_endpoint(device, side):
