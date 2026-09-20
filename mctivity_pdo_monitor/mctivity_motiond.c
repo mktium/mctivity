@@ -1260,37 +1260,6 @@ static void native_homing_abort(axis_runtime_t *ax, const char *message, int err
     snprintf(ax->st.message, sizeof(ax->st.message), "%s", message);
 }
 
-static int native_homing_start(axis_runtime_t *ax)
-{
-    status_t *s = &ax->st;
-    if (!uservo_axis_d_topology || uservo_pv_topology || uservo_dual_topology) {
-        return 0;
-    }
-    if (!s->servo_request || !ready_for_motion(ax)) {
-        return 0;
-    }
-    if (!s->operational || !s->wc_complete || s->fault) {
-        return 0;
-    }
-    clear_motion(ax);
-    ax->stop_velocity_cps = 0;
-    s->jog_velocity_cps = 0;
-    ax->target_velocity_cps = 0;
-    ax->velocity_remainder = 0;
-    ax->gear_running = 0;
-    ax->gear_has_last_master_pos = 0;
-    ax->native_homing_active = 1;
-    s->homing_active = 1;
-    s->homing_attained = 0;
-    s->homing_error = 0;
-    s->target_raw = s->pos_raw;
-    s->target_user = s->pos_user;
-    set_control_mode(ax, "homing");
-    ax->commanded_mode = mode_code_for_name("homing");
-    snprintf(s->message, sizeof(s->message), "native homing armed; drive method 0x6098 is not changed");
-    return 1;
-}
-
 static void native_homing_complete(axis_runtime_t *ax)
 {
     status_t *s = &ax->st;
