@@ -4,6 +4,7 @@ import unittest
 from travel_runtime import (
     TravelConfigError,
     build_travel_guard,
+    clear_calibration_guard,
     normalize_travel_config,
     travel_ui_model,
     endpoint_recording_guard,
@@ -93,6 +94,25 @@ class TravelRuntimeTests(unittest.TestCase):
         self.assertEqual(normalize_travel_config(raw, 10000).safe_left_counts, -900)
         with self.assertRaises(TravelConfigError):
             record_manual_endpoint(record_manual_endpoint({}, "right", 10, 10000), "left", 20, 10000)
+
+    def test_manual_recording_follows_physical_direction_when_encoder_is_reversed(self):
+        raw = record_manual_endpoint({}, "left", 1000, 10000, position_direction=-1)
+        self.assertEqual(raw["calibration_state"], "left_valid")
+        raw = record_manual_endpoint(raw, "right", -5000, 10000, position_direction=-1)
+        config = normalize_travel_config(raw, 10000, position_direction=-1)
+        self.assertTrue(config.endpoints_valid)
+        self.assertEqual(config.safe_left_counts, 900)
+        self.assertEqual(config.safe_right_counts, -4900)
+        self.assertEqual(validate_target_counts(0, config), (True, None))
+        self.assertEqual(validate_target_counts(1001, config), (False, "target_outside_safe_travel"))
+
+    def test_clear_calibration_guard_requires_disabled_stopped_axis(self):
+        ok, reason = clear_calibration_guard({"moving": False, "enabled": False, "servo_request": False})
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        ok, reason = clear_calibration_guard({"moving": False, "enabled": True, "servo_request": True})
+        self.assertFalse(ok)
+        self.assertEqual(reason, "clear_requires_disabled_stopped_axis")
 
     def test_recording_guard_requires_stopped_enabled_healthy_axis(self):
         ok, reason = endpoint_recording_guard({"operational": True, "wc_complete": True, "enabled": True, "servo_request": True, "moving": False, "fault": False, "pos": 0})

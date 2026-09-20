@@ -2,6 +2,7 @@
 import os
 import unittest
 from unittest import mock
+from pathlib import Path
 
 
 os.environ["MCTIVITY_PROFILE"] = "axis-d-uservo"
@@ -20,6 +21,7 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
                 "device": "mctivity",
                 "logical_axis": "D",
                 "counts_per_rev": 10000,
+                "position_direction": -1,
                 "calibration_actions_available": True,
                 "calibration_actions_reason": "manual_endpoint_recording",
                 "calibration_engine": "manual_endpoint_recording_v1",
@@ -66,8 +68,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         normalized = mctivity_hmi._normalize_ui_device_state(
             {
                 "travel": {
-                    "left_limit_counts": -1000,
-                    "right_limit_counts": 5000,
+                    "left_limit_counts": 5000,
+                    "right_limit_counts": -1000,
                     "safety_margin_counts": 100,
                     "calibration_state": "both_valid",
                     "anti_sway_enabled": True,
@@ -76,7 +78,7 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
                 }
             }
         )
-        self.assertEqual(normalized["travel"]["left_limit_counts"], -1000)
+        self.assertEqual(normalized["travel"]["left_limit_counts"], 5000)
         self.assertTrue(normalized["travel"]["anti_sway_enabled"])
         self.assertNotIn("unexpected_command", normalized["travel"])
 
@@ -85,8 +87,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
             "devices": {
                 "mctivity": {
                     "travel": {
-                        "left_limit_counts": -1000,
-                        "right_limit_counts": 5000,
+                        "left_limit_counts": 5000,
+                        "right_limit_counts": -1000,
                         "safety_margin_counts": 100,
                         "calibration_data_version": 1,
                         "calibration_state": "both_valid",
@@ -100,7 +102,7 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
             return_value={"ok": True, "status": {"pos": 0}},
         ):
             self.assertEqual(
-                mctivity_hmi._travel_command_guard({"cmd": "move_abs", "pos": 4901}, "mctivity"),
+                mctivity_hmi._travel_command_guard({"cmd": "move_abs", "pos": -901}, "mctivity"),
                 "target_outside_safe_travel",
             )
             clean = {"cmd": "jog_velocity", "velocity": 100}
@@ -116,6 +118,8 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         self.assertIn("记录左端点", html)
         self.assertIn("记录右端点", html)
         self.assertIn("/api/travel/record", html)
+        self.assertIn("clearButton.disabled = false", html)
+        self.assertIn("clear_calibration_guard", Path(mctivity_hmi.__file__).read_text(encoding="utf-8"))
         self.assertIn("statusAllowsRecording", html)
         self.assertIn("data.recording_available || statusAllowsRecording", html)
         self.assertIn("@media (max-height: 820px)", html)

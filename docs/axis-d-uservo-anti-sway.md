@@ -60,14 +60,24 @@ reset, or motion command is part of the baseline deployment.
 The current implementation uses manual endpoint teaching. The operator moves
 the enabled axis with the existing jog control, stops it, and presses `记录左端点`
 or `记录右端点`. The HMI reads status only, persists the stopped encoder
-position with calibration data version 1, validates left/right ordering and
-the configured safety margin, and exposes `未标定` / `左端已记录` /
+position with calibration data version 1, applies the profile's mechanical
+position direction before validating left/right ordering and the configured
+safety margin, and exposes `未标定` / `左端已记录` /
 `两端已标定` states. No endpoint button sends an enable, mode, stop, or motion
 command. After both endpoints are valid, position and jog commands receive the
 safe bounds; out-of-range position targets are rejected and a bounded jog is
 held at the safe edge. `set_zero` and torque control are blocked until the
 operator clears the endpoint calibration. The anti-sway switch remains disabled
 until a later, separately validated trajectory implementation is ready.
+
+For the current D Uservo assembly, `position_direction=-1`: physical left may
+therefore have a larger raw encoder count than physical right. The stored
+`left_limit_counts` and `right_limit_counts` remain drive-coordinate values so
+the motion guard can pass correct raw bounds to motiond, while validation,
+percentage display, and safe-margin calculation use the physical direction.
+`清除标定` is a non-motion operation and remains clickable even if the HMI's
+fast status cache is stale; the backend accepts it only when the axis is
+stationary, disabled, and not requesting servo output.
 
 The HMI panel is deliberately compact for the fixed touch display. Its short
 viewport layout keeps the position rail, endpoint/target metrics, and calibration

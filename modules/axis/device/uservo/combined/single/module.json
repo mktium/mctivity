@@ -63,6 +63,7 @@
       "calibration_runtime_connected": true,
       "encoder_counts_per_rev": 10000,
       "calibration_data_version": 1,
+      "position_direction": -1,
       "safety_margin_counts_default": 100,
       "requires_current_feedback": false,
       "requires_position_progress_check": false,

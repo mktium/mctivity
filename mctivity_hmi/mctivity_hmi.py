@@ -23,6 +23,7 @@ from feature_registry import (
 from profile_runtime import build_module_runtime
 from travel_runtime import (
     TravelConfigError,
+    clear_calibration_guard,
     endpoint_recording_guard,
     normalize_travel_config,
     record_manual_endpoint,
@@ -358,6 +359,9 @@ _LINEAR_TRAVEL_PROFILE = (
 )
 _PRIMARY_AXIS_DEVICE = _AXIS_DEVICES[0] if _AXIS_DEVICES else {}
 _PRIMARY_AXIS_LABEL = str(_PRIMARY_AXIS_DEVICE.get("logical_axis", "A")).strip().upper() or "A"
+_PRIMARY_AXIS_DIRECTION = -1 if int(
+    (_PRIMARY_AXIS_DEVICE.get("linear_travel") or {}).get("position_direction", -1)
+) < 0 else 1
 _PRIMARY_AXIS_COUNTS_PER_REV = max(1, int(_PRIMARY_AXIS_DEVICE.get("counts_per_rev", 8388608)))
 _PRIMARY_AXIS_MAX_POSITION_REVS = max(1, int(_PRIMARY_AXIS_DEVICE.get("max_position_revolutions", 200)))
 _PRIMARY_AXIS_MAX_POSITION_COUNTS = _PRIMARY_AXIS_COUNTS_PER_REV * _PRIMARY_AXIS_MAX_POSITION_REVS
@@ -479,6 +483,7 @@ def capability_manifest():
             "device": _HMI_DEVICE_ORDER[0] if _LINEAR_TRAVEL_PROFILE else None,
             "logical_axis": _PRIMARY_AXIS_LABEL if _LINEAR_TRAVEL_PROFILE else None,
             "counts_per_rev": _PRIMARY_AXIS_COUNTS_PER_REV if _LINEAR_TRAVEL_PROFILE else None,
+            "position_direction": _PRIMARY_AXIS_DIRECTION if _LINEAR_TRAVEL_PROFILE else None,
             "calibration_actions_available": True,
             "calibration_actions_reason": "manual_endpoint_recording",
             "calibration_engine": "manual_endpoint_recording_v1",
@@ -693,7 +698,7 @@ def _travel_command_guard(clean, device):
     device_state = ui_state.get("devices", {}).get(device, {})
     raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
     try:
-        config = normalize_travel_config(raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV)
+        config = normalize_travel_config(raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV, _PRIMARY_AXIS_DIRECTION)
     except TravelConfigError:
         return "invalid_persisted_travel_config"
     if cmd == "set_zero":
@@ -712,8 +717,8 @@ def _travel_command_guard(clean, device):
         return "position_unavailable"
     safe_left = int(config.safe_left_counts)
     safe_right = int(config.safe_right_counts)
-    clean["min_pos"] = safe_left
-    clean["max_pos"] = safe_right
+    clean["min_pos"] = min(safe_left, safe_right)
+    clean["max_pos"] = max(safe_left, safe_right)
     if cmd == "move_abs":
         requested = int(clean["pos"])
     elif cmd == "move_rel":
@@ -722,7 +727,7 @@ def _travel_command_guard(clean, device):
         requested = current + int(clean["target_delta_counts"])
     else:
         return None
-    if requested < safe_left or requested > safe_right:
+    if requested < min(safe_left, safe_right) or requested > max(safe_left, safe_right):
         return "target_outside_safe_travel"
     return None
 
@@ -1487,7 +1492,7 @@ const PRIMARY_AXIS_MAX_ACCEL_RPM_S = __PRIMARY_AXIS_MAX_ACCEL_RPM_S__;
 const AXIS_CONFIG_BY_DEVICE = __AXIS_CONFIG_BY_DEVICE__;
 const ASSEMBLED_DEVICE_ORDER = __ASSEMBLED_DEVICE_ORDER__;
 const LINEAR_TRAVEL_AVAILABLE = __LINEAR_TRAVEL_AVAILABLE__;
-const AXIS_DIR = -1;
+const AXIS_DIR = __PRIMARY_AXIS_DIRECTION__;
 const LANG_KEY = 'mctivity_lang';
 const API_TOKEN_KEY = 'MCTIVITY_API_TOKEN';
 function axisConfig(device = activeDevice) {
@@ -2869,9 +2874,10 @@ function showApiError(data) {
     openDiagModal(text.unsupportedCommand, text.requiredCapability + ': ' + required);
     return;
   }
+  const detail = data.detail || data.reason || '';
   openDiagModal(
     currentLang === 'zh' ? '命令未执行' : 'Command not executed',
-    String(data.error || (currentLang === 'zh' ? '未知错误' : 'unknown error'))
+    String(data.error || (currentLang === 'zh' ? '未知错误' : 'unknown error')) + (detail ? '：' + detail : '')
   );
 }
 async function api(payload) {
@@ -3489,7 +3495,9 @@ function renderTravelModel(model, status) {
   setText('travelRightLabel', right === null || right === undefined ? '右端 --' : '右端 ' + fmt(right));
   setText('travelPositionLabel', pos === null || pos === undefined ? '当前位置 --' : '当前位置 ' + fmt(pos));
   setText('travelTargetValue', target === null || target === undefined ? '--' : fmt(target) + ' cnt');
-  setText('travelSafeRangeValue', safeLeft === null || safeLeft === undefined ? '--' : fmt(safeLeft) + ' ~ ' + fmt(safeRight) + ' cnt');
+  const safeMin = guard.safe_min_counts ?? (safeLeft === null || safeLeft === undefined || safeRight === null || safeRight === undefined ? null : Math.min(safeLeft, safeRight));
+  const safeMax = guard.safe_max_counts ?? (safeLeft === null || safeLeft === undefined || safeRight === null || safeRight === undefined ? null : Math.max(safeLeft, safeRight));
+  setText('travelSafeRangeValue', safeMin === null || safeMin === undefined ? '--' : fmt(safeMin) + ' ~ ' + fmt(safeMax) + ' cnt');
   const anti = data.anti_sway || {};
   const antiText = anti.ready ? ('已准备 ' + String(anti.sway_period_ms) + ' ms') : (anti.enabled ? '待配置' : '关闭');
   setText('travelAntiSwayValue', antiText);
@@ -3511,7 +3519,13 @@ function renderTravelModel(model, status) {
   const clearButton = document.getElementById('travelClear');
   if (leftButton) leftButton.disabled = !recordingAvailable;
   if (rightButton) rightButton.disabled = !recordingAvailable;
-  if (clearButton) clearButton.disabled = Boolean(status && (status.enabled || status.servo_request || status.moving));
+  // Clearing is a non-motion operation. Keep the button clickable even when
+  // the fast status cache is stale; the backend still requires a stopped,
+  // disabled axis and returns a precise error if that guard is not met.
+  if (clearButton) {
+    clearButton.disabled = false;
+    clearButton.title = currentLang === 'zh' ? '仅在轴已停止且失能时执行' : 'Available only while the axis is stopped and disabled';
+  }
   const reasons = Array.isArray(guard.reasons) ? guard.reasons : [];
   setText('travelReason', valid
     ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '两端已标定；软件行程限制已生效。')
@@ -4394,6 +4408,7 @@ bootstrapUi();
 
 HTML = HTML.replace("__PRIMARY_AXIS_COUNTS_PER_REV__", str(_PRIMARY_AXIS_COUNTS_PER_REV))
 HTML = HTML.replace("__PRIMARY_AXIS_LABEL__", _PRIMARY_AXIS_LABEL)
+HTML = HTML.replace("__PRIMARY_AXIS_DIRECTION__", str(_PRIMARY_AXIS_DIRECTION))
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_POSITION_COUNTS__", str(_PRIMARY_AXIS_MAX_POSITION_COUNTS))
 HTML = HTML.replace("__PRIMARY_AXIS_MAX_POSITION_REVS__", str(_PRIMARY_AXIS_MAX_POSITION_REVS))
 HTML = HTML.replace("__PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS__", str(_PRIMARY_AXIS_DEFAULT_RELATIVE_COUNTS))
@@ -4590,10 +4605,13 @@ def travel_status(device):
     device_state = ui_state.get("devices", {}).get(device, {})
     raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
     try:
-        model = travel_ui_model(status, raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV)
+        model = travel_ui_model(status, raw_travel, _PRIMARY_AXIS_COUNTS_PER_REV, _PRIMARY_AXIS_DIRECTION)
         record_ok, record_reason = endpoint_recording_guard(status)
         model["recording_available"] = record_ok
         model["recording_reason"] = record_reason
+        clear_ok, clear_reason = clear_calibration_guard(status)
+        model["clear_available"] = clear_ok
+        model["clear_reason"] = clear_reason
     except Exception as exc:
         model = {
             "available": True,
@@ -4602,6 +4620,8 @@ def travel_status(device):
             "calibration_state": "failed",
             "calibration_actions_available": False,
             "calibration_actions_reason": "invalid_persisted_config",
+            "clear_available": clear_calibration_guard(status)[0],
+            "clear_reason": clear_calibration_guard(status)[1],
             "error": str(exc),
         }
     return {"ok": True, "device": device, "travel": model}
@@ -4623,7 +4643,13 @@ def record_travel_endpoint(device, side):
     device_state = ui_state.get("devices", {}).get(device, {})
     raw_travel = device_state.get("travel", {}) if isinstance(device_state, dict) else {}
     try:
-        updated = record_manual_endpoint(raw_travel, side, status.get("pos"), _PRIMARY_AXIS_COUNTS_PER_REV)
+        updated = record_manual_endpoint(
+            raw_travel,
+            side,
+            status.get("pos"),
+            _PRIMARY_AXIS_COUNTS_PER_REV,
+            _PRIMARY_AXIS_DIRECTION,
+        )
     except (TravelConfigError, TypeError, ValueError) as exc:
         return {"ok": False, "error": "endpoint_recording_invalid", "detail": str(exc)}, 409
     next_state = dict(device_state) if isinstance(device_state, dict) else {}
@@ -4644,8 +4670,9 @@ def clear_travel_endpoints(device):
     if not isinstance(response, dict) or not response.get("ok"):
         return response if isinstance(response, dict) else {"ok": False, "error": "status_unavailable"}, 503
     status = response.get("status") if isinstance(response.get("status"), dict) else {}
-    if status.get("moving") or status.get("enabled") or status.get("servo_request"):
-        return {"ok": False, "error": "clear_requires_disabled_stopped_axis"}, 409
+    allowed, reason = clear_calibration_guard(status)
+    if not allowed:
+        return {"ok": False, "error": reason}, 409
     ui_state = load_ui_state()
     device_state = ui_state.get("devices", {}).get(device, {})
     next_state = dict(device_state) if isinstance(device_state, dict) else {}

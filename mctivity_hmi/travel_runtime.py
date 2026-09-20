@@ -34,6 +34,7 @@ class TravelConfigError(ValueError):
 @dataclass(frozen=True)
 class TravelConfig:
     counts_per_rev: int
+    position_direction: int = 1
     left_limit_counts: int | None = None
     right_limit_counts: int | None = None
     safety_margin_counts: int = 100
@@ -50,20 +51,21 @@ class TravelConfig:
             self.calibration_state == "both_valid"
             and self.left_limit_counts is not None
             and self.right_limit_counts is not None
-            and self.left_limit_counts < self.right_limit_counts
+            and self.position_direction * self.left_limit_counts
+            < self.position_direction * self.right_limit_counts
         )
 
     @property
     def safe_left_counts(self) -> int | None:
         if self.left_limit_counts is None:
             return None
-        return self.left_limit_counts + self.safety_margin_counts
+        return self.left_limit_counts + self.position_direction * self.safety_margin_counts
 
     @property
     def safe_right_counts(self) -> int | None:
         if self.right_limit_counts is None:
             return None
-        return self.right_limit_counts - self.safety_margin_counts
+        return self.right_limit_counts - self.position_direction * self.safety_margin_counts
 
     @property
     def anti_sway_ready(self) -> bool:
@@ -90,12 +92,27 @@ def _int(value: Any, *, name: str, minimum: int = INT32_MIN, maximum: int = INT3
     return number
 
 
-def normalize_travel_config(raw: Mapping[str, Any] | None, counts_per_rev: int) -> TravelConfig:
+def _position_direction(value: Any) -> int:
+    try:
+        direction = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TravelConfigError("position_direction must be -1 or 1") from exc
+    if direction not in (-1, 1):
+        raise TravelConfigError("position_direction must be -1 or 1")
+    return direction
+
+
+def normalize_travel_config(
+    raw: Mapping[str, Any] | None,
+    counts_per_rev: int,
+    position_direction: int = 1,
+) -> TravelConfig:
     """Normalize persisted travel UI state without making any drive request."""
 
     if not isinstance(raw, Mapping):
         raw = {}
     cpr = _int(counts_per_rev, name="counts_per_rev", minimum=1, maximum=INT32_MAX)
+    direction = _position_direction(position_direction)
     state = str(raw.get("calibration_state", "uncalibrated")).strip().lower()
     if state not in CALIBRATION_STATES:
         raise TravelConfigError("invalid calibration_state")
@@ -109,9 +126,9 @@ def normalize_travel_config(raw: Mapping[str, Any] | None, counts_per_rev: int) 
     left = optional_count("left_limit_counts")
     right = optional_count("right_limit_counts")
     margin = _int(raw.get("safety_margin_counts", 100), name="safety_margin_counts", minimum=0)
-    if left is not None and right is not None and left >= right:
-        raise TravelConfigError("left_limit_counts must be below right_limit_counts")
-    if left is not None and right is not None and left + margin >= right - margin:
+    if left is not None and right is not None and direction * left >= direction * right:
+        raise TravelConfigError("left_limit_counts must be on the physical left of right_limit_counts")
+    if left is not None and right is not None and direction * left + margin >= direction * right - margin:
         raise TravelConfigError("safety margin leaves no usable travel")
     if state == "both_valid" and (left is None or right is None):
         raise TravelConfigError("both_valid requires both endpoints")
@@ -142,6 +159,7 @@ def normalize_travel_config(raw: Mapping[str, Any] | None, counts_per_rev: int) 
 
     return TravelConfig(
         counts_per_rev=cpr,
+        position_direction=direction,
         left_limit_counts=left,
         right_limit_counts=right,
         safety_margin_counts=margin,
@@ -163,7 +181,9 @@ def validate_target_counts(target_counts: int, config: TravelConfig) -> tuple[bo
         return False, str(exc)
     if not config.endpoints_valid:
         return False, "travel_not_calibrated"
-    if target < config.safe_left_counts or target > config.safe_right_counts:
+    safe_min = min(config.safe_left_counts, config.safe_right_counts)
+    safe_max = max(config.safe_left_counts, config.safe_right_counts)
+    if target < safe_min or target > safe_max:
         return False, "target_outside_safe_travel"
     return True, None
 
@@ -193,8 +213,14 @@ def build_travel_guard(status: Mapping[str, Any] | None, config: TravelConfig) -
     percent = None
     if config.safe_left_counts is not None and config.safe_right_counts is not None and position_counts is not None:
         span = config.safe_right_counts - config.safe_left_counts
-        if span > 0:
+        if span != 0:
             percent = max(0.0, min(100.0, (position_counts - config.safe_left_counts) * 100.0 / span))
+
+    safe_min = None
+    safe_max = None
+    if config.safe_left_counts is not None and config.safe_right_counts is not None:
+        safe_min = min(config.safe_left_counts, config.safe_right_counts)
+        safe_max = max(config.safe_left_counts, config.safe_right_counts)
 
     return {
         "ready": not reasons,
@@ -205,6 +231,8 @@ def build_travel_guard(status: Mapping[str, Any] | None, config: TravelConfig) -
         "right_limit_counts": config.right_limit_counts,
         "safe_left_counts": config.safe_left_counts,
         "safe_right_counts": config.safe_right_counts,
+        "safe_min_counts": safe_min,
+        "safe_max_counts": safe_max,
         "position_percent": percent,
         "anti_sway_enabled": config.anti_sway_enabled,
         "anti_sway_ready": config.anti_sway_ready,
@@ -230,13 +258,28 @@ def endpoint_recording_guard(status: Mapping[str, Any] | None) -> tuple[bool, st
     return True, None
 
 
-def record_manual_endpoint(raw: Mapping[str, Any] | None, side: str, position_counts: Any, counts_per_rev: int) -> dict[str, Any]:
+def clear_calibration_guard(status: Mapping[str, Any] | None) -> tuple[bool, str | None]:
+    """Allow clearing taught limits only while the axis is stopped and disabled."""
+
+    status = status if isinstance(status, Mapping) else {}
+    if status.get("moving") or status.get("enabled") or status.get("servo_request"):
+        return False, "clear_requires_disabled_stopped_axis"
+    return True, None
+
+
+def record_manual_endpoint(
+    raw: Mapping[str, Any] | None,
+    side: str,
+    position_counts: Any,
+    counts_per_rev: int,
+    position_direction: int = 1,
+) -> dict[str, Any]:
     """Return a new persisted config after recording one stopped endpoint."""
 
     side_name = str(side or "").strip().lower()
     if side_name not in {"left", "right"}:
         raise TravelConfigError("endpoint side must be left or right")
-    config = normalize_travel_config(raw, counts_per_rev)
+    config = normalize_travel_config(raw, counts_per_rev, position_direction)
     position = _int(position_counts, name="position_counts")
     values = {
         "left_limit_counts": config.left_limit_counts,
@@ -252,14 +295,19 @@ def record_manual_endpoint(raw: Mapping[str, Any] | None, side: str, position_co
     left = values["left_limit_counts"]
     right = values["right_limit_counts"]
     values["calibration_state"] = "both_valid" if left is not None and right is not None else f"{side_name}_valid"
-    normalize_travel_config(values, counts_per_rev)
+    normalize_travel_config(values, counts_per_rev, position_direction)
     return values
 
 
-def travel_ui_model(status: Mapping[str, Any] | None, raw_config: Mapping[str, Any] | None, counts_per_rev: int) -> dict[str, Any]:
+def travel_ui_model(
+    status: Mapping[str, Any] | None,
+    raw_config: Mapping[str, Any] | None,
+    counts_per_rev: int,
+    position_direction: int = 1,
+) -> dict[str, Any]:
     """Return JSON-ready UI data for a single linear axis."""
 
-    config = normalize_travel_config(raw_config, counts_per_rev)
+    config = normalize_travel_config(raw_config, counts_per_rev, position_direction)
     guard = build_travel_guard(status, config)
     return {
         "available": True,
