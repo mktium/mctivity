@@ -1503,6 +1503,11 @@ function axisConfig(device = activeDevice) {
   };
 }
 function rpmToCountsS(value, device = activeDevice) { return Math.trunc(Number(value) * axisConfig(device).counts_per_rev / 60); }
+// Position targets already use AXIS_DIR; native PV velocity commands must use
+// the same mechanical sign convention so forward/reverse agree across modes.
+function velocityCommandCountsS(value, device = activeDevice) {
+  return rpmToCountsS(value, device) * AXIS_DIR;
+}
 function countsSToRpm(value, device = activeDevice) { return Number(value) * 60 / axisConfig(device).counts_per_rev; }
 function clampVelocityRpm(value, device = activeDevice) {
   const config = axisConfig(device);
@@ -3771,11 +3776,11 @@ function handleVelocitySliderInput() {
     const liveStatus = currentStatus(device);
     const liveTargetCps = Number(liveStatus && liveStatus.jog_velocity_cps || 0);
     if (!(activeDevice === device && liveStatus && liveStatus.enabled && liveStatus.control_mode === 'velocity' && liveTargetCps !== 0)) return;
-    const direction = liveTargetCps < 0 ? -1 : 1;
+    const direction = liveTargetCps * AXIS_DIR < 0 ? -1 : 1;
     if (syncVelocityEnabled) {
       syncJogVelocity(direction * requestedRpm).catch(err => console.error(err));
     } else {
-      apiForDevice(device, {cmd:'jog_velocity', velocity:rpmToCountsS(direction * requestedRpm, device)}).catch(err => console.error(err));
+      apiForDevice(device, {cmd:'jog_velocity', velocity:velocityCommandCountsS(direction * requestedRpm, device)}).catch(err => console.error(err));
     }
   }, 150);
 }
@@ -3894,7 +3899,7 @@ function syncDisableAxes() {
 function syncJogVelocity(rpmValue) {
   const profile = currentProfile(activeDevice);
   const direction = Number(rpmValue) < 0 ? -1 : 1;
-  return runSyncStartCommand({cmd:'sync_jog_velocity', velocity:direction * rpmToCountsS(clampVelocityRpm(Math.abs(Number(rpmValue)), activeDevice), activeDevice), acceleration_rpm_s:Number(profile.velocityAccelRpmS || axisConfig(activeDevice).default_accel_rpm_s)}, true);
+  return runSyncStartCommand({cmd:'sync_jog_velocity', velocity:velocityCommandCountsS(direction * clampVelocityRpm(Math.abs(Number(rpmValue)), activeDevice), activeDevice), acceleration_rpm_s:Number(profile.velocityAccelRpmS || axisConfig(activeDevice).default_accel_rpm_s)}, true);
 }
 function syncStopMotion() {
   if (!syncVelocityEnabled || !capabilityState.syncVelocityAvailable) return Promise.resolve({ok:false, error:'sync_switch_off'});
@@ -4262,7 +4267,7 @@ function moveRel() {
 }
 function jogVelocity(v) {
   if (syncVelocityEnabled) return syncJogVelocity(v);
-  return api({cmd:'jog_velocity', velocity:rpmToCountsS(v, activeDevice)});
+  return api({cmd:'jog_velocity', velocity:velocityCommandCountsS(v, activeDevice)});
 }
 function sendTorque() { return api({cmd:'torque_cmd', torque:Number(torqueCmd.value)}); }
 function savePoint(n) { if (currentStatus()) { currentProfile().points[n] = axisCounts(Number(currentStatus().pos)); updateSliders(); } }
