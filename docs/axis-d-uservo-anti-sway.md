@@ -89,9 +89,12 @@ the fixed 976x731 touch display.
 
 The persisted `travel` block is runtime-owned. Ordinary HMI profile saves
 (speed, mode, slider, and transmission settings) are merged into the existing
-device state and cannot remove recorded endpoints. This prevents a successful
-endpoint record from appearing to work in the page and then disappearing after
-the next periodic profile save.
+device state and cannot remove recorded endpoints. The ordinary `/api/ui_state`
+path filters runtime-owned endpoint, calibration-version, calibration-state,
+safety-margin, and software-zero fields; only the dedicated endpoint record,
+clear, and zero-reconciliation paths can replace those fields. This prevents a
+successful endpoint record from appearing to work in the page and then
+disappearing after the next periodic profile save.
 
 The HMI panel is deliberately compact for the fixed touch display. Its short
 viewport layout keeps the position rail, endpoint/target metrics, calibration

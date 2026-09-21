@@ -4675,6 +4675,18 @@ def _default_ui_state():
     return {"profile": _MODULE_RUNTIME.get("profile"), "devices": {}}
 
 
+_TRAVEL_CALIBRATION_FIELDS = frozenset(
+    {
+        "left_limit_counts",
+        "right_limit_counts",
+        "safety_margin_counts",
+        "calibration_data_version",
+        "calibration_state",
+        "soft_zero_raw",
+    }
+)
+
+
 def _finite_float(value):
     try:
         number = float(value)
@@ -4755,6 +4767,9 @@ def _normalize_ui_device_state(raw):
         normalized_travel = {}
         for key in ("left_limit_counts", "right_limit_counts", "safety_margin_counts", "calibration_data_version", "soft_zero_raw", "sway_period_ms", "residual_sway_limit_counts"):
             if key in travel:
+                if key in {"left_limit_counts", "right_limit_counts"} and travel[key] is None:
+                    normalized_travel[key] = None
+                    continue
                 value = _finite_float(travel[key])
                 if value is not None and value.is_integer():
                     normalized_travel[key] = int(value)
@@ -4795,19 +4810,41 @@ def load_ui_state():
         return normalized
 
 
-def save_ui_state(device, state):
+def save_ui_state(device, state, *, preserve_travel_calibration=True):
     normalized_state = _normalize_ui_device_state(state)
     if device not in _ALLOWED_DEVICE_SET or normalized_state is None:
         raise ValueError("invalid ui state payload")
     with _ui_state_lock:
         merged = load_ui_state()
-        # The browser's ordinary profile save does not carry runtime-owned
-        # travel calibration fields. Merge the validated UI fields into the
-        # existing device state so a speed/mode/slider save cannot erase
-        # endpoints recorded by /api/travel/record.
         existing_state = merged["devices"].get(device, {})
         preserved_state = dict(existing_state) if isinstance(existing_state, dict) else {}
-        preserved_state.update(normalized_state)
+        incoming_travel = normalized_state.get("travel")
+        if isinstance(incoming_travel, dict):
+            existing_travel = preserved_state.get("travel")
+            next_travel = dict(existing_travel) if isinstance(existing_travel, dict) else {}
+            if preserve_travel_calibration:
+                # Ordinary browser profile saves can contain a stale travel
+                # snapshot. Merge only operator-tunable travel settings and
+                # keep runtime-owned calibration/zero fields from the server.
+                next_travel.update(
+                    {
+                        key: value
+                        for key, value in incoming_travel.items()
+                        if key not in _TRAVEL_CALIBRATION_FIELDS
+                    }
+                )
+            else:
+                # The endpoint record/clear paths are the authoritative
+                # writers for calibration fields and must be able to replace
+                # them, including explicit null endpoint values.
+                next_travel.update(incoming_travel)
+            if next_travel:
+                preserved_state["travel"] = next_travel
+            else:
+                preserved_state.pop("travel", None)
+        for key, value in normalized_state.items():
+            if key != "travel":
+                preserved_state[key] = value
         merged["devices"][device] = preserved_state
         directory = os.path.dirname(UI_STATE_PATH)
         if directory:
@@ -4882,7 +4919,7 @@ def _reconcile_travel_zero(device, status, raw_travel):
             next_travel = dict(next_device.get("travel", {}))
             next_travel["soft_zero_raw"] = actual_value
             next_device["travel"] = next_travel
-            save_ui_state(device, next_device)
+            save_ui_state(device, next_device, preserve_travel_calibration=False)
         return status
     if actual_value == persisted_value:
         return status
@@ -4928,7 +4965,7 @@ def record_travel_endpoint(device, side):
         return {"ok": False, "error": "endpoint_recording_invalid", "detail": str(exc)}, 409
     next_state = dict(device_state) if isinstance(device_state, dict) else {}
     next_state["travel"] = updated
-    save_ui_state(device, next_state)
+    save_ui_state(device, next_state, preserve_travel_calibration=False)
     result = travel_status(device)
     result["recorded_side"] = str(side).strip().lower()
     result["recorded_position_counts"] = updated.get(f"{str(side).strip().lower()}_limit_counts")
@@ -4959,7 +4996,7 @@ def clear_travel_endpoints(device):
         "anti_sway_enabled": False,
     })
     next_state["travel"] = travel
-    save_ui_state(device, next_state)
+    save_ui_state(device, next_state, preserve_travel_calibration=False)
     return travel_status(device), 200
 
 

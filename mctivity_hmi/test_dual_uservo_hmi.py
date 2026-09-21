@@ -81,12 +81,54 @@ class DualUservoHmiTests(unittest.TestCase):
                             "calibration_state": "both_valid",
                         },
                     },
+                    preserve_travel_calibration=False,
                 )
                 mctivity_hmi.save_ui_state("mctivity", {"velRpm": 222, "mode": "velocity"})
                 state = mctivity_hmi.load_ui_state()
         self.assertEqual(state["devices"]["mctivity"]["velRpm"], 222)
         self.assertEqual(state["devices"]["mctivity"]["travel"]["left_limit_counts"], 5000)
         self.assertEqual(state["devices"]["mctivity"]["travel"]["right_limit_counts"], -1000)
+
+    def test_stale_travel_snapshot_cannot_erase_runtime_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = str(Path(directory) / "state.json")
+            with mock.patch.object(mctivity_hmi, "UI_STATE_PATH", state_path):
+                mctivity_hmi.save_ui_state(
+                    "mctivity",
+                    {
+                        "travel": {
+                            "left_limit_counts": 5000,
+                            "right_limit_counts": -1000,
+                            "safety_margin_counts": 100,
+                            "calibration_data_version": 1,
+                            "calibration_state": "both_valid",
+                            "anti_sway_enabled": True,
+                            "sway_period_ms": 900,
+                        },
+                    },
+                    preserve_travel_calibration=False,
+                )
+                mctivity_hmi.save_ui_state(
+                    "mctivity",
+                    {
+                        "mode": "position",
+                        "travel": {
+                            "left_limit_counts": None,
+                            "right_limit_counts": None,
+                            "calibration_data_version": 0,
+                            "calibration_state": "uncalibrated",
+                            "anti_sway_enabled": False,
+                            "sway_period_ms": 1150,
+                        },
+                    },
+                )
+                state = mctivity_hmi.load_ui_state()
+        travel = state["devices"]["mctivity"]["travel"]
+        self.assertEqual(travel["left_limit_counts"], 5000)
+        self.assertEqual(travel["right_limit_counts"], -1000)
+        self.assertEqual(travel["calibration_state"], "both_valid")
+        self.assertFalse(travel["anti_sway_enabled"])
+        self.assertEqual(travel["sway_period_ms"], 1150)
 
     def test_poweroff_status_gate_reads_both_uservo_axes(self):
         def status(payload):
