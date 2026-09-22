@@ -185,6 +185,7 @@ class SingleAxisTravelHmiTests(unittest.TestCase):
         self.assertIn("safeLeft !== null && safeRight !== null && safeLeft !== safeRight", html)
         self.assertIn('id="travelSaveSwayPeriod"', html)
         self.assertIn("function saveTravelSwayPeriod()", html)
+        self.assertIn("persistUiState(activeDevice);", html)
         self.assertIn("请先点击“保存”保存摆动周期", html)
         self.assertIn("move_shaped_abs", html)
         self.assertIn("updateTravelSwayConfig", html)

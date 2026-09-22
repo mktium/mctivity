@@ -2201,7 +2201,9 @@ function saveTravelSwayPeriod() {
       if (saveButton) saveButton.textContent = '保存';
     }, 1200);
   }
-  saveUiState(activeDevice);
+  // An explicit save must submit even when the value matches the browser
+  // snapshot; this is what makes the button useful after a fresh page load.
+  persistUiState(activeDevice);
   refreshTravelStatus(activeDevice).catch(() => {});
   return true;
 }
