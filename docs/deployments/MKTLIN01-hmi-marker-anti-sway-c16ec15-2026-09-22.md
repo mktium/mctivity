@@ -54,3 +54,20 @@ EtherCAT PDO, profile, axis environment, or drive command was changed.
 
 No enable, mode switch, calibration, stop, or motion command was sent.
 
+## Follow-up explicit-save deployment
+
+The explicit `保存` action was strengthened after the first HMI deployment so
+it always submits the current period, even when the browser snapshot already
+contains the same value.
+
+- Follow-up commit: `09968f8` (`Force explicit anti-sway period saves`)
+- Follow-up push: completed to the same origin branch.
+- Follow-up backup:
+  `/var/backups/mctivity/hmi-marker-anti-sway-20260922T041932Z`
+- Final deployed HMI SHA-256:
+  `ca40dde7b54f569b92e06a200e9df773d20d5842120ca4b6c8521f2a1aa8cc00`
+- State file SHA-256 remained:
+  `215fa5d260b98b4aa8c7ab729bb0dc5d6e9ad39d72c3acfad0507232f869e4c8`
+- HMI service: `active/running`, restart count `0`.
+- motiond remained PID `736`, restart count `0`.
+
