@@ -984,6 +984,10 @@ button.stop { background:var(--warn); } button.blue { background:var(--theme-dee
 .travel-tuning .travel-period, .travel-tuning .travel-switch { margin-top:0; min-width:0; }
 .travel-tuning .travel-switch { padding:4px 7px; border:1px solid rgba(42,131,183,.22); border-radius:7px; background:#fff; }
 .travel-tuning .travel-switch span { white-space:nowrap; }
+.travel-tuning-actions { display:flex; align-items:center; justify-content:flex-end; gap:5px; min-width:0; }
+.travel-save { min-height:28px; padding:4px 8px; border:1px solid rgba(42,131,183,.28); border-radius:7px; background:#fff; color:var(--theme-deep); font:inherit; font-size:10px; font-weight:900; box-shadow:none; white-space:nowrap; }
+.travel-save:hover { transform:none; box-shadow:none; }
+.travel-save:disabled { opacity:.45; }
 .travel-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-top:6px; }
 .travel-actions button { min-height:30px; padding:4px 6px; border:1px solid rgba(42,131,183,.28); border-radius:7px; background:#fff; color:var(--theme-deep); font:inherit; font-size:10px; font-weight:900; }
 .travel-actions button:disabled { opacity:.45; }
@@ -1279,8 +1283,11 @@ input[type=range] { width:100%; accent-color:var(--theme-blue); touch-action:pan
             <button id="travelClear" class="clear" type="button" onclick="clearTravelEndpoints()">清除标定</button>
           </div>
           <div class="travel-tuning">
-            <label class="travel-period"><span>摆动周期</span><input id="travelSwayPeriod" type="number" min="10" max="10000" step="10" value="1150" onchange="updateTravelSwayConfig()"><span>ms</span></label>
-            <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled onchange="toggleTravelAntiSway()"><span>启用防摇</span></label>
+            <label class="travel-period"><span>摆动周期</span><input id="travelSwayPeriod" type="number" min="10" max="10000" step="10" value="1150"><span>ms</span></label>
+            <div class="travel-tuning-actions">
+              <button id="travelSaveSwayPeriod" class="travel-save" type="button" onclick="saveTravelSwayPeriod()">保存</button>
+              <label class="travel-switch"><input id="travelAntiSwayToggle" type="checkbox" disabled onchange="toggleTravelAntiSway()"><span>启用防摇</span></label>
+            </div>
           </div>
           <div id="travelReason" class="travel-reason">请手动点动到端点并停止后记录；记录按钮不会让电机运动。</div>
         </div>
@@ -2174,7 +2181,7 @@ async function refreshTravelStatus(device) {
   }
   return data;
 }
-function updateTravelSwayConfig() {
+function saveTravelSwayPeriod() {
   const input = document.getElementById('travelSwayPeriod');
   if (!input) return false;
   const period = Math.round(clamp(Number(input.value || 1150), 10, 10000));
@@ -2187,9 +2194,19 @@ function updateTravelSwayConfig() {
   });
   const toggle = document.getElementById('travelAntiSwayToggle');
   if (toggle) toggle.checked = false;
+  const saveButton = document.getElementById('travelSaveSwayPeriod');
+  if (saveButton) {
+    saveButton.textContent = '已保存';
+    window.setTimeout(() => {
+      if (saveButton) saveButton.textContent = '保存';
+    }, 1200);
+  }
   saveUiState(activeDevice);
   refreshTravelStatus(activeDevice).catch(() => {});
   return true;
+}
+function updateTravelSwayConfig() {
+  return saveTravelSwayPeriod();
 }
 function toggleTravelAntiSway() {
   const toggle = document.getElementById('travelAntiSwayToggle');
@@ -3693,7 +3710,9 @@ function renderTravelModel(model, status) {
   const safeMax = guard.safe_max_counts ?? (safeLeft === null || safeLeft === undefined || safeRight === null || safeRight === undefined ? null : Math.max(safeLeft, safeRight));
   setText('travelSafeRangeValue', safeMin === null || safeMin === undefined ? '--' : linearPositionText(safeMin) + ' ~ ' + linearPositionText(safeMax));
   const anti = data.anti_sway || {};
-  const antiText = anti.ready ? ('已准备 ' + String(anti.sway_period_ms) + ' ms') : (anti.enabled ? '待配置' : '关闭');
+  const antiText = anti.enabled
+    ? (anti.ready ? ('已启用 ' + String(anti.sway_period_ms) + ' ms') : '待配置')
+    : (anti.sway_period_ms ? '待启用' : '未配置周期');
   setText('travelAntiSwayValue', antiText);
   const periodInput = document.getElementById('travelSwayPeriod');
   if (periodInput && document.activeElement !== periodInput) {
@@ -3702,6 +3721,8 @@ function renderTravelModel(model, status) {
       : String(anti.sway_period_ms);
   }
   if (periodInput) periodInput.disabled = Boolean(anti.enabled) || capabilityState.commissioningInhibit;
+  const savePeriodButton = document.getElementById('travelSaveSwayPeriod');
+  if (savePeriodButton) savePeriodButton.disabled = Boolean(anti.enabled) || capabilityState.commissioningInhibit;
   const toggle = document.getElementById('travelAntiSwayToggle');
   if (toggle) {
     toggle.checked = Boolean(anti.enabled);
@@ -3729,11 +3750,15 @@ function renderTravelModel(model, status) {
   }
   const reasons = Array.isArray(guard.reasons) ? guard.reasons : [];
   setText('travelReason', valid
-    ? (reasons.length ? '当前不可启动：' + reasons.join('、') : '两端已标定；拖动目标滑块后按“移动到目标”，滑块不会自动运动。')
+    ? (reasons.length
+      ? '当前不可启动：' + reasons.join('、')
+      : (!anti.ready && !anti.enabled
+        ? (anti.sway_period_ms ? '两端已标定；周期已保存，可勾选“启用防摇”。' : '两端已标定；请先点击“保存”保存摆动周期，再启用防摇。')
+        : '两端已标定；拖动目标滑块后按“移动到目标”，滑块不会自动运动。'))
     : (recordingAvailable ? '轴已停止：点动到左/右端后分别记录；记录不会让电机运动。' : '当前不可记录：' + String(data.recording_reason || '请停机并检查通信/使能状态。')));
   const rail = document.getElementById('travelRailSafe');
   const marker = document.getElementById('travelMarker');
-  if (rail && marker && safeLeft !== null && safeRight !== null && safeRight > safeLeft) {
+  if (rail && marker && safeLeft !== null && safeRight !== null && safeLeft !== safeRight) {
     rail.style.left = '0%';
     rail.style.width = '100%';
     const pct = guard.position_percent === null || guard.position_percent === undefined ? 0 : Number(guard.position_percent);
@@ -3935,7 +3960,9 @@ function updateSliders() {
   const speed = Number(absSpeedRpm.value), accel = Number(absAccel.value);
   const gearSlaveName = axisDisplayName(activeDevice);
   const status = currentStatus();
-  const current = status ? axisCounts(Number(status.pos)) : abs;
+  // status.pos is already the native encoder count. Keep it native here;
+  // transmissionValueFromCounts applies AXIS_DIR exactly once.
+  const currentNative = status ? Number(status.pos) : axisCounts(abs);
   const isLinear = tx.type === 'linear';
   const targetValue = transmissionValueFromCounts(abs, profile);
   const relValue = transmissionValueFromCounts(rel, profile);
@@ -3964,7 +3991,7 @@ function updateSliders() {
   if (positionAxis) positionAxis.classList.toggle('linear-mode', isLinear);
   const currentPositionMarker = document.getElementById('currentPositionMarker');
   if (currentPositionMarker) {
-    const currentLoadPos = transmissionValueFromCounts(current, profile);
+    const currentLoadPos = transmissionValueFromCounts(currentNative, profile);
     const displayLoadMin = Math.min(displayMinLoad, displayMaxLoad);
     const displayLoadMax = Math.max(displayMinLoad, displayMaxLoad);
     const loadSpan = Math.max(0.001, displayLoadMax - displayLoadMin);

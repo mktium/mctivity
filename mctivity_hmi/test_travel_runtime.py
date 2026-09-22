@@ -67,6 +67,29 @@ class TravelRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(model["guard"]["ui_target_bounds"], (-900, 4900))
 
+    def test_position_percent_follows_physical_left_to_right_when_encoder_is_reversed(self):
+        reversed_config = {
+            "left_limit_counts": 1000,
+            "right_limit_counts": -5000,
+            "safety_margin_counts": 100,
+            "calibration_state": "both_valid",
+        }
+        left = build_travel_guard(
+            {"pos": 900, "target": 900},
+            normalize_travel_config(reversed_config, 10000, position_direction=-1),
+        )
+        middle = build_travel_guard(
+            {"pos": -2000, "target": -2000},
+            normalize_travel_config(reversed_config, 10000, position_direction=-1),
+        )
+        right = build_travel_guard(
+            {"pos": -4900, "target": -4900},
+            normalize_travel_config(reversed_config, 10000, position_direction=-1),
+        )
+        self.assertEqual(left["position_percent"], 0.0)
+        self.assertAlmostEqual(middle["position_percent"], 50.0)
+        self.assertEqual(right["position_percent"], 100.0)
+
     def test_invalid_endpoints_and_margin_fail_closed(self):
         with self.assertRaises(TravelConfigError):
             self.valid_config(left_limit_counts=10, right_limit_counts=10)

@@ -87,6 +87,11 @@ not as the operator's target-position unit. The position screen uses compact
 horizontal speed and acceleration sliders so the travel card remains usable on
 the fixed 976x731 touch display.
 
+The current-position arrow uses the native encoder count exactly once before
+converting it to the signed linear position. The travel rail accepts either
+physical encoder order, so Axis D's reversed raw-count direction still maps
+physical left to the left side of the rail and physical right to the right side.
+
 The persisted `travel` block is runtime-owned. Ordinary HMI profile saves
 (speed, mode, slider, and transmission settings) are merged into the existing
 device state and cannot remove recorded endpoints. The ordinary `/api/ui_state`
@@ -120,14 +125,15 @@ default damping parameter is 50 permille; the period must be between 10 ms and
 10000 ms. Native PV velocity control is unchanged and does not use this shaper.
 
 The fixed HMI exposes the period and an explicit anti-sway switch only after
-both endpoints are valid. Saving the period does not enable the feature; the
-switch must be turned on separately. With the switch on, absolute and relative
-position actions are converted to `move_shaped_abs`, while direct velocity/jog
-actions remain native PV. The backend rechecks the persisted configuration,
-travel bounds, and numeric limits, so a stale or malformed browser request is
-rejected. The feature remains off by default and has not been motion-tested in
-this deployment; first motion and period tuning still require a separate
-operator-approved plan.
+both endpoints are valid. The period has an explicit `保存` button, so the
+default value can be persisted without changing it away and back; saving the
+period does not enable the feature, and the switch must be turned on separately.
+With the switch on, absolute and relative position actions are converted to
+`move_shaped_abs`, while direct velocity/jog actions remain native PV. The
+backend rechecks the persisted configuration, travel bounds, and numeric
+limits, so a stale or malformed browser request is rejected. The feature
+remains off by default and has not been motion-tested in this deployment; first
+motion and period tuning still require a separate operator-approved plan.
 
 The HMI also persists the motiond software-zero raw count alongside the taught
 endpoints. On a service restart it may restore that coordinate only when the
