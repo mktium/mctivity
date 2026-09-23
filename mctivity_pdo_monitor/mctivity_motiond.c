@@ -3304,7 +3304,9 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
     if (!native_pv_control) {
         ax->target_velocity_cps = clamp_i64_to_i32(
             ((int64_t)s->target_raw - (int64_t)previous_target_raw) * 1000LL);
-        update_csp_target_diagnostics(ax, previous_target_raw);
+        if (s->enabled && s->servo_request) {
+            update_csp_target_diagnostics(ax, previous_target_raw);
+        }
     }
     if (axis_is_fv3_hardware(axis) && s->servo_request && s->enabled) {
         /* FV3 PP: keep motion active while trigger/stop window alive, target gap exists, or position is still changing. */

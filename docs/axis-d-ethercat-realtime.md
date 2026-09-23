@@ -100,7 +100,8 @@ changing any control output:
 - `csp_diag_target_hold_cycles` counts cycles where the target did not change;
   `csp_diag_target_update_cycles` counts non-zero target updates.
 - `csp_diag_max_abs_target_*` records the largest absolute target derivative
-  observed since the daemon started.
+  observed while the axis is enabled with a servo request; startup and
+  disabled-position holding are excluded.
 
 These fields are diagnostic only. They do not alter `0x607A`, `0x60FF`, the
 controlword, the commanded mode, the EtherCAT period, or any enable/motion
