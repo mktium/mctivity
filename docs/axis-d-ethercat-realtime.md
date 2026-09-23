@@ -94,14 +94,28 @@ changing any control output:
   differences of that commanded velocity and acceleration. They show the
   continuity seen by the CSP target generator, not a drive-internal torque
   estimate.
+- `csp_diag_motion_id` increments when a new CSP position move is armed. The
+  derivative counters and maxima are reset for that move, and the first target
+  sample after the target is re-based to the actual position is treated as a
+  baseline rather than as motion.
 - `csp_diag_actual_step_counts` is the last `0x6064` change. The related
   `*_estimate_*` fields are 1 ms finite-difference estimates and must be read
   together with `rt_skipped_periods` when a deadline was missed.
 - `csp_diag_target_hold_cycles` counts cycles where the target did not change;
   `csp_diag_target_update_cycles` counts non-zero target updates.
+- `csp_diag_*` derivative values and maxima are signed 64-bit quantities in the
+  status JSON. This avoids the prior `INT32` saturation when acceleration or
+  jerk was calculated from integer-count target steps.
 - `csp_diag_max_abs_target_*` records the largest absolute target derivative
-  observed while the axis is enabled with a servo request; startup and
-  disabled-position holding are excluded.
+  observed for the current motion session while the axis is enabled with a
+  servo request; startup, target re-basing, and disabled-position holding are
+  excluded.
+
+Single-axis Uservo CSP `move_abs` and `move_rel` commands use the same smooth
+velocity profile as the shaped-position path, but without enabling the ZVD
+anti-sway shaper. The profile ramps velocity with a smooth acceleration
+envelope, keeps the 1 ms `0x607A` update contract, and leaves native PV
+commands unchanged.
 
 These fields are diagnostic only. They do not alter `0x607A`, `0x60FF`, the
 controlword, the commanded mode, the EtherCAT period, or any enable/motion
