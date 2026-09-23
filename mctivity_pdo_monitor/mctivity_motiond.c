@@ -416,6 +416,30 @@ typedef struct {
     int32_t stop_velocity_cps;
     uint32_t stop_decel_cps2;
     int32_t target_velocity_cps;
+    /* Read-only CSP trajectory diagnostics. These fields never participate in
+     * control decisions; they expose the last and worst host-generated
+     * setpoint derivatives so motion can be diagnosed without RT logging. */
+    int csp_diag_have_target_sample;
+    int csp_diag_have_actual_sample;
+    int32_t csp_diag_previous_target_velocity_cps;
+    int32_t csp_diag_previous_target_accel_cps2;
+    int32_t csp_diag_previous_actual_position_raw;
+    int32_t csp_diag_previous_actual_velocity_cps;
+    int32_t csp_diag_previous_actual_accel_cps2;
+    int32_t csp_diag_target_step_counts;
+    int32_t csp_diag_target_velocity_cps;
+    int32_t csp_diag_target_accel_cps2;
+    int32_t csp_diag_target_jerk_cps3;
+    int32_t csp_diag_actual_step_counts;
+    int32_t csp_diag_actual_velocity_estimate_cps;
+    int32_t csp_diag_actual_accel_estimate_cps2;
+    int32_t csp_diag_actual_jerk_estimate_cps3;
+    int32_t csp_diag_max_abs_target_step_counts;
+    int32_t csp_diag_max_abs_target_velocity_cps;
+    int32_t csp_diag_max_abs_target_accel_cps2;
+    int32_t csp_diag_max_abs_target_jerk_cps3;
+    uint64_t csp_diag_target_hold_cycles;
+    uint64_t csp_diag_target_update_cycles;
     int have_last_cycle_target;
     int8_t commanded_mode;
     int pp_pulse_cycles;
@@ -1248,6 +1272,91 @@ static int64_t i64_abs_diff_i32(int32_t a, int32_t b)
     return d < 0 ? -d : d;
 }
 
+static void update_csp_diag_max_abs(int32_t value, int32_t *maximum)
+{
+    if (i64_abs_diff_i32(value, 0) > i64_abs_diff_i32(*maximum, 0)) {
+        *maximum = value;
+    }
+}
+
+static void update_csp_actual_diagnostics(axis_runtime_t *ax)
+{
+    status_t *s = &ax->st;
+    int32_t position_step;
+    int32_t velocity_estimate;
+    int32_t acceleration_estimate;
+    int32_t jerk_estimate;
+
+    if (!ax->csp_diag_have_actual_sample) {
+        ax->csp_diag_have_actual_sample = 1;
+        ax->csp_diag_previous_actual_position_raw = s->pos_raw;
+        ax->csp_diag_previous_actual_velocity_cps = 0;
+        ax->csp_diag_previous_actual_accel_cps2 = 0;
+        ax->csp_diag_actual_step_counts = 0;
+        ax->csp_diag_actual_velocity_estimate_cps = 0;
+        ax->csp_diag_actual_accel_estimate_cps2 = 0;
+        ax->csp_diag_actual_jerk_estimate_cps3 = 0;
+        return;
+    }
+
+    position_step = clamp_i64_to_i32(
+        (int64_t)s->pos_raw - (int64_t)ax->csp_diag_previous_actual_position_raw);
+    velocity_estimate = clamp_i64_to_i32((int64_t)position_step * 1000LL);
+    acceleration_estimate = clamp_i64_to_i32(
+        ((int64_t)velocity_estimate - (int64_t)ax->csp_diag_previous_actual_velocity_cps) * 1000LL);
+    jerk_estimate = clamp_i64_to_i32(
+        ((int64_t)acceleration_estimate - (int64_t)ax->csp_diag_previous_actual_accel_cps2) * 1000LL);
+
+    ax->csp_diag_actual_step_counts = position_step;
+    ax->csp_diag_actual_velocity_estimate_cps = velocity_estimate;
+    ax->csp_diag_actual_accel_estimate_cps2 = acceleration_estimate;
+    ax->csp_diag_actual_jerk_estimate_cps3 = jerk_estimate;
+    ax->csp_diag_previous_actual_position_raw = s->pos_raw;
+    ax->csp_diag_previous_actual_velocity_cps = velocity_estimate;
+    ax->csp_diag_previous_actual_accel_cps2 = acceleration_estimate;
+}
+
+static void update_csp_target_diagnostics(axis_runtime_t *ax, int32_t previous_target_raw)
+{
+    status_t *s = &ax->st;
+    int32_t target_step;
+    int32_t target_velocity;
+    int32_t target_accel;
+    int32_t target_jerk;
+
+    target_step = clamp_i64_to_i32(
+        (int64_t)s->target_raw - (int64_t)previous_target_raw);
+    target_velocity = clamp_i64_to_i32((int64_t)target_step * 1000LL);
+    if (!ax->csp_diag_have_target_sample) {
+        ax->csp_diag_have_target_sample = 1;
+        ax->csp_diag_previous_target_velocity_cps = target_velocity;
+        ax->csp_diag_previous_target_accel_cps2 = 0;
+        target_accel = 0;
+        target_jerk = 0;
+    } else {
+        target_accel = clamp_i64_to_i32(
+            ((int64_t)target_velocity - (int64_t)ax->csp_diag_previous_target_velocity_cps) * 1000LL);
+        target_jerk = clamp_i64_to_i32(
+            ((int64_t)target_accel - (int64_t)ax->csp_diag_previous_target_accel_cps2) * 1000LL);
+    }
+
+    ax->csp_diag_target_step_counts = target_step;
+    ax->csp_diag_target_velocity_cps = target_velocity;
+    ax->csp_diag_target_accel_cps2 = target_accel;
+    ax->csp_diag_target_jerk_cps3 = target_jerk;
+    ax->csp_diag_previous_target_velocity_cps = target_velocity;
+    ax->csp_diag_previous_target_accel_cps2 = target_accel;
+    if (target_step == 0) {
+        ax->csp_diag_target_hold_cycles++;
+    } else {
+        ax->csp_diag_target_update_cycles++;
+    }
+    update_csp_diag_max_abs(target_step, &ax->csp_diag_max_abs_target_step_counts);
+    update_csp_diag_max_abs(target_velocity, &ax->csp_diag_max_abs_target_velocity_cps);
+    update_csp_diag_max_abs(target_accel, &ax->csp_diag_max_abs_target_accel_cps2);
+    update_csp_diag_max_abs(target_jerk, &ax->csp_diag_max_abs_target_jerk_cps3);
+}
+
 static int ready_for_motion(const axis_runtime_t *ax)
 {
     return ax->st.enabled && ax->st.enable_settle_cycles == 0 && !ax->st.fault;
@@ -1635,7 +1744,7 @@ static void send_status_fd(int fd, int axis)
     int64_t axis_counts_per_rev = pv ? pv->counts_per_rev
         : (uservo_dual_gear_topology ? (int64_t)uservo_pv_profiles[axis].counts_per_rev : counts_per_rev);
     const axis_runtime_t *gear_slave = &axes[gear_group_slave_axis];
-    char out[3200];
+    char out[4096];
     int n = snprintf(
         out, sizeof(out),
         "{\"ok\":true,\"status\":{\"device\":\"%s\",\"logical_axis\":\"%s\",\"topology\":\"%s\","
@@ -1644,6 +1753,13 @@ static void send_status_fd(int fd, int axis)
         "\"wc\":%u,\"wc_complete\":%s,\"cw\":%u,\"sw\":%u,\"err\":%u,\"mode\":%d,\"commanded_mode\":%d,"
         "\"control_mode\":\"%s\",\"pos_raw\":%d,\"pos\":%d,\"velocity_actual_cps\":%d,\"target_raw\":%d,\"target\":%d,"
         "\"following_error\":%d,\"soft_zero_raw\":%d,\"jog_velocity_cps\":%d,\"torque_cmd\":%d,"
+        "\"csp_diag_target_step_counts\":%d,\"csp_diag_target_velocity_cps\":%d,"
+        "\"csp_diag_target_accel_cps2\":%d,\"csp_diag_target_jerk_cps3\":%d,"
+        "\"csp_diag_actual_step_counts\":%d,\"csp_diag_actual_velocity_estimate_cps\":%d,"
+        "\"csp_diag_actual_accel_estimate_cps2\":%d,\"csp_diag_actual_jerk_estimate_cps3\":%d,"
+        "\"csp_diag_max_abs_target_step_counts\":%d,\"csp_diag_max_abs_target_velocity_cps\":%d,"
+        "\"csp_diag_max_abs_target_accel_cps2\":%d,\"csp_diag_max_abs_target_jerk_cps3\":%d,"
+        "\"csp_diag_target_hold_cycles\":%llu,\"csp_diag_target_update_cycles\":%llu,"
         "\"torque_feedback\":%d,\"homed\":%s,\"homing_active\":%s,\"homing_attained\":%s,\"homing_error\":%s,\"cycles\":%u,"
         "\"rt_memory_locked\":%s,\"rt_scheduler_policy\":%d,\"rt_scheduler_priority\":%d,"
         "\"rt_deadline_miss_count\":%llu,\"rt_skipped_periods\":%llu,"
@@ -1670,8 +1786,18 @@ static void send_status_fd(int fd, int axis)
         s->operational, s->wc, s->wc_complete ? "true" : "false", s->cw, s->sw, s->err, s->mode_display,
         ax->commanded_mode,
         s->control_mode, s->pos_raw, s->pos_user, s->velocity_actual_cps, s->target_raw, s->target_user, s->following_error,
-        s->soft_zero_raw, s->jog_velocity_cps, s->torque_cmd, s->torque_feedback, s->homed ? "true" : "false",
-        s->homing_active ? "true" : "false", s->homing_attained ? "true" : "false", s->homing_error ? "true" : "false",
+        s->soft_zero_raw, s->jog_velocity_cps, s->torque_cmd,
+        ax->csp_diag_target_step_counts, ax->csp_diag_target_velocity_cps,
+        ax->csp_diag_target_accel_cps2, ax->csp_diag_target_jerk_cps3,
+        ax->csp_diag_actual_step_counts, ax->csp_diag_actual_velocity_estimate_cps,
+        ax->csp_diag_actual_accel_estimate_cps2, ax->csp_diag_actual_jerk_estimate_cps3,
+        ax->csp_diag_max_abs_target_step_counts, ax->csp_diag_max_abs_target_velocity_cps,
+        ax->csp_diag_max_abs_target_accel_cps2, ax->csp_diag_max_abs_target_jerk_cps3,
+        (unsigned long long)ax->csp_diag_target_hold_cycles,
+        (unsigned long long)ax->csp_diag_target_update_cycles,
+        s->torque_feedback, s->homed ? "true" : "false",
+        s->homing_active ? "true" : "false",
+        s->homing_attained ? "true" : "false", s->homing_error ? "true" : "false",
         s->cycles,
         realtime_status.memory_locked ? "true" : "false",
         realtime_status.scheduler_policy,
@@ -2974,6 +3100,7 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         previous_target_raw = s->target_raw;
         ax->have_last_cycle_target = 1;
     }
+    update_csp_actual_diagnostics(ax);
     if (axis_is_fv3_hardware(axis)) {
         if (ax->fv3_have_last_pos) {
             fv3_pos_step = s->pos_raw - ax->fv3_last_pos_raw;
@@ -3175,7 +3302,9 @@ static void axis_cycle_logic(axis_runtime_t *ax, int axis)
         ax->gear_has_last_master_pos = 0;
     }
     if (!native_pv_control) {
-        ax->target_velocity_cps = clamp_i64_to_i32((int64_t)(s->target_raw - previous_target_raw) * 1000LL);
+        ax->target_velocity_cps = clamp_i64_to_i32(
+            ((int64_t)s->target_raw - (int64_t)previous_target_raw) * 1000LL);
+        update_csp_target_diagnostics(ax, previous_target_raw);
     }
     if (axis_is_fv3_hardware(axis) && s->servo_request && s->enabled) {
         /* FV3 PP: keep motion active while trigger/stop window alive, target gap exists, or position is still changing. */

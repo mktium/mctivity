@@ -82,6 +82,32 @@ scheduler fault requires a daemon restart under a verified stable
 configuration. Single-axis Uservo profiles use the same scheduler-jitter
 separation.
 
+## CSP trajectory diagnostics
+
+The motion daemon exposes read-only CSP trajectory diagnostics in the normal
+status response. They are computed in the cyclic thread without logging or
+changing any control output:
+
+- `csp_diag_target_step_counts` and `csp_diag_target_velocity_cps` describe
+  the last host-generated `0x607A` step, using the 1 ms nominal cycle.
+- `csp_diag_target_accel_cps2` and `csp_diag_target_jerk_cps3` are first
+  differences of that commanded velocity and acceleration. They show the
+  continuity seen by the CSP target generator, not a drive-internal torque
+  estimate.
+- `csp_diag_actual_step_counts` is the last `0x6064` change. The related
+  `*_estimate_*` fields are 1 ms finite-difference estimates and must be read
+  together with `rt_skipped_periods` when a deadline was missed.
+- `csp_diag_target_hold_cycles` counts cycles where the target did not change;
+  `csp_diag_target_update_cycles` counts non-zero target updates.
+- `csp_diag_max_abs_target_*` records the largest absolute target derivative
+  observed since the daemon started.
+
+These fields are diagnostic only. They do not alter `0x607A`, `0x60FF`, the
+controlword, the commanded mode, the EtherCAT period, or any enable/motion
+gate. A future motion comparison must capture them alongside the drive's
+`0x606C` actual velocity and the realtime miss counters. No conclusion about
+audible CSP noise should be drawn from a single last-cycle sample.
+
 ## No-motion acceptance
 
 Every test in this section is read-only at the drive command layer. Do not send enable, drive fault reset, target position, target velocity, or target torque.
