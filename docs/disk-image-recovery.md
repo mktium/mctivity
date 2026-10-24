@@ -9,6 +9,10 @@ configuration in a private archive outside this public repository. Commit only
 generic tools and documentation. Preserve the original compressed image and its
 checksum; retain separately named derivatives for subsequent disks.
 
+See the [2026-10-24 preparation record](recovery-preparation-2026-10-24.md) for a
+smaller-disk case with pending source journal recovery and separate acceptance
+gates.
+
 ## Supported layout
 
 `tools/recovery/adapt_image.py` supports a gzip-compressed raw disk image with:
