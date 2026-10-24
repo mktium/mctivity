@@ -44,7 +44,10 @@ existing machine-specific SSH key, not saved plaintext passwords.
 
 `prepare_snapshot.py` waits for transfer acceptance, converts the QCOW2 clone,
 performs ordinary noninteractive recovery on disposable partition copies, then
-grows the root filesystem using `resize2fs`. `assemble_snapshot.py` keeps the EFI
+grows the root filesystem using `resize2fs`. Run `e2fsck -p -f` before resizing:
+preen without `-f` can skip a nominally clean frozen clone, leaving `resize2fs`
+to refuse expansion. A failed preparation never authorizes a physical write.
+`assemble_snapshot.py` keeps the EFI
 partition/start, disk GUID, partition GUIDs and filesystem UUIDs; moves swap to
 the end; and rebuilds both GPT copies for the exact larger capacity. The
 independent checker must pass before a write plan is produced.
