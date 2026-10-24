@@ -6,10 +6,9 @@ Prepare the historical mctivity 1.0 / Debian 13 backup for a smaller replacement
 SSD connected to the operator's Mac through a USB enclosure. This restores the
 backup version; it does not install the application revision in this checkout.
 
-**Image preparation and offline validation are complete. Physical disk writing,
-read-back comparison and on-machine boot acceptance are pending.**
-The guarded deployment requires local administrator authentication before it
-can read or write the raw USB disk.
+**Image preparation, offline validation, physical disk writing and full read-back
+comparison are complete. The disk was safely ejected at 16:01:17 Asia/Shanghai.
+On-machine boot and runtime acceptance remain pending.**
 
 ## Geometry and retained images
 
@@ -65,8 +64,11 @@ retained in the private archive. The original images were not edited.
 - Root, EFI and swap UUID references in `fstab` remain consistent.
 - The retained clean compressed image fully decompresses to the recorded raw
   image size and SHA-256.
-- The exact original target partition identities still match the deployment
-  plan; check-only execution opens no raw disk and performs no unmount/write.
+- Original target partition identities matched the deployment plan immediately
+  before the first write.
+- All 31,675,383,808 bytes were written and compared byte-for-byte on full
+  read-back. The resulting SHA-256 matched the approved candidate.
+- The resulting EFI/root/swap GPT layout was recorded and the disk safely ejected.
 
 The checker uses a pinned Debian 13 base with e2fsprogs 1.47.2, dosfstools 4.2 and
 util-linux 2.41.5. Private receipts identify the built checker image and tool
@@ -77,23 +79,25 @@ published in this repository.
 
 The initial backup attempt was stopped at the operator's request, before any
 target writes. The replacement disk was declared disposable and target backup
-was explicitly waived. The next guarded job uses a new directory and the
+was explicitly waived. The completed guarded job used a new directory and the
 matching plan waiver plus `--skip-backup`. Device identity, image validation and
-full write/read-back acceptance remain required. Original and derived system
+full write/read-back acceptance all passed. Original and derived system
 images are retained; an incomplete cancelled target backup is not a rollback
 image.
 
-## Remaining acceptance gates
+## Remaining on-machine acceptance
 
-1. Start the guarded job with local administrator authentication.
-2. Verify the recorded no-backup waiver and target identity immediately before writing.
-3. Write the checked clean candidate and compare every byte read back.
-4. Record the resulting GPT and safely eject the disk.
-5. Install it in the target PC, verify 64-bit UEFI boot, then check network and
-   EtherCAT bindings with motion disabled.
+Install the safely ejected disk in the target PC and select 64-bit UEFI boot.
+If a boot entry is missing, select `EFI/BOOT/BOOTX64.EFI`. Confirm Debian and the
+historical mctivity 1.0 deployment start, then check IP conflicts and actual NIC
+and EtherCAT bindings with motion disabled. These steps require the physical
+J1800 machine and have not been claimed as passed.
 
-Do not mark the deployment complete until the physical write/read-back gates
-pass. Keep actual boot and runtime acceptance separate from offline success.
+Private archival receipts contain deployment events, full read-back SHA-256,
+GPT output, the approved backup waiver, image manifests and checksums. All
+original and derived whole-disk images remain available for another disk. A new
+physical disk requires fresh identity checks and its own job directory; a new
+capacity requires an exactly matching validated derivative.
 See [the recovery guide](disk-image-recovery.md) for the guarded workflow.
 
 ## Automated follow-up
@@ -103,5 +107,5 @@ status every 60 seconds and writes an atomic summary. It never opens the target
 disk or restarts the writer. It exits on completion, failure, disappearance of
 the writer, or progress older than 180 seconds. A thread heartbeat checks the
 summary every five minutes, stays quiet during normal progress, and performs
-final archive/documentation work or reports a problem. Stop the heartbeat at a
-terminal outcome. Physical boot acceptance remains a separate operator step.
+final archive/documentation work or reports a problem. The watcher exited after the completed receipt; the heartbeat was paused during
+final archival. Physical boot acceptance remains a separate operator step.
