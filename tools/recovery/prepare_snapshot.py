@@ -81,7 +81,9 @@ def main():
                 offset += len(data)
             out.truncate(offset)
         docker('convert_root', ['e2image', '-r', '/work/' + args.source_name + '/root.qcow2', '/work/candidate/root.img'])
-        docker('recover_root', ['e2fsck', '-p', '/work/candidate/root.img'], (0, 1))
+        # A frozen mounted source can look clean but retain timestamps that
+        # resize2fs requires a full check to refresh. Do not let preen skip it.
+        docker('recover_root', ['e2fsck', '-p', '-f', '/work/candidate/root.img'], (0, 1))
         docker('recover_efi', ['fsck.fat', '-a', '/work/build-input/efi.img'], (0, 1))
         # 4096-byte ext4 blocks are mandatory for this reviewed source layout.
         docker('root_block_size', ['sh', '-ceu', "dumpe2fs -h /work/candidate/root.img 2>/dev/null | grep -Eq '^Block size: +4096$'"])
