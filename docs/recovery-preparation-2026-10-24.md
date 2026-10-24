@@ -95,3 +95,13 @@ image.
 Do not mark the deployment complete until the physical write/read-back gates
 pass. Keep actual boot and runtime acceptance separate from offline success.
 See [the recovery guide](disk-image-recovery.md) for the guarded workflow.
+
+## Automated follow-up
+
+A separate non-root `monitor_restore.py --watch` process reads the current job
+status every 60 seconds and writes an atomic summary. It never opens the target
+disk or restarts the writer. It exits on completion, failure, disappearance of
+the writer, or progress older than 180 seconds. A thread heartbeat checks the
+summary every five minutes, stays quiet during normal progress, and performs
+final archive/documentation work or reports a problem. Stop the heartbeat at a
+terminal outcome. Physical boot acceptance remains a separate operator step.
