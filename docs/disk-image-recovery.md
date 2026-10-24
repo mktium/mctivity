@@ -13,6 +13,9 @@ See the [2026-10-24 preparation record](recovery-preparation-2026-10-24.md) for 
 smaller-disk case with pending source journal recovery and separate acceptance
 gates.
 
+For capturing a small running source and expanding onto a larger replacement,
+see [the frozen-root replacement workflow](frozen-root-replacement.md).
+
 ## Supported layout
 
 `tools/recovery/adapt_image.py` supports a gzip-compressed raw disk image with:
