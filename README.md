@@ -151,6 +151,7 @@ Read [Release Notes](RELEASE_NOTES.md) before connecting real hardware.
 4. [Version Record](docs/version-record-v1.4.0-preview.3.md)
 5. [Security and Operation](SECURITY.md)
 6. [Third-Party and Rights Notices](NOTICE.md)
+7. [Offline Disk Image Recovery](docs/disk-image-recovery.md)
 
 ## License and Publication Status
 
