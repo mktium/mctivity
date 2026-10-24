@@ -23,6 +23,8 @@ def main():
     p.add_argument('--source-name', required=True)
     p.add_argument('--target-bytes', type=int, required=True)
     p.add_argument('--checker-image', default='mctivity-recovery-check:20261024')
+    p.add_argument('--validate-only', action='store_true',
+                   help='Recheck an existing candidate without redoing capture or resize')
     args = p.parse_args()
     os.umask(0o077)
     args.stage.chmod(0o700)
@@ -48,10 +50,29 @@ def main():
         command(name, ['docker', 'run', '--rm', '--network', 'none',
                       '--mount', 'type=bind,src=' + str(args.stage) + ',dst=/work' + (',readonly' if readonly else ''),
                       '--mount', 'type=bind,src=' + str(tools) + ',dst=/tools,readonly',
-                      '--tmpfs', '/tmp:rw,size=64m', '--entrypoint', command_args[0],
+                      '--tmpfs', '/tmp:rw,size=1536m', '--entrypoint', command_args[0],
                       args.checker_image, *command_args[1:]], accepted)
 
+    def accept_candidate():
+        manifest = json.loads((candidate / 'manifest.json').read_text())
+        if manifest['target_bytes'] != args.target_bytes:
+            raise RuntimeError('Candidate does not match requested target capacity')
+        receipt = {'result': 'passed', 'image_sha256': manifest['adapted_raw_sha256'],
+                   'filesystem_metadata_recovered': True, 'root_grown': True,
+                   'checks': {k: True for k in ['gpt', 'root_matches_manifest', 'root_e2fsck_readonly',
+                                               'efi_matches_manifest', 'efi_fat_readonly', 'x64_fallback_efi', 'swap_mkswap_reference']}}
+        (args.stage / 'validation-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        (candidate / 'adapted.img').chmod(0o400)
+        (candidate / 'root.img').chmod(0o400)
+        event('completed', image=str(candidate / 'adapted.img'), image_bytes=args.target_bytes,
+              image_sha256=manifest['adapted_raw_sha256'], target_written=False,
+              identity_policy='Replacement disk for the same source machine; preserve identity')
+
     try:
+        if args.validate_only:
+            docker('independent_validation', ['python3', '/tools/validate_image.py', '/work/candidate'], readonly=True)
+            accept_candidate()
+            return
         while True:
             event('waiting_for_transfer')
             f = source / 'fetch-status.json'
@@ -97,17 +118,7 @@ def main():
         command('assemble_image', [os.sys.executable, tools / 'assemble_snapshot.py', '--source', inputs,
                                   '--root', candidate / 'root.img', '--target-bytes', args.target_bytes, '--output', candidate])
         docker('independent_validation', ['python3', '/tools/validate_image.py', '/work/candidate'], readonly=True)
-        manifest = json.loads((candidate / 'manifest.json').read_text())
-        receipt = {'result': 'passed', 'image_sha256': manifest['adapted_raw_sha256'],
-                   'filesystem_metadata_recovered': True, 'root_grown': True,
-                   'checks': {k: True for k in ['gpt', 'root_matches_manifest', 'root_e2fsck_readonly',
-                                               'efi_matches_manifest', 'efi_fat_readonly', 'x64_fallback_efi', 'swap_mkswap_reference']}}
-        (args.stage / 'validation-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-        (candidate / 'adapted.img').chmod(0o400)
-        (candidate / 'root.img').chmod(0o400)
-        event('completed', image=str(candidate / 'adapted.img'), image_bytes=args.target_bytes,
-              image_sha256=manifest['adapted_raw_sha256'], target_written=False,
-              identity_policy='Replacement disk for the same source machine; preserve identity')
+        accept_candidate()
     except BaseException as exc:
         event('failed', error=repr(exc))
         raise

@@ -52,6 +52,12 @@ partition/start, disk GUID, partition GUIDs and filesystem UUIDs; moves swap to
 the end; and rebuilds both GPT copies for the exact larger capacity. The
 independent checker must pass before a write plan is produced.
 
+The checker's private `/tmp` must hold the EFI copy, including nonzero unused
+sectors, not just the EFI files reported as used. Preparation reserves a 1.5 GiB
+tmpfs limit for the reviewed roughly 1 GiB ESP. If only scratch capacity or the
+checker environment failed, archive that failed log and rerun preparation with
+`--validate-only`; it rechecks the existing candidate without rebuilding it.
+
 For replacement of the same machine, retain its identity, network bindings and
 service policy. A separate machine instead requires explicit identity/network
 adaptation. Neither case authorizes enabling motion during cloning.

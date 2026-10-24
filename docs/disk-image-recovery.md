@@ -61,13 +61,17 @@ Build the isolated checker from the pinned Debian base:
 
 ```sh
 docker build -t mctivity-recovery-check tools/recovery
-docker run --rm --network none --read-only --tmpfs /tmp:rw,size=64m \
+docker run --rm --network none --read-only --tmpfs /tmp:rw,size=1536m \
   --mount type=bind,src=/absolute/stage,dst=/work,readonly \
   --mount type=bind,src=/absolute/repo/tools/recovery,dst=/tools,readonly \
   --entrypoint python3 mctivity-recovery-check /tools/validate_image.py /work
 ```
 
 Required checks:
+
+Size the private `/tmp` limit to hold a complete non-sparse ESP if necessary;
+unused FAT sectors can still contain nonzero data. The example accommodates the
+reviewed roughly 1 GiB EFI partition.
 
 1. Both GPT header/array CRCs, boundaries, non-overlap and secondary GPT location.
 2. EFI and root payloads matching the manifest, including the root check copy.
