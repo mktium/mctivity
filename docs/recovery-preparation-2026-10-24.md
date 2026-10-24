@@ -6,8 +6,8 @@ Prepare the historical mctivity 1.0 / Debian 13 backup for a smaller replacement
 SSD connected to the operator's Mac through a USB enclosure. This restores the
 backup version; it does not install the application revision in this checkout.
 
-**Image preparation and offline validation are complete. Physical disk backup,
-writing, read-back comparison and on-machine boot acceptance are pending.**
+**Image preparation and offline validation are complete. Physical disk writing,
+read-back comparison and on-machine boot acceptance are pending.**
 The guarded deployment requires local administrator authentication before it
 can read or write the raw USB disk.
 
@@ -73,10 +73,20 @@ util-linux 2.41.5. Private receipts identify the built checker image and tool
 commit. Full images, disk GUIDs, device paths and detailed site records are not
 published in this repository.
 
+## Target-backup policy update
+
+The initial backup attempt was stopped at the operator's request, before any
+target writes. The replacement disk was declared disposable and target backup
+was explicitly waived. The next guarded job uses a new directory and the
+matching plan waiver plus `--skip-backup`. Device identity, image validation and
+full write/read-back acceptance remain required. Original and derived system
+images are retained; an incomplete cancelled target backup is not a rollback
+image.
+
 ## Remaining acceptance gates
 
 1. Start the guarded job with local administrator authentication.
-2. Finish and fully verify the target's compressed rollback backup.
+2. Verify the recorded no-backup waiver and target identity immediately before writing.
 3. Write the checked clean candidate and compare every byte read back.
 4. Record the resulting GPT and safely eject the disk.
 5. Install it in the target PC, verify 64-bit UEFI boot, then check network and

@@ -63,6 +63,12 @@ class WriterGuardTests(unittest.TestCase):
                 m.validate_plan(plan, "/dev/disk9")
             plan["filesystem_metadata_recovery_approved"] = True
             m.validate_plan(plan, "/dev/disk9")
+            with self.assertRaisesRegex(ValueError, "explicit user waiver"):
+                m.validate_plan(plan, "/dev/disk9", skip_backup=True)
+            plan["backup_waived_by_user"] = True
+            with self.assertRaisesRegex(ValueError, "explicit user waiver"):
+                m.validate_plan(plan, "/dev/disk9")
+            m.validate_plan(plan, "/dev/disk9", skip_backup=True)
 
 
 if __name__ == "__main__":

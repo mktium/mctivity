@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit macOS disk restore: verified rollback backup, write, full read-back.
+"""Explicit macOS disk restore: backup by default, write, full read-back.
 
 No write occurs without --execute, --confirm-device and root privileges.
 The JSON plan must pin the external device identity and original partition GUIDs.
@@ -56,12 +56,14 @@ def check_identity(actual, expected):
         require(actual.get(key) == expected.get(key), "Device identity changed: " + key)
 
 
-def validate_plan(plan, confirmation):
+def validate_plan(plan, confirmation, skip_backup=False):
     device = plan["device"]
     require(re.fullmatch(r"/dev/disk[0-9]+", device) is not None, "Select a whole macOS disk")
     require(confirmation == device, "Explicit device confirmation mismatch")
     require(plan["expected_info"]["DeviceNode"] == device, "Plan device mismatch")
     require(plan["image_bytes"] == plan["expected_info"]["TotalSize"], "Image must match exact target capacity")
+    require(bool(plan.get("backup_waived_by_user", False)) == skip_backup,
+            "Skipping backup requires both an explicit user waiver in the plan and --skip-backup")
     for key in ("image", "validation", "output_dir"):
         require(Path(plan[key]).is_absolute(), "Plan paths must be absolute: " + key)
     for key in ("image", "validation"):
@@ -79,8 +81,9 @@ def validate_plan(plan, confirmation):
 
 
 class Job:
-    def __init__(self, plan):
+    def __init__(self, plan, skip_backup=False):
         self.plan = plan
+        self.skip_backup = skip_backup
         self.folder = Path(plan["output_dir"])
         self.folder.mkdir(parents=True, exist_ok=True)
         self.state = {"device": plan["device"], "phase": "preflight", "target_written": False,
@@ -110,8 +113,9 @@ class Job:
     def run(self):
         p = self.plan
         self.identity()
-        require(shutil.disk_usage(self.folder).free > p["image_bytes"] + 1024**3,
-                "Insufficient backup space (reserve full uncompressed disk size plus 1 GiB)")
+        if not self.skip_backup:
+            require(shutil.disk_usage(self.folder).free > p["image_bytes"] + 1024**3,
+                    "Insufficient backup space (reserve full uncompressed disk size plus 1 GiB)")
         require(digest(p["image"]) == p["image_sha256"], "Candidate image SHA-256 mismatch")
         image = open(p["image"], "rb", buffering=0)
         initial = os.fstat(image.fileno())
@@ -124,37 +128,47 @@ class Job:
         self.identity()
         raw = "/dev/r" + p["device"][5:]
         require(stat.S_ISCHR(os.stat(raw).st_mode), "Expected a raw character disk device")
-        backup_tmp = self.folder / "target-before.img.gz.partial"
-        backup = self.folder / "target-before.img.gz"
-        original_hash, first_hash = hashlib.sha256(), None
-        self.event("backing_up", bytes_done=0, bytes_total=p["image_bytes"])
-        with open(raw, "rb", buffering=0) as src, backup_tmp.open("xb") as out:
-            raw_identity = os.fstat(src.fileno()).st_rdev
-            with gzip.GzipFile(filename="", mode="wb", fileobj=out, compresslevel=1, mtime=0) as compressed:
-                count = 0
-                while count < p["image_bytes"]:
-                    b = src.read(min(CHUNK, p["image_bytes"] - count))
-                    require(b, "Short backup read")
-                    if count == 0:
-                        first_hash = hashlib.sha256(b[:1024 * 1024]).hexdigest()
-                    compressed.write(b)
-                    original_hash.update(b)
-                    count += len(b)
-                    if count // 1024**3 != (count - len(b)) // 1024**3:
-                        self.event("backing_up", bytes_done=count)
-            out.flush()
-            os.fsync(out.fileno())
-        self.event("verifying_backup", bytes_done=0)
-        checked_hash, checked_size = hashlib.sha256(), 0
-        with gzip.open(backup_tmp, "rb") as src:
-            for b in iter(lambda: src.read(CHUNK), b""):
-                checked_hash.update(b)
-                checked_size += len(b)
-        require(checked_size == p["image_bytes"] and checked_hash.digest() == original_hash.digest(),
-                "Rollback backup failed verification; target will not be written")
-        backup_tmp.replace(backup)
-        self.event("backup_verified", backup_verified=True, backup_raw_sha256=original_hash.hexdigest(),
-                   backup_gzip_sha256=digest(backup), backup_path=str(backup))
+        if self.skip_backup:
+            # Even an explicitly disposable disk must be fingerprinted and rechecked.
+            with open(raw, "rb", buffering=0) as src:
+                raw_identity = os.fstat(src.fileno()).st_rdev
+                first = src.read(1024 * 1024)
+                require(len(first) == 1024 * 1024, "Short device fingerprint read")
+                first_hash = hashlib.sha256(first).hexdigest()
+            self.event("backup_waived", backup_waived_by_user=True,
+                       bytes_done=0, bytes_total=p["image_bytes"])
+        else:
+            backup_tmp = self.folder / "target-before.img.gz.partial"
+            backup = self.folder / "target-before.img.gz"
+            original_hash, first_hash = hashlib.sha256(), None
+            self.event("backing_up", bytes_done=0, bytes_total=p["image_bytes"])
+            with open(raw, "rb", buffering=0) as src, backup_tmp.open("xb") as out:
+                raw_identity = os.fstat(src.fileno()).st_rdev
+                with gzip.GzipFile(filename="", mode="wb", fileobj=out, compresslevel=1, mtime=0) as compressed:
+                    count = 0
+                    while count < p["image_bytes"]:
+                        b = src.read(min(CHUNK, p["image_bytes"] - count))
+                        require(b, "Short backup read")
+                        if count == 0:
+                            first_hash = hashlib.sha256(b[:1024 * 1024]).hexdigest()
+                        compressed.write(b)
+                        original_hash.update(b)
+                        count += len(b)
+                        if count // 1024**3 != (count - len(b)) // 1024**3:
+                            self.event("backing_up", bytes_done=count)
+                out.flush()
+                os.fsync(out.fileno())
+            self.event("verifying_backup", bytes_done=0)
+            checked_hash, checked_size = hashlib.sha256(), 0
+            with gzip.open(backup_tmp, "rb") as src:
+                for b in iter(lambda: src.read(CHUNK), b""):
+                    checked_hash.update(b)
+                    checked_size += len(b)
+            require(checked_size == p["image_bytes"] and checked_hash.digest() == original_hash.digest(),
+                    "Rollback backup failed verification; target will not be written")
+            backup_tmp.replace(backup)
+            self.event("backup_verified", backup_verified=True, backup_raw_sha256=original_hash.hexdigest(),
+                       backup_gzip_sha256=digest(backup), backup_path=str(backup))
         # Last identity and source checks before the first target write.
         self.identity()
         current = os.fstat(image.fileno())
@@ -162,7 +176,7 @@ class Job:
                 (initial.st_ino, initial.st_size, initial.st_mtime_ns), "Candidate image changed")
         with open(raw, "r+b", buffering=0) as target:
             require(os.fstat(target.fileno()).st_rdev == raw_identity, "Raw device changed")
-            require(hashlib.sha256(target.read(1024 * 1024)).hexdigest() == first_hash, "Disk content changed after backup")
+            require(hashlib.sha256(target.read(1024 * 1024)).hexdigest() == first_hash, "Disk content changed before writing")
             target.seek(0)
             image.seek(0)
             written_hash, count = hashlib.sha256(), 0
@@ -209,17 +223,19 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--confirm-device", required=True)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--skip-backup", action="store_true",
+                        help="Requires an explicit backup_waived_by_user flag in the per-disk plan")
     args = parser.parse_args()
     require(sys.platform == "darwin", "This disk writer is macOS-only")
     plan = json.loads(args.plan.read_text())
-    validate_plan(plan, args.confirm_device)
+    validate_plan(plan, args.confirm_device, args.skip_backup)
     check_identity(plist("info", "-plist", plan["device"]), plan["expected_info"])
     print("Plan and current external-device identity: OK", flush=True)
     if not args.execute:
         print("Check-only mode. No disks opened, unmounted or written.", flush=True)
         return
     require(os.geteuid() == 0, "Execute requires administrator authentication (sudo)")
-    job = Job(plan)
+    job = Job(plan, args.skip_backup)
     try:
         job.run()
     except BaseException as exc:

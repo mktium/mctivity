@@ -117,6 +117,8 @@ Prepare a private JSON plan for each physical disk. It contains:
 - absolute `image`, `validation`, and `output_dir` paths;
 - `image_bytes` and `image_sha256`;
 - `filesystem_metadata_recovery_approved: true` if applicable.
+- `backup_waived_by_user: true` only when the operator explicitly declared the
+  target disposable and requested no backup.
 
 The validation receipt must identify the same image SHA-256 and set all required
 checks to true (`gpt`, `root_matches_manifest`, `root_e2fsck_readonly`,
@@ -144,6 +146,14 @@ compressed full-disk rollback backup, and fully decompresses/verifies that backu
 before writing. It rechecks the device, original partition GUIDs, and first MiB
 before the first write. It then writes all image bytes, syncs, compares every byte
 read back, checks the whole-disk SHA-256, records the resulting GPT, and ejects.
+
+If the operator explicitly requests no target backup, add `--skip-backup` to
+both the check-only and execution commands and record the waiver in the plan.
+The argument and plan flag must agree; neither alone disables backup. The job
+still fingerprints/rechecks the target and retains all image, identity and full
+read-back checks. It records `backup_waived` and does not claim a rollback backup
+exists. If backup is already running, stop that attempt and verify
+`target_written: false` before preparing a new job directory and no-backup plan.
 
 `restore-status.json` and `restore-events.jsonl` record the PID, phase, byte counts,
 backup hashes and read-back result. Monitor these files read-only at sensible
