@@ -5,7 +5,9 @@
 A frozen source capture, checksum-verified transfer, capacity expansion and
 independent offline validation are complete. The replacement is for the same
 machine: filesystem and partition UUIDs, network identity and default realtime
-kernel are preserved. Physical writing and replacement-disk boot are pending.
+kernel are preserved. Physical writing, full read-back verification and safe
+ejection completed on 2026-10-26 at 13:09 China Standard Time.
+Replacement-disk boot remains pending operator acceptance.
 
 | Component | Bytes |
 | --- | ---: |
@@ -36,16 +38,23 @@ authorized overwriting the new replacement disk without a target backup.
 - The connected USB disk matches the recorded pre-write identity. A new private
   deployment plan and launcher passed check-only mode without opening raw disks.
 
-The privileged writer must still verify the complete source-image hash, recheck
-the exact physical device, write all bytes, compare the entire disk on read-back
-and eject it. No writing has been claimed complete. Local administrator
-authentication is required; do not reuse another disk's launcher or job folder.
+The operator launched the prepared privileged writer locally. It verified the
+complete source image, rechecked the target identity, wrote and read back all
+120,034,123,776 bytes, and safely ejected the disk. The full read-back SHA-256
+matches the independently validated candidate:
 
-Full images and machine details remain in private local storage outside cloud
-sync and this public repository. A checked compressed final image is being
-retained; redundant unpacked/check/build copies are removed only after their
-remaining consumers and archive acceptance finish. Actual boot with the new
-disk remains an operator acceptance step.
+`0a1a08b689ef54e10cb4f28b80480de0d04056f9da59ca1a7a76b584db3f7013`
+
+The private final compressed archive passed full decompression, size and raw
+SHA checks. Its compressed SHA was rechecked before removing redundant raw
+candidate/root images and derived EFI build copies. The original compressed
+source capture, final compressed image, manifests and audit receipts remain
+in private local storage outside cloud sync and this public repository.
+
+The disk is ready to install into the original machine, preserving its identity.
+Actual boot, network access, HMI restoration and expanded filesystem capacity
+still require operator acceptance. Keep the original disk available for rollback;
+fieldbus/motion commissioning remains outside this disk-writing acceptance.
 
 See [the source capture workflow](frozen-root-replacement.md) and
 [the guarded writer guide](disk-image-recovery.md).
