@@ -7,7 +7,8 @@ independent offline validation are complete. The replacement is for the same
 machine: filesystem and partition UUIDs, network identity and default realtime
 kernel are preserved. Physical writing, full read-back verification and safe
 ejection completed on 2026-10-26 at 13:09 China Standard Time.
-Replacement-disk boot remains pending operator acceptance.
+Replacement-disk boot was verified on 2026-10-26 after the operator installed
+the disk and restarted the original machine.
 
 | Component | Bytes |
 | --- | ---: |
@@ -52,8 +53,10 @@ source capture, final compressed image, manifests and audit receipts remain
 in private local storage outside cloud sync and this public repository.
 
 The disk is ready to install into the original machine, preserving its identity.
-Actual boot, network access, HMI restoration and expanded filesystem capacity
-still require operator acceptance. Keep the original disk available for rollback;
+Boot from the new 120 GB SSD, the expanded root mount, original network
+address and existing SSH key login were verified. The HMI is active and its
+HTTP endpoint returns 200. The preserved realtime kernel is running; fieldbus
+and motion services remain inactive. Keep the original disk available for rollback;
 fieldbus/motion commissioning remains outside this disk-writing acceptance.
 
 See [the source capture workflow](frozen-root-replacement.md) and
